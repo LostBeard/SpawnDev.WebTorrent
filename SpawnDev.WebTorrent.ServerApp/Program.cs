@@ -63,6 +63,8 @@ Console.WriteLine("  Tracker:      wss://localhost:5560/announce");
 Console.WriteLine("  Web Seed:     https://localhost:5560/seed/{infoHash}/{filePath}");
 Console.WriteLine("  HuggingFace:  https://localhost:5560/hf/{repoId}/{filePath}");
 Console.WriteLine("  Torrent Gen:  https://localhost:5560/torrent/{repoId}/{filePath}");
+Console.WriteLine("  Magnet URI:   https://localhost:5560/magnet/{repoId}/{filePath}");
 Console.WriteLine("  Stats:        https://localhost:5560/stats");
+Console.WriteLine("  HF Stats:     https://localhost:5560/hf-stats");
 
 app.Run();

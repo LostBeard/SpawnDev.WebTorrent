@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+using System.Collections.Concurrent;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -27,6 +27,9 @@ public class HuggingFaceProxy
     private readonly HttpClient _httpClient;
     private readonly SemaphoreSlim _downloadLock = new(3); // max concurrent HF downloads
 
+    // Cache generated .torrent files to avoid regenerating on every request
+    private readonly ConcurrentDictionary<string, byte[]> _torrentCache = new();
+
     public HuggingFaceProxy(HuggingFaceProxyOptions? options = null)
     {
         _options = options ?? new HuggingFaceProxyOptions();
@@ -34,6 +37,17 @@ public class HuggingFaceProxy
         _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("SpawnDev.WebTorrent.Server/1.0");
         Directory.CreateDirectory(_options.CacheDirectory);
     }
+
+    /// <summary>Number of cached model files.</summary>
+    public int CachedFileCount => Directory.Exists(_options.CacheDirectory)
+        ? Directory.GetFiles(_options.CacheDirectory, "*", SearchOption.AllDirectories).Length : 0;
+
+    /// <summary>Number of cached .torrent files.</summary>
+    public int CachedTorrentCount => _torrentCache.Count;
+
+    /// <summary>Total cache size in bytes.</summary>
+    public long CacheSizeBytes => Directory.Exists(_options.CacheDirectory)
+        ? new DirectoryInfo(_options.CacheDirectory).EnumerateFiles("*", SearchOption.AllDirectories).Sum(f => f.Length) : 0;
 
     /// <summary>
     /// Get or fetch a model file. Returns the local file path.
@@ -83,11 +97,18 @@ public class HuggingFaceProxy
     public async Task<byte[]?> CreateTorrentAsync(string repoId, string filePath,
         string serverBaseUrl, CancellationToken ct = default)
     {
+        var cacheKey = $"{repoId}/{filePath}";
+
+        // Return cached .torrent if available
+        if (_torrentCache.TryGetValue(cacheKey, out var cached))
+            return cached;
+
         var localPath = await GetOrFetchAsync(repoId, filePath, ct);
         if (localPath == null) return null;
 
-        // Use TorrentCreator for proper .torrent file generation
-        var (torrentBytes, _) = await TorrentCreator.CreateFromFileAsync(localPath,
+        Console.WriteLine($"[HF Proxy] Generating .torrent for: {cacheKey}");
+
+        var (torrentBytes, metadata) = await TorrentCreator.CreateFromFileAsync(localPath,
             new TorrentCreatorOptions
             {
                 Name = System.IO.Path.GetFileName(filePath),
@@ -101,7 +122,24 @@ public class HuggingFaceProxy
                 CreatedBy = "SpawnDev.WebTorrent.Server.HuggingFace",
             }, ct);
 
+        _torrentCache[cacheKey] = torrentBytes;
+        Console.WriteLine($"[HF Proxy] .torrent ready: {cacheKey} ({metadata.PieceHashes.Length} pieces, infoHash={metadata.InfoHashHex})");
+
         return torrentBytes;
+    }
+
+    /// <summary>Get magnet URI for a HuggingFace model file. Creates .torrent if needed.</summary>
+    public async Task<string?> GetMagnetUriAsync(string repoId, string filePath,
+        string serverBaseUrl, CancellationToken ct = default)
+    {
+        var torrentBytes = await CreateTorrentAsync(repoId, filePath, serverBaseUrl, ct);
+        if (torrentBytes == null) return null;
+
+        var metadata = TorrentParser.Parse(torrentBytes);
+        var trackers = string.Join("", _options.TrackerUrls.Select(t => $"&tr={Uri.EscapeDataString(t)}"));
+        var webSeeds = $"&ws={Uri.EscapeDataString($"{serverBaseUrl}/hf/{repoId}/{filePath}")}";
+
+        return $"magnet:?xt=urn:btih:{metadata.InfoHashHex}&dn={Uri.EscapeDataString(metadata.Name)}{trackers}{webSeeds}";
     }
 
     /// <summary>Handle a proxied request for a HuggingFace model file.</summary>
@@ -196,7 +234,36 @@ public static class HuggingFaceProxyExtensions
                 return;
             }
             ctx.Response.ContentType = "application/x-bittorrent";
+            ctx.Response.Headers["Content-Disposition"] = $"attachment; filename=\"{Path.GetFileName(filePath)}.torrent\"";
             await ctx.Response.Body.WriteAsync(torrentBytes);
+        });
+
+        // Get magnet URI for a HuggingFace model (returns JSON with magnetUri + info)
+        app.MapGet("/magnet/{repoId}/{**filePath}", async (HttpContext ctx, string repoId, string filePath) =>
+        {
+            var serverUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host}";
+            var magnetUri = await proxy.GetMagnetUriAsync(repoId, filePath, serverUrl, ctx.RequestAborted);
+            if (magnetUri == null)
+            {
+                ctx.Response.StatusCode = 404;
+                return;
+            }
+            ctx.Response.ContentType = "application/json";
+            await ctx.Response.WriteAsJsonAsync(new
+            {
+                magnetUri,
+                repoId,
+                filePath,
+                webSeed = $"{serverUrl}/hf/{repoId}/{filePath}",
+            });
+        });
+
+        // HuggingFace proxy stats
+        app.MapGet("/hf-stats", () => new
+        {
+            cachedFiles = proxy.CachedFileCount,
+            cachedTorrents = proxy.CachedTorrentCount,
+            cacheSizeMB = proxy.CacheSizeBytes / (1024.0 * 1024.0),
         });
     }
 }

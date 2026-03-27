@@ -3,8 +3,10 @@ using SpawnDev.WebTorrent.Server.HuggingFace;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Configure port — 5560 to avoid conflicts with ILGPU (5550) and ML (5551)
-builder.WebHost.UseUrls("https://localhost:5560", "http://localhost:5561");
+// In production (behind haproxy), ASPNETCORE_URLS env var controls binding.
+// For local dev: HTTPS 5560 + HTTP 5561
+if (!builder.Environment.IsProduction())
+    builder.WebHost.UseUrls("https://localhost:5560", "http://localhost:5561");
 
 // Enable WebSockets for tracker
 builder.Services.AddSingleton(new TorrentTracker(new TrackerOptions
@@ -18,7 +20,7 @@ builder.Services.AddSingleton(new WebSeedServer("seed-data"));
 builder.Services.AddSingleton(new HuggingFaceProxy(new HuggingFaceProxyOptions
 {
     CacheDirectory = "hf-cache",
-    TrackerUrls = new[] { "wss://localhost:5560/announce" },
+    TrackerUrls = new[] { "wss://hub.spawndev.com:44365/announce", "wss://tracker.webtorrent.dev" },
 }));
 
 // CORS for browser clients

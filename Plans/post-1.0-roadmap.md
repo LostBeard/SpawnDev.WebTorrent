@@ -68,6 +68,16 @@ This rides the same WebRTC connections used for piece exchange — no new infras
 - Task distribution, result aggregation, consensus protocols
 - Enables browser-based AI agent swarms
 
+### SpawnDev.ILGPU P2P Backend (7th Backend)
+- New `AcceleratorType.P2P` — distributes kernels across connected devices
+- Same C# kernel code, same `LoadAutoGroupedStreamKernel` API
+- The Accelerator handles sharding, tensor transfer, and result aggregation transparently
+- Developer writes one kernel, it runs on 1 GPU or 10 GPUs across a household
+- Combine every device in a home: phone, laptop, tablet, desktop, old gaming PC
+- Each device contributes whatever GPU it has (CUDA, WebGPU, OpenCL, Wasm)
+- Buffer management handles data locality — tensors migrate to where they're needed
+- The living room becomes a compute cluster
+
 ### GPU-Accelerated Piece Hashing
 - Use SpawnDev.ILGPU for parallel SHA-1/SHA-256 computation
 - Batch-verify thousands of pieces on GPU

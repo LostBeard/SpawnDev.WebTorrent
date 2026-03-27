@@ -218,14 +218,16 @@ public static class HuggingFaceProxyExtensions
         HuggingFaceProxy proxy)
     {
         // Serve cached model files (web seed endpoint)
-        app.MapGet("/hf/{repoId}/{**filePath}", async (HttpContext ctx, string repoId, string filePath) =>
+        // Route: /hf/{org}/{repo}/{filePath} → repoId = org/repo
+        app.MapGet("/hf/{org}/{repo}/{**filePath}", async (HttpContext ctx, string org, string repo, string filePath) =>
         {
-            await proxy.HandleRequest(ctx, repoId, filePath);
+            await proxy.HandleRequest(ctx, $"{org}/{repo}", filePath);
         });
 
         // Get .torrent file for a HuggingFace model
-        app.MapGet("/torrent/{repoId}/{**filePath}", async (HttpContext ctx, string repoId, string filePath) =>
+        app.MapGet("/torrent/{org}/{repo}/{**filePath}", async (HttpContext ctx, string org, string repo, string filePath) =>
         {
+            var repoId = $"{org}/{repo}";
             var serverUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host}";
             var torrentBytes = await proxy.CreateTorrentAsync(repoId, filePath, serverUrl, ctx.RequestAborted);
             if (torrentBytes == null)
@@ -239,8 +241,9 @@ public static class HuggingFaceProxyExtensions
         });
 
         // Get magnet URI for a HuggingFace model (returns JSON with magnetUri + info)
-        app.MapGet("/magnet/{repoId}/{**filePath}", async (HttpContext ctx, string repoId, string filePath) =>
+        app.MapGet("/magnet/{org}/{repo}/{**filePath}", async (HttpContext ctx, string org, string repo, string filePath) =>
         {
+            var repoId = $"{org}/{repo}";
             var serverUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host}";
             var magnetUri = await proxy.GetMagnetUriAsync(repoId, filePath, serverUrl, ctx.RequestAborted);
             if (magnetUri == null)

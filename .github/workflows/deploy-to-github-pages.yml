@@ -25,7 +25,7 @@ jobs:
 
     # publishes Blazor project to the publish-folder
     - name: Publish .NET Core Project
-      run: dotnet publish ./SpawnDev.WebTorrent/SpawnDev.WebTorrent.Demo/ --nologo -c:Release --output publish
+      run: dotnet publish ./SpawnDev.WebTorrent.Demo/ --nologo -c:Release --output publish
 
     # changes the base-tag in index.html from '/' to '/SpawnDev.WebTorrent/' to match GitHub Pages repository subdirectory
     - name: Change base-tag in index.html from / to /SpawnDev.WebTorrent/

@@ -86,51 +86,22 @@ public class HuggingFaceProxy
         var localPath = await GetOrFetchAsync(repoId, filePath, ct);
         if (localPath == null) return null;
 
-        var fileInfo = new FileInfo(localPath);
-        int pieceLength = CalculatePieceLength(fileInfo.Length);
-
-        // Compute piece hashes
-        var pieceHashes = new List<byte[]>();
-        using var fs = File.OpenRead(localPath);
-        var buffer = new byte[pieceLength];
-        int bytesRead;
-        while ((bytesRead = await fs.ReadAsync(buffer.AsMemory(0, pieceLength), ct)) > 0)
-        {
-            var hash = SHA1.HashData(buffer.AsSpan(0, bytesRead));
-            pieceHashes.Add(hash);
-        }
-
-        // Build torrent metadata
-        var metadata = new TorrentMetadata
-        {
-            Name = Path.GetFileName(filePath),
-            PieceLength = pieceLength,
-            TotalLength = fileInfo.Length,
-            PieceHashes = pieceHashes.ToArray(),
-            AnnounceList = _options.TrackerUrls.Select(t => new[] { t }).ToArray(),
-            UrlList = new[]
+        // Use TorrentCreator for proper .torrent file generation
+        var (torrentBytes, _) = await TorrentCreator.CreateFromFileAsync(localPath,
+            new TorrentCreatorOptions
             {
-                $"{serverBaseUrl}/hf/{repoId}/{filePath}",
-                $"https://huggingface.co/{repoId}/resolve/main/{filePath}",
-            },
-            CreatedBy = "SpawnDev.WebTorrent.Server.HuggingFace",
-            CreationDate = DateTimeOffset.UtcNow,
-            Files = new[]
-            {
-                new TorrentFile
+                Name = System.IO.Path.GetFileName(filePath),
+                Trackers = _options.TrackerUrls,
+                WebSeeds = new[]
                 {
-                    Path = Path.GetFileName(filePath),
-                    Length = fileInfo.Length,
-                    Offset = 0,
-                    StartPiece = 0,
-                    EndPiece = pieceHashes.Count - 1,
-                }
-            },
-        };
+                    $"{serverBaseUrl}/hf/{repoId}/{filePath}",
+                    $"https://huggingface.co/{repoId}/resolve/main/{filePath}",
+                },
+                Comment = $"HuggingFace model: {repoId}/{filePath}",
+                CreatedBy = "SpawnDev.WebTorrent.Server.HuggingFace",
+            }, ct);
 
-        // TODO: Encode to .torrent format using BencodeEncoder
-        // For now, return the metadata as a placeholder
-        return System.Text.Encoding.UTF8.GetBytes($"torrent:{repoId}/{filePath}");
+        return torrentBytes;
     }
 
     /// <summary>Handle a proxied request for a HuggingFace model file.</summary>
@@ -186,17 +157,6 @@ public class HuggingFaceProxy
 
     private string GetCachePath(string repoId, string filePath)
         => Path.Combine(_options.CacheDirectory, repoId.Replace('/', '_'), filePath.Replace('/', Path.DirectorySeparatorChar));
-
-    /// <summary>Calculate optimal piece length based on file size.</summary>
-    private static int CalculatePieceLength(long fileSize)
-    {
-        // Target ~1000-2000 pieces. Min 16KB, max 4MB.
-        if (fileSize < 16 * 1024 * 1024) return 16 * 1024;        // <16MB: 16KB pieces
-        if (fileSize < 128 * 1024 * 1024) return 64 * 1024;       // <128MB: 64KB pieces
-        if (fileSize < 512 * 1024 * 1024) return 256 * 1024;      // <512MB: 256KB pieces
-        if (fileSize < 2L * 1024 * 1024 * 1024) return 1024 * 1024; // <2GB: 1MB pieces
-        return 4 * 1024 * 1024;                                     // >=2GB: 4MB pieces
-    }
 }
 
 /// <summary>HuggingFace proxy configuration.</summary>

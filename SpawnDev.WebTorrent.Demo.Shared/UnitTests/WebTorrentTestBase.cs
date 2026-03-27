@@ -736,4 +736,178 @@ public abstract partial class WebTorrentTestBase
                 throw new Exception($"Piece 1 read mismatch at {20000 + i}: expected {expected}, got {read1[i]}");
         }
     }
+
+    // ═══════════════════════════════════════════════════════════
+    //  Stream Seeking Tests — random access while downloading
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task ModelStream_SeekForward_SkipsPieces()
+    {
+        // 64KB file = 4 pieces at 16KB. Read piece 0, skip to piece 3.
+        var data = new byte[65536];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)((i * 7 + 3) % 256);
+        var (_, metadata) = TorrentCreator.CreateFromBytes("seek.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+
+        // Pre-populate all pieces
+        for (int p = 0; p < 4; p++)
+        {
+            var piece = new byte[16384];
+            Array.Copy(data, p * 16384, piece, 0, 16384);
+            await store.PutAsync(p, piece);
+            pm.MarkComplete(p);
+        }
+
+        var webSeed = new WebSeedConnection(new HttpClient(), "http://unused", metadata);
+        await using var stream = new ModelStream(metadata, store, pm, webSeed);
+
+        // Read from start (piece 0)
+        var first = await stream.ReadAsync(0, 10);
+        for (int i = 0; i < 10; i++)
+            if (first[i] != data[i])
+                throw new Exception($"Start read mismatch at {i}");
+
+        // Seek forward to piece 3 (offset 49152)
+        var seeked = await stream.ReadAsync(49152, 100);
+        for (int i = 0; i < 100; i++)
+            if (seeked[i] != data[49152 + i])
+                throw new Exception($"Seek forward mismatch at {49152 + i}: expected {data[49152 + i]}, got {seeked[i]}");
+
+        // Seek back to piece 1 (offset 20000)
+        var backSeek = await stream.ReadAsync(20000, 100);
+        for (int i = 0; i < 100; i++)
+            if (backSeek[i] != data[20000 + i])
+                throw new Exception($"Seek back mismatch at {20000 + i}");
+    }
+
+    [TestMethod]
+    public async Task ModelStream_SeekBack_ReadsCorrectly()
+    {
+        // Verify backward seeking works — read end first, then beginning
+        var data = new byte[49152]; // 3 pieces
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)((i * 13 + 7) % 256);
+        var (_, metadata) = TorrentCreator.CreateFromBytes("seekback.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+
+        for (int p = 0; p < 3; p++)
+        {
+            var piece = new byte[16384];
+            Array.Copy(data, p * 16384, piece, 0, 16384);
+            await store.PutAsync(p, piece);
+            pm.MarkComplete(p);
+        }
+
+        var webSeed = new WebSeedConnection(new HttpClient(), "http://unused", metadata);
+        await using var stream = new ModelStream(metadata, store, pm, webSeed);
+
+        // Read from the END first (piece 2, last 100 bytes)
+        var endRead = await stream.ReadAsync(49052, 100);
+        for (int i = 0; i < 100; i++)
+            if (endRead[i] != data[49052 + i])
+                throw new Exception($"End read mismatch at {49052 + i}");
+
+        // Now seek back to the BEGINNING
+        var startRead = await stream.ReadAsync(0, 100);
+        for (int i = 0; i < 100; i++)
+            if (startRead[i] != data[i])
+                throw new Exception($"Start read after backward seek mismatch at {i}");
+
+        // Read from middle
+        var midRead = await stream.ReadAsync(24000, 200);
+        for (int i = 0; i < 200; i++)
+            if (midRead[i] != data[24000 + i])
+                throw new Exception($"Mid read mismatch at {24000 + i}");
+    }
+
+    [TestMethod]
+    public async Task ModelStream_LargeSeek_SpansManyPieces()
+    {
+        // 128KB file = 8 pieces. Read that spans pieces 2-5 (4 pieces at once)
+        var data = new byte[131072];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)((i * 3 + 11) % 256);
+        var (_, metadata) = TorrentCreator.CreateFromBytes("largeseek.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+
+        for (int p = 0; p < 8; p++)
+        {
+            var piece = new byte[16384];
+            Array.Copy(data, p * 16384, piece, 0, 16384);
+            await store.PutAsync(p, piece);
+            pm.MarkComplete(p);
+        }
+
+        var webSeed = new WebSeedConnection(new HttpClient(), "http://unused", metadata);
+        await using var stream = new ModelStream(metadata, store, pm, webSeed);
+
+        // Read 50KB starting from offset 30000 — spans pieces 1,2,3,4
+        int offset = 30000;
+        int length = 51200; // 50KB
+        var bigRead = await stream.ReadAsync(offset, length);
+
+        if (bigRead.Length != length)
+            throw new Exception($"Expected {length} bytes, got {bigRead.Length}");
+
+        for (int i = 0; i < length; i++)
+            if (bigRead[i] != data[offset + i])
+                throw new Exception($"Large span read mismatch at {offset + i}: expected {data[offset + i]}, got {bigRead[i]}");
+    }
+
+    [TestMethod]
+    public async Task ModelStream_RandomAccessPattern_MLWeightLoading()
+    {
+        // Simulate ML weight loading: read header, seek to weight offset, read weights,
+        // seek to bias offset, read biases — non-sequential random access
+        var data = new byte[98304]; // 6 pieces
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 256);
+        var (_, metadata) = TorrentCreator.CreateFromBytes("weights.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+
+        for (int p = 0; p < 6; p++)
+        {
+            var piece = new byte[16384];
+            Array.Copy(data, p * 16384, piece, 0, 16384);
+            await store.PutAsync(p, piece);
+            pm.MarkComplete(p);
+        }
+
+        var webSeed = new WebSeedConnection(new HttpClient(), "http://unused", metadata);
+        await using var stream = new ModelStream(metadata, store, pm, webSeed);
+
+        // 1. Read header (first 256 bytes)
+        var header = await stream.ReadAsync(0, 256);
+        for (int i = 0; i < 256; i++)
+            if (header[i] != data[i]) throw new Exception($"Header mismatch at {i}");
+
+        // 2. Seek to weight matrix at offset 32768 (piece 2), read 16384 bytes
+        var weights = await stream.ReadAsync(32768, 16384);
+        for (int i = 0; i < 16384; i++)
+            if (weights[i] != data[32768 + i]) throw new Exception($"Weight mismatch at {32768 + i}");
+
+        // 3. Seek to bias at offset 81920 (piece 5), read 1024 bytes
+        var bias = await stream.ReadAsync(81920, 1024);
+        for (int i = 0; i < 1024; i++)
+            if (bias[i] != data[81920 + i]) throw new Exception($"Bias mismatch at {81920 + i}");
+
+        // 4. Seek back to second weight matrix at offset 49152 (piece 3)
+        var weights2 = await stream.ReadAsync(49152, 8192);
+        for (int i = 0; i < 8192; i++)
+            if (weights2[i] != data[49152 + i]) throw new Exception($"Weight2 mismatch at {49152 + i}");
+
+        // 5. Read the very last byte
+        var lastByte = await stream.ReadAsync(98303, 1);
+        if (lastByte[0] != data[98303]) throw new Exception($"Last byte mismatch");
+    }
 }

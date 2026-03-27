@@ -1,0 +1,182 @@
+@page "/stats"
+@inject HttpClient Http
+@using System.Text.Json
+
+<PageTitle>Server Stats</PageTitle>
+
+<h3>SpawnDev.WebTorrent Hub — Live Stats</h3>
+<hr />
+
+<div class="stats-container">
+    @if (_loading)
+    {
+        <p class="loading">Connecting to hub.spawndev.com...</p>
+    }
+    else if (_error != null)
+    {
+        <div class="error-card">
+            <p>Could not connect to server: @_error</p>
+            <button class="btn btn-sm btn-primary" @onclick="LoadStats">Retry</button>
+        </div>
+    }
+    else
+    {
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value">@_swarms</div>
+                <div class="stat-label">Active Swarms</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">@_totalPeers</div>
+                <div class="stat-label">Connected Peers</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">@_cachedFiles</div>
+                <div class="stat-label">Cached Files</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">@_cacheSizeMB</div>
+                <div class="stat-label">Cache Size (MB)</div>
+            </div>
+        </div>
+
+        <div class="refresh-row">
+            <button class="btn btn-sm btn-secondary" @onclick="LoadStats">Refresh</button>
+            <span class="last-update">Last updated: @_lastUpdate?.ToString("HH:mm:ss")</span>
+        </div>
+    }
+</div>
+
+@code {
+    private bool _loading = true;
+    private string? _error;
+    private int _swarms;
+    private int _totalPeers;
+    private int _cachedFiles;
+    private string _cacheSizeMB = "0";
+    private DateTime? _lastUpdate;
+
+    private const string ServerUrl = "https://hub.spawndev.com:44365";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadStats();
+    }
+
+    private async Task LoadStats()
+    {
+        _loading = true;
+        _error = null;
+        StateHasChanged();
+
+        try
+        {
+            using var http = new HttpClient();
+            http.Timeout = TimeSpan.FromSeconds(5);
+
+            // Fetch tracker stats
+            var statsJson = await http.GetStringAsync($"{ServerUrl}/stats");
+            using var statsDoc = JsonDocument.Parse(statsJson);
+            _swarms = statsDoc.RootElement.GetProperty("swarms").GetInt32();
+            _totalPeers = statsDoc.RootElement.GetProperty("totalPeers").GetInt32();
+
+            // Fetch HF cache stats
+            try
+            {
+                var hfJson = await http.GetStringAsync($"{ServerUrl}/hf-stats");
+                using var hfDoc = JsonDocument.Parse(hfJson);
+                _cachedFiles = hfDoc.RootElement.GetProperty("cachedFiles").GetInt32();
+                var cacheMB = hfDoc.RootElement.GetProperty("cacheSizeMB").GetDouble();
+                _cacheSizeMB = cacheMB.ToString("F1");
+            }
+            catch { _cachedFiles = 0; _cacheSizeMB = "N/A"; }
+
+            _lastUpdate = DateTime.Now;
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _loading = false;
+            StateHasChanged();
+        }
+    }
+}
+
+<style>
+    .stats-container {
+        max-width: 800px;
+        margin: 0 auto;
+    }
+
+    .loading {
+        text-align: center;
+        color: #94a3b8;
+        font-style: italic;
+    }
+
+    .error-card {
+        background: rgba(239, 68, 68, 0.1);
+        border: 1px solid rgba(239, 68, 68, 0.3);
+        border-radius: 12px;
+        padding: 1.5rem;
+        text-align: center;
+        color: #fca5a5;
+    }
+
+    .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 1.5rem;
+        margin-bottom: 1.5rem;
+    }
+
+    .stat-card {
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 12px;
+        padding: 2rem;
+        text-align: center;
+        transition: all 0.2s ease;
+    }
+
+    .stat-card:hover {
+        background: rgba(16, 185, 129, 0.08);
+        border-color: rgba(16, 185, 129, 0.3);
+        transform: translateY(-2px);
+    }
+
+    .stat-value {
+        font-size: 2.5rem;
+        font-weight: 800;
+        color: #10b981;
+        margin-bottom: 0.5rem;
+    }
+
+    .stat-label {
+        color: #94a3b8;
+        font-size: 0.9rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+
+    .refresh-row {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        justify-content: center;
+    }
+
+    .last-update {
+        color: #64748b;
+        font-size: 0.85rem;
+    }
+
+    @@media (max-width: 640px) {
+        .stats-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>

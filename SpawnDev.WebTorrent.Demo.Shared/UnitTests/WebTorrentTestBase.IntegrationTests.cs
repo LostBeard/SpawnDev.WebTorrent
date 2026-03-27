@@ -6,28 +6,62 @@ namespace SpawnDev.WebTorrent.Demo.Shared.UnitTests;
 
 public abstract partial class WebTorrentTestBase
 {
-    private const string TestServerUrl = "http://localhost:5561";
+    /// <summary>
+    /// Detect server URL: use localhost when running locally (PlaywrightMultiTest),
+    /// use hub.spawndev.com when running on GitHub Pages or other remote hosts.
+    /// </summary>
+    private static string GetTestServerUrl()
+    {
+        // Try localhost first (PlaywrightMultiTest starts ServerApp locally)
+        // If not available, use the live production server
+        return _useProductionServer ? ProductionServerUrl : LocalServerUrl;
+    }
+
+    private const string LocalServerUrl = "http://localhost:5561";
+    private const string ProductionServerUrl = "https://hub.spawndev.com:44365";
+    private static bool _useProductionServer = false;
 
     private static async Task<bool> IsServerAvailableAsync()
     {
+        // Try localhost first
         try
         {
             using var http = new HttpClient();
-            http.Timeout = TimeSpan.FromSeconds(3);
-            var response = await http.GetAsync(TestServerUrl);
-            return response.IsSuccessStatusCode;
+            http.Timeout = TimeSpan.FromSeconds(2);
+            var response = await http.GetAsync(LocalServerUrl);
+            if (response.IsSuccessStatusCode)
+            {
+                _useProductionServer = false;
+                return true;
+            }
         }
-        catch { return false; }
+        catch { }
+
+        // Fall back to production server
+        try
+        {
+            using var http = new HttpClient();
+            http.Timeout = TimeSpan.FromSeconds(5);
+            var response = await http.GetAsync(ProductionServerUrl);
+            if (response.IsSuccessStatusCode)
+            {
+                _useProductionServer = true;
+                return true;
+            }
+        }
+        catch { }
+
+        return false;
     }
 
     [TestMethod]
     public async Task Integration_ServerInfo_ReturnsJson()
     {
         if (!await IsServerAvailableAsync())
-            throw new UnsupportedTestException("Server not running at " + TestServerUrl);
+            throw new UnsupportedTestException("Server not running at " + GetTestServerUrl());
 
         using var http = new HttpClient();
-        var response = await http.GetStringAsync(TestServerUrl);
+        var response = await http.GetStringAsync(GetTestServerUrl());
 
         if (!response.Contains("SpawnDev.WebTorrent.Server"))
             throw new Exception($"Unexpected response: {response[..Math.Min(200, response.Length)]}");
@@ -37,10 +71,10 @@ public abstract partial class WebTorrentTestBase
     public async Task Integration_Stats_ReturnsSwarmInfo()
     {
         if (!await IsServerAvailableAsync())
-            throw new UnsupportedTestException("Server not running at " + TestServerUrl);
+            throw new UnsupportedTestException("Server not running at " + GetTestServerUrl());
 
         using var http = new HttpClient();
-        var response = await http.GetStringAsync($"{TestServerUrl}/stats");
+        var response = await http.GetStringAsync($"{GetTestServerUrl()}/stats");
 
         if (!response.Contains("swarms") || !response.Contains("totalPeers"))
             throw new Exception($"Missing fields: {response[..Math.Min(200, response.Length)]}");
@@ -50,12 +84,12 @@ public abstract partial class WebTorrentTestBase
     public async Task Integration_HuggingFace_FetchAndCacheTorrent()
     {
         if (!await IsServerAvailableAsync())
-            throw new UnsupportedTestException("Server not running at " + TestServerUrl);
+            throw new UnsupportedTestException("Server not running at " + GetTestServerUrl());
 
         using var http = new HttpClient();
         http.Timeout = TimeSpan.FromSeconds(30);
 
-        var response = await http.GetAsync($"{TestServerUrl}/torrent/Xenova/clip-vit-base-patch32/onnx/text_model.onnx");
+        var response = await http.GetAsync($"{GetTestServerUrl()}/torrent/Xenova/clip-vit-base-patch32/onnx/text_model.onnx");
         if (!response.IsSuccessStatusCode)
             throw new Exception($"Torrent endpoint returned {response.StatusCode}");
 
@@ -74,12 +108,12 @@ public abstract partial class WebTorrentTestBase
     public async Task Integration_MagnetUri_ReturnsValid()
     {
         if (!await IsServerAvailableAsync())
-            throw new UnsupportedTestException("Server not running at " + TestServerUrl);
+            throw new UnsupportedTestException("Server not running at " + GetTestServerUrl());
 
         using var http = new HttpClient();
         http.Timeout = TimeSpan.FromSeconds(30);
 
-        var response = await http.GetStringAsync($"{TestServerUrl}/magnet/Xenova/clip-vit-base-patch32/onnx/text_model.onnx");
+        var response = await http.GetStringAsync($"{GetTestServerUrl()}/magnet/Xenova/clip-vit-base-patch32/onnx/text_model.onnx");
         if (!response.Contains("magnetUri") || !response.Contains("urn:btih:"))
             throw new Exception($"Invalid magnet: {response[..Math.Min(200, response.Length)]}");
 
@@ -90,13 +124,13 @@ public abstract partial class WebTorrentTestBase
     public async Task Integration_ModelTorrentClient_DownloadSmallFile()
     {
         if (!await IsServerAvailableAsync())
-            throw new UnsupportedTestException("Server not running at " + TestServerUrl);
+            throw new UnsupportedTestException("Server not running at " + GetTestServerUrl());
 
         // Download a small config file (< 1KB) to test the full pipeline
         // without triggering range request issues on larger model files
         await using var client = new ModelTorrentClient(new ModelTorrentOptions
         {
-            ServerBaseUrl = TestServerUrl,
+            ServerBaseUrl = GetTestServerUrl(),
         });
 
         var data = await client.DownloadModelAsync(
@@ -111,12 +145,12 @@ public abstract partial class WebTorrentTestBase
     public async Task Integration_ModelTorrentClient_DownloadLargerFile()
     {
         if (!await IsServerAvailableAsync())
-            throw new UnsupportedTestException("Server not running at " + TestServerUrl);
+            throw new UnsupportedTestException("Server not running at " + GetTestServerUrl());
 
         // Download a larger ONNX model file to test multi-piece range requests
         await using var client = new ModelTorrentClient(new ModelTorrentOptions
         {
-            ServerBaseUrl = TestServerUrl,
+            ServerBaseUrl = GetTestServerUrl(),
         });
 
         var data = await client.DownloadModelAsync(

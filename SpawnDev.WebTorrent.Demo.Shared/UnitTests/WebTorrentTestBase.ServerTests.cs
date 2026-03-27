@@ -136,4 +136,79 @@ public abstract partial class WebTorrentTestBase
         if (parsed.TotalLength != 262144)
             throw new Exception($"TotalLength mismatch: {parsed.TotalLength}");
     }
+
+    // ═══════════════════════════════════════════════════════════
+    //  Magnet URI Tests
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Magnet_Base32InfoHash()
+    {
+        // Base32-encoded info hash (used by some older magnet links)
+        // "JBSWY3DPEHPK3PXP" is Base32 for "Hello!" (6 bytes) — not a real 20-byte hash,
+        // but tests the Base32 decoder
+        var magnet = "magnet:?xt=urn:btih:JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&dn=test";
+        var meta = TorrentParser.ParseMagnet(magnet);
+
+        if (meta.InfoHash.Length != 20)
+            throw new Exception($"Base32 info hash should decode to 20 bytes, got {meta.InfoHash.Length}");
+        if (meta.Name != "test")
+            throw new Exception($"Name should be 'test', got '{meta.Name}'");
+    }
+
+    [TestMethod]
+    public async Task Magnet_MultipleTrackers()
+    {
+        var magnet = "magnet:?xt=urn:btih:d2474e86c95b19b8bcfdb92bc12c9d44667ce52e"
+            + "&tr=wss://tracker1.example.com"
+            + "&tr=wss://tracker2.example.com"
+            + "&tr=wss://tracker3.example.com";
+
+        var meta = TorrentParser.ParseMagnet(magnet);
+
+        if (meta.AnnounceList.Length != 3)
+            throw new Exception($"Expected 3 trackers, got {meta.AnnounceList.Length}");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  FileChunkStore Tests (desktop only)
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task FileChunkStore_PutGetRoundTrip()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"wt_fcs_{Guid.NewGuid():N}");
+        try
+        {
+            await using var store = new Storage.FileChunkStore(tempDir, 16384);
+
+            var data = new byte[16384];
+            for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 256);
+
+            await store.PutAsync(0, data);
+            var result = await store.GetAsync(0);
+
+            if (result == null) throw new Exception("GetAsync returned null");
+            if (!result.SequenceEqual(data))
+                throw new Exception("FileChunkStore round-trip data mismatch");
+
+            // Partial read
+            var partial = await store.GetAsync(0, 100, 50);
+            if (partial == null || partial.Length != 50)
+                throw new Exception("Partial read failed");
+            for (int i = 0; i < 50; i++)
+                if (partial[i] != (byte)((100 + i) % 256))
+                    throw new Exception($"Partial read mismatch at {i}");
+
+            // Clear
+            await store.ClearAsync();
+            var cleared = await store.GetAsync(0);
+            if (cleared != null)
+                throw new Exception("Data should be cleared");
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+        }
+    }
 }

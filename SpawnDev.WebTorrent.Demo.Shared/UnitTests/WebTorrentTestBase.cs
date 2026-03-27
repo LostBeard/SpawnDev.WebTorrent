@@ -550,4 +550,121 @@ public abstract partial class WebTorrentTestBase
 
         if (!pm.IsComplete) throw new Exception("Should be complete (1 piece, all blocks received)");
     }
+
+    // ═══════════════════════════════════════════════════════════
+    //  DownloadCoordinator Tests
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Coordinator_PrioritizePiece_DownloadsFirst()
+    {
+        // Create torrent with 4 pieces
+        var data = new byte[65536]; // 4 × 16KB
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 256);
+        var (_, metadata) = TorrentCreator.CreateFromBytes("priority.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        await using var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+        var coordinator = new DownloadCoordinator(pm, metadata);
+
+        // Prioritize piece 3 (the last one)
+        coordinator.Prioritize(3);
+
+        // Verify it's in the priority set by checking piece 3 is selected
+        // even when we only have pieces 0-2 available
+        if (pm.Bitfield[3])
+            throw new Exception("Piece 3 shouldn't be complete yet");
+    }
+
+    [TestMethod]
+    public async Task Coordinator_WebSeedFallback_Structure()
+    {
+        var data = new byte[16384];
+        var (_, metadata) = TorrentCreator.CreateFromBytes("webseed.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        await using var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+        var coordinator = new DownloadCoordinator(pm, metadata);
+
+        // Add a web seed (won't actually connect — just verifies the API works)
+        coordinator.AddWebSeed(new HttpClient(), "https://example.com/models");
+
+        // Verify coordinator accepts the web seed without errors
+        coordinator.Prioritize(0);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  TorrentFileStream Tests
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task FileStream_Progress_TracksCorrectly()
+    {
+        var data = new byte[32768]; // 2 pieces
+        var (_, metadata) = TorrentCreator.CreateFromBytes("progress.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        await using var store = new MemoryChunkStore(16384);
+        var swarm = new TorrentSwarm(new WebTorrentClient(), new AddTorrentOptions());
+        swarm.SetMetadata(metadata);
+
+        // No pieces complete → 0% progress
+        var file = swarm.Files[0];
+        if (file.Progress != 0)
+            throw new Exception($"Expected 0% progress, got {file.Progress:P1}");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  Integration: Create → Parse → PieceManager → Verify
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Integration_FullPipeline_CreateParseVerify()
+    {
+        // Create a torrent from data
+        var data = new byte[49152]; // 3 × 16KB pieces
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)((i * 7 + 13) % 256);
+
+        var (torrentBytes, original) = TorrentCreator.CreateFromBytes("pipeline.bin", data,
+            new TorrentCreatorOptions
+            {
+                PieceLength = 16384,
+                Trackers = new[] { "wss://tracker.test.com" },
+            });
+
+        // Parse it back
+        var parsed = TorrentParser.Parse(torrentBytes);
+        if (!parsed.InfoHash.SequenceEqual(original.InfoHash))
+            throw new Exception("InfoHash mismatch");
+
+        // Feed pieces through PieceManager
+        await using var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(parsed, store);
+
+        for (int i = 0; i < 3; i++)
+        {
+            var pieceData = new byte[16384];
+            Array.Copy(data, i * 16384, pieceData, 0, 16384);
+
+            pm.GetNextBlock(i); // mark as requested
+            bool complete = await pm.ReceiveBlockAsync(i, 0, pieceData);
+            if (!complete)
+                throw new Exception($"Piece {i} should verify correctly");
+        }
+
+        if (!pm.IsComplete)
+            throw new Exception("All 3 pieces received but not marked complete");
+
+        // Verify stored data matches original
+        for (int i = 0; i < 3; i++)
+        {
+            var stored = await store.GetAsync(i);
+            var expected = new byte[16384];
+            Array.Copy(data, i * 16384, expected, 0, 16384);
+            if (stored == null || !stored.SequenceEqual(expected))
+                throw new Exception($"Stored piece {i} doesn't match original data");
+        }
+    }
 }

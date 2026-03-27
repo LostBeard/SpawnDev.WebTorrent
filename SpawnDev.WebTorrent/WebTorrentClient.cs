@@ -131,6 +131,28 @@ public class WebTorrentClient : IAsyncDisposable
         await torrent.DisposeAsync();
     }
 
+    /// <summary>
+    /// Add a torrent from .torrent file bytes. Parses metadata and starts discovery.
+    /// </summary>
+    public async Task<TorrentSwarm> AddFromTorrentFileAsync(byte[] torrentFileBytes,
+        AddTorrentOptions? options = null)
+    {
+        var metadata = Torrent.TorrentParser.Parse(torrentFileBytes);
+        return await AddAsync(metadata, options);
+    }
+
+    /// <summary>
+    /// Quick setup: create client with default tracker and add a magnet URI.
+    /// Convenience method for the simplest use case.
+    /// </summary>
+    public static async Task<(WebTorrentClient client, TorrentSwarm swarm)> QuickStartAsync(
+        string magnetUri, WebTorrentOptions? options = null)
+    {
+        var client = new WebTorrentClient(options);
+        var swarm = await client.AddAsync(magnetUri);
+        return (client, swarm);
+    }
+
     private void HandleIncomingConnection(IConnection connection)
     {
         // Route to correct torrent based on handshake info hash

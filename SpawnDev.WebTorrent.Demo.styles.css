@@ -10,12 +10,13 @@ main[b-h2siujk5tm] {
 }
 
 .sidebar[b-h2siujk5tm] {
-    background-image: linear-gradient(180deg, rgb(5, 39, 103) 0%, #3a0647 70%);
+    background: #1e293b;
+    border-right: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .top-row[b-h2siujk5tm] {
-    background-color: #f7f7f7;
-    border-bottom: 1px solid #d6d5d5;
+    background-color: #1e293b;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
     justify-content: flex-end;
     height: 3.5rem;
     display: flex;
@@ -26,10 +27,12 @@ main[b-h2siujk5tm] {
         white-space: nowrap;
         margin-left: 1.5rem;
         text-decoration: none;
+        color: #94a3b8;
     }
 
     .top-row[b-h2siujk5tm]  a:hover, .top-row[b-h2siujk5tm]  .btn-link:hover {
         text-decoration: underline;
+        color: #f1f5f9;
     }
 
     .top-row[b-h2siujk5tm]  a:first-child {
@@ -63,12 +66,6 @@ main[b-h2siujk5tm] {
         position: sticky;
         top: 0;
         z-index: 1;
-    }
-
-    .top-row.auth[b-h2siujk5tm]  a:first-child {
-        flex: 1;
-        text-align: right;
-        width: 0;
     }
 
     .top-row[b-h2siujk5tm], article[b-h2siujk5tm] {

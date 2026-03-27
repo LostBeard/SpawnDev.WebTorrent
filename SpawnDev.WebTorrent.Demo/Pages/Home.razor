@@ -1,112 +1,116 @@
-﻿@page "/"
+@page "/"
 
-<PageTitle>SpawnDev.WebTorrent — GPU Compute Everywhere</PageTitle>
+<PageTitle>SpawnDev.WebTorrent — Decentralized Model Delivery</PageTitle>
 
 <div class="hero-section">
     <div class="hero-content">
         <h1 class="hero-title">
-            <span class="gradient-text">GPU Compute Everywhere</span>
+            <span class="gradient-text">SpawnDev.WebTorrent</span>
         </h1>
-        <p class="hero-subtitle">Write once, run on WebGPU, WebGL, Wasm, CUDA, OpenCL, and CPU</p>
+        <p class="hero-subtitle">Pure C# BitTorrent. Desktop + Browser. Zero JavaScript.</p>
         <p class="hero-description">
-            SpawnDev.WebTorrent extends the ILGPU compiler with six parallel backends — three for the browser and three for the desktop — all driven by a single C# codebase.
-            In the browser, WebGPU and WebGL dispatch to the GPU while Wasm compiles to multithreaded WebAssembly.
-            On desktop, the same kernels run natively on CUDA, OpenCL, and multithreaded CPU.
-            Every backend runs off the main thread, keeping your UI responsive.
+            A complete BitTorrent/WebTorrent implementation in C# — client, server, and tracker.
+            Runs on .NET desktop and Blazor WebAssembly. Built for decentralized AI model delivery:
+            every browser becomes a peer, every download makes the network faster.
         </p>
         <div class="hero-buttons">
-            <a href="fractals" class="btn btn-primary btn-lg">
-                <span class="btn-icon">🎨</span> Fractal Demo
+            <a href="tests" class="btn btn-primary btn-lg">
+                <span class="btn-icon">🧪</span> Run Tests
             </a>
-            <a href="benchmarks" class="btn btn-secondary btn-lg">
-                <span class="btn-icon">⏱️</span> Run Benchmarks
+            <a href="https://github.com/LostBeard/SpawnDev.WebTorrent" target="_blank" class="btn btn-secondary btn-lg">
+                <span class="btn-icon">📦</span> GitHub
+            </a>
+            <a href="https://hub.spawndev.com:44365/" target="_blank" class="btn btn-secondary btn-lg">
+                <span class="btn-icon">🌐</span> Live Server
             </a>
         </div>
     </div>
 </div>
 
 <div class="features-section">
-    <h2 class="section-title">Six Parallel Backends, One API</h2>
+    <h2 class="section-title">Why P2P Model Delivery?</h2>
+    <div class="problem-card">
+        <p>AI models are <strong>big</strong> — 100MB to 2GB+. CDNs can't scale when every user downloads the same model.
+        SpawnDev.WebTorrent turns every browser into a peer. The more users, the faster delivery.
+        HuggingFace serves the model <em>once</em> — the swarm handles the rest.</p>
+    </div>
 
-    <h3 class="subsection-title"><span class="subsection-icon">🌐</span> Browser Backends</h3>
-    <p class="subsection-desc">GPU and multithreaded compute inside any modern browser — no plugins, no installs.</p>
+    <h2 class="section-title" style="margin-top: 3rem;">Architecture</h2>
+
     <div class="features-grid features-grid-3">
-        <div class="feature-card feature-highlight-browser">
-            <div class="feature-icon">🎮</div>
-            <h3>WebGPU</h3>
-            <p>C# kernels transpiled to WGSL and dispatched to the GPU. Supports shared memory, atomics, 64-bit emulation, and auto-detects extensions like <code>shader-f16</code> and <code>subgroups</code> for broadcast &amp; warp shuffle operations.</p>
-            <div class="feature-tag">Fastest GPU path</div>
+        <div class="feature-card feature-highlight-p2p">
+            <div class="feature-icon">🔗</div>
+            <h3>Pure C# Client</h3>
+            <p>Full BitTorrent wire protocol, piece management, SHA-1 verification, WebRTC transport for browser peers, TCP for desktop. No JavaScript dependencies.</p>
+            <div class="feature-tag">SpawnDev.WebTorrent</div>
         </div>
-        <div class="feature-card feature-highlight-browser">
-            <div class="feature-icon">🖼️</div>
-            <h3>WebGL</h3>
-            <p>C# kernels transpiled to GLSL ES 3.0 and executed on the GPU via Transform Feedback. Works on virtually every browser and device — including mobile, Safari, and older desktops. Full 64-bit emulation support.</p>
-            <div class="feature-tag">Widest compatibility</div>
+        <div class="feature-card feature-highlight-p2p">
+            <div class="feature-icon">📡</div>
+            <h3>Tracker + Web Seed Server</h3>
+            <p>WebSocket tracker with WebRTC signaling relay. HTTP range request web seed (BEP 17/19). Reusable library — use it without HuggingFace.</p>
+            <div class="feature-tag">SpawnDev.WebTorrent.Server</div>
         </div>
-        <div class="feature-card feature-highlight-browser">
-            <div class="feature-icon">🧊</div>
-            <h3>Wasm</h3>
-            <p>Kernels compiled to native WebAssembly binary and dispatched to Web Workers for near-native parallel execution. Compatible with every browser that runs Blazor WASM — even with a single worker if SharedArrayBuffer is unavailable.</p>
-            <div class="feature-tag">CPU fallback</div>
+        <div class="feature-card feature-highlight-p2p">
+            <div class="feature-icon">🤗</div>
+            <h3>HuggingFace Proxy</h3>
+            <p>Fetches model files from HuggingFace CDN, caches locally, generates .torrent files on demand, serves as web seed. Optional extension.</p>
+            <div class="feature-tag">SpawnDev.WebTorrent.Server.HuggingFace</div>
         </div>
     </div>
 
-    <h3 class="subsection-title"><span class="subsection-icon">🖥️</span> Desktop Backends</h3>
-    <p class="subsection-desc">Full-speed native execution for console, WPF, and ASP.NET apps — same kernels, zero code changes.</p>
-    <div class="features-grid features-grid-3">
-        <div class="feature-card feature-highlight-desktop">
-            <div class="feature-icon">🟢</div>
-            <h3>CUDA</h3>
-            <p>Direct PTX compilation targeting NVIDIA GPUs. Maximum throughput with full hardware access — tensor cores, warp-level intrinsics, and the deepest driver optimization stack available.</p>
-            <div class="feature-tag">NVIDIA peak performance</div>
-        </div>
-        <div class="feature-card feature-highlight-desktop">
-            <div class="feature-icon">🔶</div>
-            <h3>OpenCL</h3>
-            <p>Cross-vendor GPU compute via OpenCL 3.0. Runs on NVIDIA, AMD, and Intel GPUs and integrated graphics. Ideal when CUDA is unavailable or when targeting the broadest desktop hardware.</p>
-            <div class="feature-tag">Cross-vendor GPU</div>
-        </div>
-        <div class="feature-card feature-highlight-desktop">
-            <div class="feature-icon">🔵</div>
-            <h3>CPU</h3>
-            <p>Multithreaded CPU accelerator using the ILGPU runtime. Valuable for debugging kernels with breakpoints, running on headless servers, and as a reliable fallback on machines without a GPU.</p>
-            <div class="feature-tag">Debug &amp; fallback</div>
-        </div>
-    </div>
+    <h2 class="section-title" style="margin-top: 3rem;">Key Features</h2>
 
-    <div class="features-grid features-grid-3" style="margin-top: 2.5rem;">
+    <div class="features-grid features-grid-3">
+        <div class="feature-card">
+            <div class="feature-icon">🎯</div>
+            <h3>Random-Access Streaming</h3>
+            <p>Read any byte range from a torrent file as it downloads. Perfect for ML weight loading — stream weights directly to GPU.</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">💾</div>
+            <h3>Persistent Caching</h3>
+            <p>Downloaded pieces persist in OPFS (browser) or filesystem (desktop). Models load instantly on return visits.</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">🛡️</div>
+            <h3>Piece Verification</h3>
+            <p>Every piece is SHA-1 verified against the .torrent manifest. Corrupted data is rejected and re-requested automatically.</p>
+        </div>
         <div class="feature-card">
             <div class="feature-icon">⚡</div>
-            <h3>ILGPU Compatible</h3>
-            <p>Use familiar ILGPU APIs — ArrayView, Index1D/2D/3D, math intrinsics, and more.</p>
+            <h3>Zero Config</h3>
+            <p>ModelTorrentClient handles everything: .torrent fetch, piece download, verification, assembly. One line to download a model.</p>
         </div>
         <div class="feature-card">
-            <div class="feature-icon">🔀</div>
-            <h3>Auto Backend Selection</h3>
-            <p>CreatePreferredAcceleratorAsync() picks the best backend: WebGPU → WebGL → Wasm (browser) or CUDA → OpenCL → CPU (desktop).</p>
+            <div class="feature-icon">🌍</div>
+            <h3>Desktop + Browser</h3>
+            <p>Same library runs on .NET console/desktop apps and Blazor WebAssembly. TCP transport for desktop, WebRTC for browser.</p>
         </div>
         <div class="feature-card">
-            <div class="feature-icon">🌐</div>
-            <h3>Blazor WebAssembly</h3>
-            <p>Seamless integration with Blazor WASM via SpawnDev.BlazorJS. No native dependencies.</p>
+            <div class="feature-icon">📊</div>
+            <h3>Bandwidth Respectful</h3>
+            <p>Configurable upload limits. Conservative defaults. Users choose how much they contribute. Nobody gets a surprise bandwidth bill.</p>
         </div>
     </div>
 </div>
 
 <div class="code-section">
     <h2 class="section-title">Quick Start</h2>
-    
+
     <div class="steps-container">
         <div class="step">
             <div class="step-number">1</div>
             <div class="step-content">
-                <h3>Write Your Kernel</h3>
-                <p>Define your computation in standard C# — runs on any backend.</p>
+                <h3>Download a Model</h3>
+                <p>One line to download any HuggingFace model via the torrent network.</p>
                 <div class="code-block">
-                    <pre><code><span class="keyword">static void</span> <span class="method">MyKernel</span>(<span class="type">Index1D</span> index, <span class="type">ArrayView</span>&lt;<span class="keyword">float</span>&gt; data)
+                    <pre><code><span class="keyword">var</span> client = <span class="keyword">new</span> <span class="type">ModelTorrentClient</span>(<span class="keyword">new</span> <span class="type">ModelTorrentOptions</span>
 {
-    data[index] *= <span class="number">2.0f</span>;
-}</code></pre>
+    ServerBaseUrl = <span class="string">"https://hub.spawndev.com:44365"</span>
+});
+
+<span class="keyword">var</span> weights = <span class="keyword">await</span> client.<span class="method">DownloadModelAsync</span>(
+    <span class="string">"Xenova/distilgpt2"</span>, <span class="string">"onnx/model.onnx"</span>);</code></pre>
                 </div>
             </div>
         </div>
@@ -114,12 +118,14 @@
         <div class="step">
             <div class="step-number">2</div>
             <div class="step-content">
-                <h3>Initialize All Backends</h3>
-                <p>Register all parallel backends in one call.</p>
+                <h3>Stream with Random Access</h3>
+                <p>Read any byte range — pieces download on demand as you read.</p>
                 <div class="code-block">
-                    <pre><code><span class="keyword">var</span> builder = Context.<span class="method">Create</span>();
-<span class="keyword">await</span> builder.<span class="method">AllAcceleratorsAsync</span>();
-<span class="keyword">using var</span> context = builder.<span class="method">ToContext</span>();</code></pre>
+                    <pre><code><span class="keyword">var</span> stream = <span class="keyword">await</span> client.<span class="method">GetModelStreamAsync</span>(
+    <span class="string">"Xenova/distilgpt2"</span>, <span class="string">"onnx/model.onnx"</span>);
+
+<span class="comment">// Read 64KB from offset 1MB — only those pieces download</span>
+<span class="keyword">var</span> chunk = <span class="keyword">await</span> stream.<span class="method">ReadAsync</span>(offset: <span class="number">1_000_000</span>, length: <span class="number">65536</span>);</code></pre>
                 </div>
             </div>
         </div>
@@ -127,47 +133,48 @@
         <div class="step">
             <div class="step-number">3</div>
             <div class="step-content">
-                <h3>Create Best Accelerator</h3>
-                <p>Automatically selects the best available backend.</p>
+                <h3>Run Your Own Server</h3>
+                <p>Tracker + web seed + HuggingFace proxy in a few lines.</p>
                 <div class="code-block">
-                    <pre><code><span class="comment">// Priority: WebGPU → WebGL → Wasm</span>
-<span class="keyword">using var</span> accelerator = <span class="keyword">await</span> context.<span class="method">CreatePreferredAcceleratorAsync</span>();</code></pre>
-                </div>
-            </div>
-        </div>
+                    <pre><code><span class="keyword">var</span> tracker = <span class="keyword">new</span> <span class="type">TorrentTracker</span>();
+<span class="keyword">var</span> proxy = <span class="keyword">new</span> <span class="type">HuggingFaceProxy</span>();
 
-        <div class="step">
-            <div class="step-number">4</div>
-            <div class="step-content">
-                <h3>Allocate &amp; Transfer</h3>
-                <p>Allocate a buffer on the device and copy your data to it.</p>
-                <div class="code-block">
-                    <pre><code><span class="keyword">float</span>[] data = <span class="keyword">new float</span>[length];
-<span class="keyword">using var</span> buffer = accelerator.<span class="method">Allocate1D</span>(data);</code></pre>
-                </div>
-            </div>
-        </div>
+app.<span class="method">MapWebTorrentServer</span>(tracker);
+app.<span class="method">MapHuggingFaceProxy</span>(proxy);
 
-        <div class="step">
-            <div class="step-number">5</div>
-            <div class="step-content">
-                <h3>Execute &amp; Retrieve</h3>
-                <p>Load, run, and read back — same API for all backends.</p>
-                <div class="code-block">
-                    <pre><code><span class="keyword">var</span> kernel = accelerator.<span class="method">LoadAutoGroupedStreamKernel</span>&lt;<span class="type">Index1D</span>, <span class="type">ArrayView</span>&lt;<span class="keyword">float</span>&gt;&gt;(MyKernel);
-<span class="method">kernel</span>((<span class="type">Index1D</span>)length, buffer.View);
-<span class="keyword">await</span> accelerator.<span class="method">SynchronizeAsync</span>();
-<span class="keyword">float</span>[] results = <span class="keyword">await</span> buffer.<span class="method">CopyToHostAsync</span>&lt;<span class="keyword">float</span>&gt;();</code></pre>
+<span class="comment">// Clients download from peers first, fall back to your cached HF data</span></code></pre>
                 </div>
             </div>
         </div>
     </div>
 </div>
 
+<div class="vision-section">
+    <h2 class="section-title">The Vision</h2>
+    <div class="vision-grid">
+        <div class="vision-card">
+            <div class="vision-icon">🏠</div>
+            <h3>Distributed Compute</h3>
+            <p>The P2P network we're building for model delivery creates a foundation for distributed GPU compute across devices. Every device in your home contributing to one shared AI compute pool.</p>
+        </div>
+        <div class="vision-card">
+            <div class="vision-icon">🧠</div>
+            <h3>P2P Backend for SpawnDev.ILGPU</h3>
+            <p>A 7th backend — <code>AcceleratorType.P2P</code> — distributes kernels across connected devices transparently. Same C# kernel code runs on 1 GPU or 10 GPUs across a household.</p>
+        </div>
+        <div class="vision-card">
+            <div class="vision-icon">🤝</div>
+            <h3>AI Agent Communication</h3>
+            <p>Custom wire protocol extensions for multi-agent coordination. Agents discover each other via the torrent swarm. Task distribution, consensus, collaboration — all browser-native.</p>
+        </div>
+    </div>
+</div>
+
 <footer class="demo-footer">
     <div class="footer-content">
-        <p>Built upon the excellent <a href="https://github.com/m4rs-mt/ILGPU" target="_blank">ILGPU</a> library by Marcel Koester and contributors.</p>
-        <p>&copy; 2024-2026 SpawnDev.WebTorrent Authors. Licensed under MIT / University of Illinois Open Source License.</p>
+        <p>Built by <a href="https://github.com/LostBeard" target="_blank">Todd Tanner (@@LostBeard)</a> and the SpawnDev team.</p>
+        <p>Part of the <a href="https://github.com/LostBeard/SpawnDev.ILGPU.ML" target="_blank">SpawnDev.ILGPU.ML</a> ecosystem — GPU-accelerated ML inference for .NET.</p>
+        <p>&copy; 2026 SpawnDev.WebTorrent Authors. MIT License.</p>
     </div>
 </footer>
 
@@ -203,7 +210,7 @@
     }
 
     .gradient-text {
-        background: linear-gradient(135deg, #00d4ff 0%, #7c3aed 50%, #f472b6 100%);
+        background: linear-gradient(135deg, #10b981 0%, #3b82f6 50%, #8b5cf6 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         background-clip: text;
@@ -216,10 +223,10 @@
     }
 
     .hero-description {
-        max-width: 600px;
+        max-width: 650px;
         margin: 0 auto 2rem auto;
         color: #64748b;
-        line-height: 1.6;
+        line-height: 1.7;
     }
 
     .hero-buttons {
@@ -241,14 +248,14 @@
     }
 
     .btn-primary {
-        background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+        background: linear-gradient(135deg, #10b981 0%, #3b82f6 100%);
         color: white;
         border: none;
     }
 
     .btn-primary:hover {
         transform: translateY(-2px);
-        box-shadow: 0 8px 20px rgba(59, 130, 246, 0.4);
+        box-shadow: 0 8px 20px rgba(16, 185, 129, 0.4);
     }
 
     .btn-secondary {
@@ -278,28 +285,20 @@
         padding: 2rem 0;
     }
 
-    .subsection-title {
-        font-size: 1.3rem;
-        font-weight: 700;
-        color: #e2e8f0;
-        margin: 2.5rem 0 0.25rem 0;
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
+    .problem-card {
+        max-width: 700px;
+        margin: 0 auto;
+        background: rgba(239, 68, 68, 0.08);
+        border: 1px solid rgba(239, 68, 68, 0.2);
+        border-radius: 12px;
+        padding: 1.5rem 2rem;
+        color: #cbd5e1;
+        line-height: 1.7;
+        text-align: center;
     }
 
-    .subsection-title:first-of-type {
-        margin-top: 1.5rem;
-    }
-
-    .subsection-icon {
-        font-size: 1.4rem;
-    }
-
-    .subsection-desc {
-        color: #64748b;
-        font-size: 0.95rem;
-        margin: 0 0 1.25rem 0;
+    .problem-card strong {
+        color: #f1f5f9;
     }
 
     .features-grid {
@@ -325,29 +324,17 @@
     .feature-card:hover {
         background: rgba(255, 255, 255, 0.08);
         transform: translateY(-4px);
-        border-color: rgba(139, 92, 246, 0.3);
+        border-color: rgba(16, 185, 129, 0.3);
     }
 
-    /* Browser highlight — cyan/blue tones */
-    .feature-card.feature-highlight-browser {
-        background: rgba(0, 212, 255, 0.06);
-        border-color: rgba(0, 212, 255, 0.2);
+    .feature-card.feature-highlight-p2p {
+        background: rgba(16, 185, 129, 0.06);
+        border-color: rgba(16, 185, 129, 0.2);
     }
 
-    .feature-card.feature-highlight-browser:hover {
-        background: rgba(0, 212, 255, 0.12);
-        border-color: rgba(0, 212, 255, 0.4);
-    }
-
-    /* Desktop highlight — green/amber tones */
-    .feature-card.feature-highlight-desktop {
-        background: rgba(52, 211, 153, 0.06);
-        border-color: rgba(52, 211, 153, 0.2);
-    }
-
-    .feature-card.feature-highlight-desktop:hover {
-        background: rgba(52, 211, 153, 0.12);
-        border-color: rgba(52, 211, 153, 0.4);
+    .feature-card.feature-highlight-p2p:hover {
+        background: rgba(16, 185, 129, 0.12);
+        border-color: rgba(16, 185, 129, 0.4);
     }
 
     .feature-icon {
@@ -375,9 +362,9 @@
         display: inline-block;
         font-size: 0.75rem;
         font-weight: 600;
-        color: #94a3b8;
-        background: rgba(255, 255, 255, 0.06);
-        border: 1px solid rgba(255, 255, 255, 0.1);
+        color: #10b981;
+        background: rgba(16, 185, 129, 0.1);
+        border: 1px solid rgba(16, 185, 129, 0.2);
         border-radius: 6px;
         padding: 0.2rem 0.6rem;
         align-self: flex-start;
@@ -408,13 +395,13 @@
         top: 50px;
         bottom: -20px;
         width: 2px;
-        background: linear-gradient(to bottom, rgba(139, 92, 246, 0.5), transparent);
+        background: linear-gradient(to bottom, rgba(16, 185, 129, 0.5), transparent);
     }
 
     .step-number {
         flex: 0 0 40px;
         height: 40px;
-        background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+        background: linear-gradient(135deg, #10b981 0%, #3b82f6 100%);
         color: white;
         border-radius: 50%;
         display: flex;
@@ -422,7 +409,7 @@
         justify-content: center;
         font-weight: 700;
         font-size: 1.25rem;
-        box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
+        box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
         z-index: 1;
     }
 
@@ -450,7 +437,7 @@
         padding: 1.25rem;
         overflow-x: auto;
         font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
-        font-size: 0.9rem;
+        font-size: 0.85rem;
         line-height: 1.6;
         box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
     }
@@ -459,15 +446,65 @@
         margin: 0;
     }
 
-    /* Syntax Highlighting */
     .keyword { color: #c678dd; }
     .method { color: #61afef; }
     .type { color: #e5c07b; }
     .number { color: #d19a66; }
+    .string { color: #98c379; }
     .comment { color: #5c6370; font-style: italic; }
 
-    @@media (max-width: 640px) {
-        .features-grid-3 {
+    .vision-section {
+        padding: 3rem 0;
+    }
+
+    .vision-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1.5rem;
+    }
+
+    .vision-card {
+        background: rgba(139, 92, 246, 0.06);
+        border: 1px solid rgba(139, 92, 246, 0.2);
+        border-radius: 12px;
+        padding: 1.5rem;
+        transition: all 0.2s ease;
+    }
+
+    .vision-card:hover {
+        background: rgba(139, 92, 246, 0.12);
+        border-color: rgba(139, 92, 246, 0.4);
+        transform: translateY(-4px);
+    }
+
+    .vision-icon {
+        font-size: 2rem;
+        margin-bottom: 1rem;
+    }
+
+    .vision-card h3 {
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: #f1f5f9;
+        margin-bottom: 0.5rem;
+    }
+
+    .vision-card p {
+        color: #94a3b8;
+        font-size: 0.9rem;
+        line-height: 1.5;
+    }
+
+    .vision-card code {
+        background: rgba(255, 255, 255, 0.1);
+        padding: 0.15rem 0.4rem;
+        border-radius: 4px;
+        font-size: 0.85rem;
+        color: #a78bfa;
+    }
+
+    @@media (max-width: 768px) {
+        .features-grid-3, .vision-grid {
             grid-template-columns: 1fr;
         }
         .step {
@@ -476,6 +513,9 @@
         }
         .step:not(:last-child)::after {
             display: none;
+        }
+        .hero-title {
+            font-size: 2rem;
         }
     }
 </style>

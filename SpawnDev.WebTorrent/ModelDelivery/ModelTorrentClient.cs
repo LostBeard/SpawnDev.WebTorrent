@@ -84,8 +84,9 @@ public class ModelTorrentClient : IAsyncDisposable
             catch { }
             if (pieceData != null)
             {
-                pieceManager.GetNextBlock(i); // mark as requested
-                await pieceManager.ReceiveBlockAsync(i, 0, pieceData);
+                // Use ReceiveCompletePieceAsync — web seed delivers entire pieces,
+                // not 16KB blocks. Bypasses block tracking, verifies hash directly.
+                await pieceManager.ReceiveCompletePieceAsync(i, pieceData);
             }
             progress?.Report((double)(i + 1) / totalPieces);
         }

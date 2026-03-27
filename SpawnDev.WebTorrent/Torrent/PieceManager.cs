@@ -159,6 +159,34 @@ public class PieceManager
     }
 
     /// <summary>
+    /// Receive a complete piece (all bytes at once). Used by web seed downloads
+    /// where the entire piece arrives as a single HTTP range response.
+    /// Bypasses block tracking — verifies hash and stores directly.
+    /// </summary>
+    public async Task<bool> ReceiveCompletePieceAsync(int pieceIndex, byte[] pieceData)
+    {
+        if (pieceIndex < 0 || pieceIndex >= PieceCount) return false;
+        var piece = _pieces[pieceIndex];
+        if (piece.State == DownloadState.Complete) return true;
+
+        if (_metadata.VerifyPiece(pieceIndex, pieceData))
+        {
+            await _store.PutAsync(pieceIndex, pieceData);
+            piece.State = DownloadState.Complete;
+            piece.ClearBlockData();
+            Bitfield[pieceIndex] = true;
+            CompletedCount++;
+            OnPieceComplete?.Invoke(pieceIndex);
+            return true;
+        }
+        else
+        {
+            piece.Reset();
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Cancel a block request (e.g., peer disconnected).
     /// </summary>
     public void CancelBlock(int pieceIndex, int offset)

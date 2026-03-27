@@ -106,4 +106,25 @@ public abstract partial class WebTorrentTestBase
         if (data.Length == 0) throw new Exception("Downloaded 0 bytes");
         Console.WriteLine($"[Integration] Downloaded {data.Length:N0} bytes via ModelTorrentClient");
     }
+
+    [TestMethod(Timeout = 120000)]
+    public async Task Integration_ModelTorrentClient_DownloadLargerFile()
+    {
+        if (!await IsServerAvailableAsync())
+            throw new UnsupportedTestException("Server not running at " + TestServerUrl);
+
+        // Download a larger ONNX model file to test multi-piece range requests
+        await using var client = new ModelTorrentClient(new ModelTorrentOptions
+        {
+            ServerBaseUrl = TestServerUrl,
+        });
+
+        var data = await client.DownloadModelAsync(
+            "Xenova/clip-vit-base-patch32", "onnx/text_model.onnx",
+            progress: new Progress<double>(p => Console.WriteLine($"[Integration] Large download: {p:P0}")));
+
+        if (data.Length == 0) throw new Exception("Downloaded 0 bytes");
+        if (data.Length < 1000) throw new Exception($"File too small: {data.Length} bytes — expected a model file");
+        Console.WriteLine($"[Integration] Downloaded {data.Length:N0} bytes (multi-piece) via ModelTorrentClient");
+    }
 }

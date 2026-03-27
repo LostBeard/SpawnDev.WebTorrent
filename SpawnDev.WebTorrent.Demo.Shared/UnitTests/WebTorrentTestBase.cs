@@ -1,6 +1,8 @@
 using SpawnDev.UnitTesting;
+using SpawnDev.WebTorrent.ModelDelivery;
 using SpawnDev.WebTorrent.Storage;
 using SpawnDev.WebTorrent.Torrent;
+using SpawnDev.WebTorrent.Transports;
 using SpawnDev.WebTorrent.Wire;
 
 namespace SpawnDev.WebTorrent.Demo.Shared.UnitTests;
@@ -665,6 +667,73 @@ public abstract partial class WebTorrentTestBase
             Array.Copy(data, i * 16384, expected, 0, 16384);
             if (stored == null || !stored.SequenceEqual(expected))
                 throw new Exception($"Stored piece {i} doesn't match original data");
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  ModelTorrentClient Tests
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task ModelTorrentClient_CreateAndDispose()
+    {
+        await using var client = new ModelTorrentClient(new ModelTorrentOptions
+        {
+            ServerBaseUrl = "https://localhost:5560",
+        });
+        // Verify client creates without errors
+    }
+
+    [TestMethod]
+    public async Task ModelStream_ReadAsync_Structure()
+    {
+        // Create a torrent from known data
+        var data = new byte[32768]; // 2 pieces
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 256);
+        var (_, metadata) = TorrentCreator.CreateFromBytes("model.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        // Pre-populate the store (simulating already-downloaded pieces)
+        var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+
+        // Store pieces manually
+        var piece0 = new byte[16384];
+        Array.Copy(data, 0, piece0, 0, 16384);
+        await store.PutAsync(0, piece0);
+        pm.MarkComplete(0);
+
+        var piece1 = new byte[16384];
+        Array.Copy(data, 16384, piece1, 0, 16384);
+        await store.PutAsync(1, piece1);
+        pm.MarkComplete(1);
+
+        // Create a ModelStream with pre-populated store (no web seed needed)
+        var webSeed = new WebSeedConnection(new HttpClient(), "http://unused", metadata);
+        await using var stream = new ModelStream(metadata, store, pm, webSeed);
+
+        // Read from offset 0
+        var read0 = await stream.ReadAsync(0, 100);
+        for (int i = 0; i < 100; i++)
+            if (read0[i] != (byte)(i % 256))
+                throw new Exception($"Read mismatch at offset {i}: expected {i % 256}, got {read0[i]}");
+
+        // Read across piece boundary (offset 16380, length 10 = 4 bytes from piece 0 + 6 from piece 1)
+        var readCross = await stream.ReadAsync(16380, 10);
+        for (int i = 0; i < 10; i++)
+        {
+            byte expected = (byte)((16380 + i) % 256);
+            if (readCross[i] != expected)
+                throw new Exception($"Cross-piece read mismatch at {16380 + i}: expected {expected}, got {readCross[i]}");
+        }
+
+        // Read from second piece
+        var read1 = await stream.ReadAsync(20000, 50);
+        for (int i = 0; i < 50; i++)
+        {
+            byte expected = (byte)((20000 + i) % 256);
+            if (read1[i] != expected)
+                throw new Exception($"Piece 1 read mismatch at {20000 + i}: expected {expected}, got {read1[i]}");
         }
     }
 }

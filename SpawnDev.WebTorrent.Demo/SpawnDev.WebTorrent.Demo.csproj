@@ -2,19 +2,37 @@
 
 	<PropertyGroup>
 		<TargetFramework>net10.0</TargetFramework>
-		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<CompressionEnabled>false</CompressionEnabled>
 		<PublishTrimmed>false</PublishTrimmed>
 		<RunAOTCompilation>false</RunAOTCompilation>
-		<PlaywrightMultiTest>
-		</PlaywrightMultiTest>
+		<PlaywrightMultiTest></PlaywrightMultiTest>
 	</PropertyGroup>
+
+	<ItemGroup>
+		<AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+			<_Parameter1>BuildTimestamp</_Parameter1>
+			<_Parameter2>$([System.DateTime]::UtcNow.ToString("yyyy-MM-dd HH:mm:ss")) UTC</_Parameter2>
+		</AssemblyAttribute>
+	</ItemGroup>
+
+	<ItemGroup>
+		<Content Remove="playwright-test.json" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<None Include="playwright-test.json" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.4" />
+		<PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="10.0.4" PrivateAssets="all" />
+	</ItemGroup>
 
 	<ItemGroup>
 		<ProjectReference Include="..\SpawnDev.WebTorrent\SpawnDev.WebTorrent.csproj" />
 		<ProjectReference Include="..\SpawnDev.WebTorrent.Demo.Shared\SpawnDev.WebTorrent.Demo.Shared.csproj" />
-		<PackageReference Include="SpawnDev.BlazorJS" Version="3.5.0" />
-		<PackageReference Include="SpawnDev.UnitTesting.Blazor" Version="2.4.2" />
 	</ItemGroup>
 
 </Project>

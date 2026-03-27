@@ -1,0 +1,33 @@
+@page "/tests"
+@using System.Reflection
+@using SpawnDev.UnitTesting.Blazor
+
+<PageTitle>Unit Tests</PageTitle>
+
+<h3>SpawnDev.WebTorrent — Unit Tests</h3>
+
+<hr />
+
+<UnitTestsView TypeInstanceResolver="TestTypeResolver" TestAssemblies="Assemblies" TestTypes="Types"></UnitTestsView>
+
+@code{
+    [Inject]
+    IServiceCollection ServiceDescriptors { get; set; } = default!;
+
+    List<Assembly>? Assemblies = new List<Assembly>();
+    List<Type>? Types = new List<Type>();
+    object? TestTypeResolver(Type testType)
+    {
+        if (testType == this.GetType()) return this;
+        return null;
+    }
+    protected override void OnInitialized()
+    {
+        Types = new List<Type> { this.GetType() };
+        Assemblies = new List<Assembly> { this.GetType().Assembly };
+        foreach (var descriptor in ServiceDescriptors)
+        {
+            Types.Add(descriptor.ServiceType);
+        }
+    }
+}

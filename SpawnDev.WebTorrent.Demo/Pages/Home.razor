@@ -1,0 +1,481 @@
+﻿@page "/"
+
+<PageTitle>SpawnDev.WebTorrent — GPU Compute Everywhere</PageTitle>
+
+<div class="hero-section">
+    <div class="hero-content">
+        <h1 class="hero-title">
+            <span class="gradient-text">GPU Compute Everywhere</span>
+        </h1>
+        <p class="hero-subtitle">Write once, run on WebGPU, WebGL, Wasm, CUDA, OpenCL, and CPU</p>
+        <p class="hero-description">
+            SpawnDev.WebTorrent extends the ILGPU compiler with six parallel backends — three for the browser and three for the desktop — all driven by a single C# codebase.
+            In the browser, WebGPU and WebGL dispatch to the GPU while Wasm compiles to multithreaded WebAssembly.
+            On desktop, the same kernels run natively on CUDA, OpenCL, and multithreaded CPU.
+            Every backend runs off the main thread, keeping your UI responsive.
+        </p>
+        <div class="hero-buttons">
+            <a href="fractals" class="btn btn-primary btn-lg">
+                <span class="btn-icon">🎨</span> Fractal Demo
+            </a>
+            <a href="benchmarks" class="btn btn-secondary btn-lg">
+                <span class="btn-icon">⏱️</span> Run Benchmarks
+            </a>
+        </div>
+    </div>
+</div>
+
+<div class="features-section">
+    <h2 class="section-title">Six Parallel Backends, One API</h2>
+
+    <h3 class="subsection-title"><span class="subsection-icon">🌐</span> Browser Backends</h3>
+    <p class="subsection-desc">GPU and multithreaded compute inside any modern browser — no plugins, no installs.</p>
+    <div class="features-grid features-grid-3">
+        <div class="feature-card feature-highlight-browser">
+            <div class="feature-icon">🎮</div>
+            <h3>WebGPU</h3>
+            <p>C# kernels transpiled to WGSL and dispatched to the GPU. Supports shared memory, atomics, 64-bit emulation, and auto-detects extensions like <code>shader-f16</code> and <code>subgroups</code> for broadcast &amp; warp shuffle operations.</p>
+            <div class="feature-tag">Fastest GPU path</div>
+        </div>
+        <div class="feature-card feature-highlight-browser">
+            <div class="feature-icon">🖼️</div>
+            <h3>WebGL</h3>
+            <p>C# kernels transpiled to GLSL ES 3.0 and executed on the GPU via Transform Feedback. Works on virtually every browser and device — including mobile, Safari, and older desktops. Full 64-bit emulation support.</p>
+            <div class="feature-tag">Widest compatibility</div>
+        </div>
+        <div class="feature-card feature-highlight-browser">
+            <div class="feature-icon">🧊</div>
+            <h3>Wasm</h3>
+            <p>Kernels compiled to native WebAssembly binary and dispatched to Web Workers for near-native parallel execution. Compatible with every browser that runs Blazor WASM — even with a single worker if SharedArrayBuffer is unavailable.</p>
+            <div class="feature-tag">CPU fallback</div>
+        </div>
+    </div>
+
+    <h3 class="subsection-title"><span class="subsection-icon">🖥️</span> Desktop Backends</h3>
+    <p class="subsection-desc">Full-speed native execution for console, WPF, and ASP.NET apps — same kernels, zero code changes.</p>
+    <div class="features-grid features-grid-3">
+        <div class="feature-card feature-highlight-desktop">
+            <div class="feature-icon">🟢</div>
+            <h3>CUDA</h3>
+            <p>Direct PTX compilation targeting NVIDIA GPUs. Maximum throughput with full hardware access — tensor cores, warp-level intrinsics, and the deepest driver optimization stack available.</p>
+            <div class="feature-tag">NVIDIA peak performance</div>
+        </div>
+        <div class="feature-card feature-highlight-desktop">
+            <div class="feature-icon">🔶</div>
+            <h3>OpenCL</h3>
+            <p>Cross-vendor GPU compute via OpenCL 3.0. Runs on NVIDIA, AMD, and Intel GPUs and integrated graphics. Ideal when CUDA is unavailable or when targeting the broadest desktop hardware.</p>
+            <div class="feature-tag">Cross-vendor GPU</div>
+        </div>
+        <div class="feature-card feature-highlight-desktop">
+            <div class="feature-icon">🔵</div>
+            <h3>CPU</h3>
+            <p>Multithreaded CPU accelerator using the ILGPU runtime. Valuable for debugging kernels with breakpoints, running on headless servers, and as a reliable fallback on machines without a GPU.</p>
+            <div class="feature-tag">Debug &amp; fallback</div>
+        </div>
+    </div>
+
+    <div class="features-grid features-grid-3" style="margin-top: 2.5rem;">
+        <div class="feature-card">
+            <div class="feature-icon">⚡</div>
+            <h3>ILGPU Compatible</h3>
+            <p>Use familiar ILGPU APIs — ArrayView, Index1D/2D/3D, math intrinsics, and more.</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">🔀</div>
+            <h3>Auto Backend Selection</h3>
+            <p>CreatePreferredAcceleratorAsync() picks the best backend: WebGPU → WebGL → Wasm (browser) or CUDA → OpenCL → CPU (desktop).</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">🌐</div>
+            <h3>Blazor WebAssembly</h3>
+            <p>Seamless integration with Blazor WASM via SpawnDev.BlazorJS. No native dependencies.</p>
+        </div>
+    </div>
+</div>
+
+<div class="code-section">
+    <h2 class="section-title">Quick Start</h2>
+    
+    <div class="steps-container">
+        <div class="step">
+            <div class="step-number">1</div>
+            <div class="step-content">
+                <h3>Write Your Kernel</h3>
+                <p>Define your computation in standard C# — runs on any backend.</p>
+                <div class="code-block">
+                    <pre><code><span class="keyword">static void</span> <span class="method">MyKernel</span>(<span class="type">Index1D</span> index, <span class="type">ArrayView</span>&lt;<span class="keyword">float</span>&gt; data)
+{
+    data[index] *= <span class="number">2.0f</span>;
+}</code></pre>
+                </div>
+            </div>
+        </div>
+
+        <div class="step">
+            <div class="step-number">2</div>
+            <div class="step-content">
+                <h3>Initialize All Backends</h3>
+                <p>Register all parallel backends in one call.</p>
+                <div class="code-block">
+                    <pre><code><span class="keyword">var</span> builder = Context.<span class="method">Create</span>();
+<span class="keyword">await</span> builder.<span class="method">AllAcceleratorsAsync</span>();
+<span class="keyword">using var</span> context = builder.<span class="method">ToContext</span>();</code></pre>
+                </div>
+            </div>
+        </div>
+
+        <div class="step">
+            <div class="step-number">3</div>
+            <div class="step-content">
+                <h3>Create Best Accelerator</h3>
+                <p>Automatically selects the best available backend.</p>
+                <div class="code-block">
+                    <pre><code><span class="comment">// Priority: WebGPU → WebGL → Wasm</span>
+<span class="keyword">using var</span> accelerator = <span class="keyword">await</span> context.<span class="method">CreatePreferredAcceleratorAsync</span>();</code></pre>
+                </div>
+            </div>
+        </div>
+
+        <div class="step">
+            <div class="step-number">4</div>
+            <div class="step-content">
+                <h3>Allocate &amp; Transfer</h3>
+                <p>Allocate a buffer on the device and copy your data to it.</p>
+                <div class="code-block">
+                    <pre><code><span class="keyword">float</span>[] data = <span class="keyword">new float</span>[length];
+<span class="keyword">using var</span> buffer = accelerator.<span class="method">Allocate1D</span>(data);</code></pre>
+                </div>
+            </div>
+        </div>
+
+        <div class="step">
+            <div class="step-number">5</div>
+            <div class="step-content">
+                <h3>Execute &amp; Retrieve</h3>
+                <p>Load, run, and read back — same API for all backends.</p>
+                <div class="code-block">
+                    <pre><code><span class="keyword">var</span> kernel = accelerator.<span class="method">LoadAutoGroupedStreamKernel</span>&lt;<span class="type">Index1D</span>, <span class="type">ArrayView</span>&lt;<span class="keyword">float</span>&gt;&gt;(MyKernel);
+<span class="method">kernel</span>((<span class="type">Index1D</span>)length, buffer.View);
+<span class="keyword">await</span> accelerator.<span class="method">SynchronizeAsync</span>();
+<span class="keyword">float</span>[] results = <span class="keyword">await</span> buffer.<span class="method">CopyToHostAsync</span>&lt;<span class="keyword">float</span>&gt;();</code></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<footer class="demo-footer">
+    <div class="footer-content">
+        <p>Built upon the excellent <a href="https://github.com/m4rs-mt/ILGPU" target="_blank">ILGPU</a> library by Marcel Koester and contributors.</p>
+        <p>&copy; 2024-2026 SpawnDev.WebTorrent Authors. Licensed under MIT / University of Illinois Open Source License.</p>
+    </div>
+</footer>
+
+<style>
+    .demo-footer {
+        margin-top: 4rem;
+        padding: 2rem 1rem;
+        border-top: 1px solid rgba(255, 255, 255, 0.1);
+        text-align: center;
+        color: #64748b;
+        font-size: 0.9rem;
+    }
+
+    .footer-content a {
+        color: #3b82f6;
+        text-decoration: none;
+    }
+
+    .footer-content a:hover {
+        text-decoration: underline;
+    }
+
+    .hero-section {
+        text-align: center;
+        padding: 3rem 1rem;
+        margin-bottom: 2rem;
+    }
+
+    .hero-title {
+        font-size: 3rem;
+        font-weight: 800;
+        margin-bottom: 0.5rem;
+    }
+
+    .gradient-text {
+        background: linear-gradient(135deg, #00d4ff 0%, #7c3aed 50%, #f472b6 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+    }
+
+    .hero-subtitle {
+        font-size: 1.5rem;
+        color: #94a3b8;
+        margin-bottom: 1rem;
+    }
+
+    .hero-description {
+        max-width: 600px;
+        margin: 0 auto 2rem auto;
+        color: #64748b;
+        line-height: 1.6;
+    }
+
+    .hero-buttons {
+        display: flex;
+        gap: 1rem;
+        justify-content: center;
+        flex-wrap: wrap;
+    }
+
+    .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.75rem 1.5rem;
+        border-radius: 8px;
+        font-weight: 600;
+        text-decoration: none;
+        transition: all 0.2s ease;
+    }
+
+    .btn-primary {
+        background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+        color: white;
+        border: none;
+    }
+
+    .btn-primary:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 20px rgba(59, 130, 246, 0.4);
+    }
+
+    .btn-secondary {
+        background: rgba(255, 255, 255, 0.1);
+        color: #e2e8f0;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+
+    .btn-secondary:hover {
+        background: rgba(255, 255, 255, 0.15);
+        transform: translateY(-2px);
+    }
+
+    .btn-icon {
+        font-size: 1.1rem;
+    }
+
+    .section-title {
+        font-size: 1.75rem;
+        font-weight: 700;
+        margin-bottom: 1.5rem;
+        text-align: center;
+        color: #f1f5f9;
+    }
+
+    .features-section {
+        padding: 2rem 0;
+    }
+
+    .subsection-title {
+        font-size: 1.3rem;
+        font-weight: 700;
+        color: #e2e8f0;
+        margin: 2.5rem 0 0.25rem 0;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .subsection-title:first-of-type {
+        margin-top: 1.5rem;
+    }
+
+    .subsection-icon {
+        font-size: 1.4rem;
+    }
+
+    .subsection-desc {
+        color: #64748b;
+        font-size: 0.95rem;
+        margin: 0 0 1.25rem 0;
+    }
+
+    .features-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 1.5rem;
+    }
+
+    .features-grid-3 {
+        grid-template-columns: repeat(3, 1fr);
+    }
+
+    .feature-card {
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 12px;
+        padding: 1.5rem;
+        transition: all 0.2s ease;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .feature-card:hover {
+        background: rgba(255, 255, 255, 0.08);
+        transform: translateY(-4px);
+        border-color: rgba(139, 92, 246, 0.3);
+    }
+
+    /* Browser highlight — cyan/blue tones */
+    .feature-card.feature-highlight-browser {
+        background: rgba(0, 212, 255, 0.06);
+        border-color: rgba(0, 212, 255, 0.2);
+    }
+
+    .feature-card.feature-highlight-browser:hover {
+        background: rgba(0, 212, 255, 0.12);
+        border-color: rgba(0, 212, 255, 0.4);
+    }
+
+    /* Desktop highlight — green/amber tones */
+    .feature-card.feature-highlight-desktop {
+        background: rgba(52, 211, 153, 0.06);
+        border-color: rgba(52, 211, 153, 0.2);
+    }
+
+    .feature-card.feature-highlight-desktop:hover {
+        background: rgba(52, 211, 153, 0.12);
+        border-color: rgba(52, 211, 153, 0.4);
+    }
+
+    .feature-icon {
+        font-size: 2rem;
+        margin-bottom: 1rem;
+    }
+
+    .feature-card h3 {
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: #f1f5f9;
+        margin-bottom: 0.5rem;
+    }
+
+    .feature-card p {
+        color: #94a3b8;
+        font-size: 0.9rem;
+        line-height: 1.5;
+        margin: 0;
+        flex: 1;
+    }
+
+    .feature-tag {
+        margin-top: 0.75rem;
+        display: inline-block;
+        font-size: 0.75rem;
+        font-weight: 600;
+        color: #94a3b8;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 6px;
+        padding: 0.2rem 0.6rem;
+        align-self: flex-start;
+    }
+
+    .code-section {
+        padding: 4rem 0;
+        max-width: 900px;
+        margin: 0 auto;
+    }
+
+    .steps-container {
+        display: flex;
+        flex-direction: column;
+        gap: 3rem;
+    }
+
+    .step {
+        display: flex;
+        gap: 2rem;
+        position: relative;
+    }
+
+    .step:not(:last-child)::after {
+        content: '';
+        position: absolute;
+        left: 20px;
+        top: 50px;
+        bottom: -20px;
+        width: 2px;
+        background: linear-gradient(to bottom, rgba(139, 92, 246, 0.5), transparent);
+    }
+
+    .step-number {
+        flex: 0 0 40px;
+        height: 40px;
+        background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+        color: white;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 700;
+        font-size: 1.25rem;
+        box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
+        z-index: 1;
+    }
+
+    .step-content {
+        flex: 1;
+    }
+
+    .step-content h3 {
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: #f1f5f9;
+        margin-bottom: 0.5rem;
+    }
+
+    .step-content p {
+        color: #94a3b8;
+        margin-bottom: 1rem;
+        font-size: 1rem;
+    }
+
+    .code-block {
+        background: #0f172a;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 12px;
+        padding: 1.25rem;
+        overflow-x: auto;
+        font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+        font-size: 0.9rem;
+        line-height: 1.6;
+        box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
+    }
+
+    .code-block pre {
+        margin: 0;
+    }
+
+    /* Syntax Highlighting */
+    .keyword { color: #c678dd; }
+    .method { color: #61afef; }
+    .type { color: #e5c07b; }
+    .number { color: #d19a66; }
+    .comment { color: #5c6370; font-style: italic; }
+
+    @@media (max-width: 640px) {
+        .features-grid-3 {
+            grid-template-columns: 1fr;
+        }
+        .step {
+            flex-direction: column;
+            gap: 1rem;
+        }
+        .step:not(:last-child)::after {
+            display: none;
+        }
+    }
+</style>

@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+	<PropertyGroup>
+		<TargetFramework>net10.0</TargetFramework>
+		<LangVersion>latest</LangVersion>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+		<Description>SpawnDev WebTorrent server application. Combines tracker, web seed, and HuggingFace proxy. Doubles as test server for the Blazor WASM unit tests.</Description>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\SpawnDev.WebTorrent.Server\SpawnDev.WebTorrent.Server.csproj" />
+		<ProjectReference Include="..\SpawnDev.WebTorrent.Server.HuggingFace\SpawnDev.WebTorrent.Server.HuggingFace.csproj" />
+	</ItemGroup>
+
+</Project>

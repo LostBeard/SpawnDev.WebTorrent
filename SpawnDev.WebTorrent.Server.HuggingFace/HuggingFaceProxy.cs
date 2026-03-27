@@ -1,0 +1,242 @@
+using System.Security.Cryptography;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
+using SpawnDev.WebTorrent.Torrent;
+
+namespace SpawnDev.WebTorrent.Server.HuggingFace;
+
+/// <summary>
+/// HuggingFace CDN proxy with local caching and torrent creation.
+/// Fetches model files from HuggingFace on first request, caches locally,
+/// generates .torrent files for P2P distribution, and serves as web seed.
+///
+/// Flow:
+///   1. Client requests model file via torrent
+///   2. If cached: serve from local storage (web seed)
+///   3. If not cached: fetch from HuggingFace, cache, then serve
+///   4. .torrent files auto-generated for each model file
+///
+/// Usage:
+///   var proxy = new HuggingFaceProxy(options);
+///   app.MapHuggingFaceProxy(proxy);
+/// </summary>
+public class HuggingFaceProxy
+{
+    private readonly HuggingFaceProxyOptions _options;
+    private readonly HttpClient _httpClient;
+    private readonly SemaphoreSlim _downloadLock = new(3); // max concurrent HF downloads
+
+    public HuggingFaceProxy(HuggingFaceProxyOptions? options = null)
+    {
+        _options = options ?? new HuggingFaceProxyOptions();
+        _httpClient = new HttpClient();
+        _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("SpawnDev.WebTorrent.Server/1.0");
+        Directory.CreateDirectory(_options.CacheDirectory);
+    }
+
+    /// <summary>
+    /// Get or fetch a model file. Returns the local file path.
+    /// If not cached, downloads from HuggingFace and caches.
+    /// </summary>
+    public async Task<string?> GetOrFetchAsync(string repoId, string filePath, CancellationToken ct = default)
+    {
+        var localPath = GetCachePath(repoId, filePath);
+        if (File.Exists(localPath)) return localPath;
+
+        await _downloadLock.WaitAsync(ct);
+        try
+        {
+            // Double-check after acquiring lock
+            if (File.Exists(localPath)) return localPath;
+
+            var url = $"https://huggingface.co/{repoId}/resolve/main/{filePath}";
+            Console.WriteLine($"[HF Proxy] Downloading: {url}");
+
+            using var response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                Console.WriteLine($"[HF Proxy] Failed: {response.StatusCode} for {url}");
+                return null;
+            }
+
+            var dir = Path.GetDirectoryName(localPath);
+            if (dir != null) Directory.CreateDirectory(dir);
+
+            using var stream = await response.Content.ReadAsStreamAsync(ct);
+            using var fileStream = File.Create(localPath);
+            await stream.CopyToAsync(fileStream, ct);
+
+            Console.WriteLine($"[HF Proxy] Cached: {localPath} ({new FileInfo(localPath).Length:N0} bytes)");
+            return localPath;
+        }
+        finally
+        {
+            _downloadLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Generate a .torrent file for a cached model file.
+    /// Includes web seed pointing back to this server and the HuggingFace CDN.
+    /// </summary>
+    public async Task<byte[]?> CreateTorrentAsync(string repoId, string filePath,
+        string serverBaseUrl, CancellationToken ct = default)
+    {
+        var localPath = await GetOrFetchAsync(repoId, filePath, ct);
+        if (localPath == null) return null;
+
+        var fileInfo = new FileInfo(localPath);
+        int pieceLength = CalculatePieceLength(fileInfo.Length);
+
+        // Compute piece hashes
+        var pieceHashes = new List<byte[]>();
+        using var fs = File.OpenRead(localPath);
+        var buffer = new byte[pieceLength];
+        int bytesRead;
+        while ((bytesRead = await fs.ReadAsync(buffer.AsMemory(0, pieceLength), ct)) > 0)
+        {
+            var hash = SHA1.HashData(buffer.AsSpan(0, bytesRead));
+            pieceHashes.Add(hash);
+        }
+
+        // Build torrent metadata
+        var metadata = new TorrentMetadata
+        {
+            Name = Path.GetFileName(filePath),
+            PieceLength = pieceLength,
+            TotalLength = fileInfo.Length,
+            PieceHashes = pieceHashes.ToArray(),
+            AnnounceList = _options.TrackerUrls.Select(t => new[] { t }).ToArray(),
+            UrlList = new[]
+            {
+                $"{serverBaseUrl}/hf/{repoId}/{filePath}",
+                $"https://huggingface.co/{repoId}/resolve/main/{filePath}",
+            },
+            CreatedBy = "SpawnDev.WebTorrent.Server.HuggingFace",
+            CreationDate = DateTimeOffset.UtcNow,
+            Files = new[]
+            {
+                new TorrentFile
+                {
+                    Path = Path.GetFileName(filePath),
+                    Length = fileInfo.Length,
+                    Offset = 0,
+                    StartPiece = 0,
+                    EndPiece = pieceHashes.Count - 1,
+                }
+            },
+        };
+
+        // TODO: Encode to .torrent format using BencodeEncoder
+        // For now, return the metadata as a placeholder
+        return System.Text.Encoding.UTF8.GetBytes($"torrent:{repoId}/{filePath}");
+    }
+
+    /// <summary>Handle a proxied request for a HuggingFace model file.</summary>
+    public async Task HandleRequest(HttpContext context, string repoId, string filePath)
+    {
+        var localPath = await GetOrFetchAsync(repoId, filePath, context.RequestAborted);
+        if (localPath == null)
+        {
+            context.Response.StatusCode = 404;
+            return;
+        }
+
+        var fileInfo = new FileInfo(localPath);
+        context.Response.ContentType = "application/octet-stream";
+        context.Response.Headers["Accept-Ranges"] = "bytes";
+
+        // Support range requests for web seed compatibility
+        if (context.Request.Headers.TryGetValue("Range", out var rangeHeader))
+        {
+            var range = rangeHeader.ToString();
+            if (range.StartsWith("bytes="))
+            {
+                var parts = range.Substring(6).Split('-');
+                long start = long.Parse(parts[0]);
+                long end = parts.Length > 1 && !string.IsNullOrEmpty(parts[1])
+                    ? long.Parse(parts[1])
+                    : fileInfo.Length - 1;
+
+                int length = (int)(end - start + 1);
+                context.Response.StatusCode = 206;
+                context.Response.Headers["Content-Range"] = $"bytes {start}-{end}/{fileInfo.Length}";
+                context.Response.ContentLength = length;
+
+                using var fs = File.OpenRead(localPath);
+                fs.Seek(start, SeekOrigin.Begin);
+                var buffer = new byte[Math.Min(length, 65536)];
+                int remaining = length;
+                while (remaining > 0)
+                {
+                    int toRead = Math.Min(remaining, buffer.Length);
+                    int read = await fs.ReadAsync(buffer.AsMemory(0, toRead));
+                    if (read == 0) break;
+                    await context.Response.Body.WriteAsync(buffer.AsMemory(0, read));
+                    remaining -= read;
+                }
+                return;
+            }
+        }
+
+        context.Response.ContentLength = fileInfo.Length;
+        await context.Response.SendFileAsync(localPath);
+    }
+
+    private string GetCachePath(string repoId, string filePath)
+        => Path.Combine(_options.CacheDirectory, repoId.Replace('/', '_'), filePath.Replace('/', Path.DirectorySeparatorChar));
+
+    /// <summary>Calculate optimal piece length based on file size.</summary>
+    private static int CalculatePieceLength(long fileSize)
+    {
+        // Target ~1000-2000 pieces. Min 16KB, max 4MB.
+        if (fileSize < 16 * 1024 * 1024) return 16 * 1024;        // <16MB: 16KB pieces
+        if (fileSize < 128 * 1024 * 1024) return 64 * 1024;       // <128MB: 64KB pieces
+        if (fileSize < 512 * 1024 * 1024) return 256 * 1024;      // <512MB: 256KB pieces
+        if (fileSize < 2L * 1024 * 1024 * 1024) return 1024 * 1024; // <2GB: 1MB pieces
+        return 4 * 1024 * 1024;                                     // >=2GB: 4MB pieces
+    }
+}
+
+/// <summary>HuggingFace proxy configuration.</summary>
+public class HuggingFaceProxyOptions
+{
+    /// <summary>Local directory for cached model files.</summary>
+    public string CacheDirectory { get; set; } = "hf-cache";
+
+    /// <summary>Tracker URLs to include in generated .torrent files.</summary>
+    public string[] TrackerUrls { get; set; } = new[]
+    {
+        "wss://tracker.webtorrent.dev",
+    };
+}
+
+/// <summary>Extension methods for registering HuggingFace proxy endpoints.</summary>
+public static class HuggingFaceProxyExtensions
+{
+    /// <summary>Add HuggingFace proxy endpoints to the application.</summary>
+    public static void MapHuggingFaceProxy(this Microsoft.AspNetCore.Routing.IEndpointRouteBuilder app,
+        HuggingFaceProxy proxy)
+    {
+        // Serve cached model files (web seed endpoint)
+        app.MapGet("/hf/{repoId}/{**filePath}", async (HttpContext ctx, string repoId, string filePath) =>
+        {
+            await proxy.HandleRequest(ctx, repoId, filePath);
+        });
+
+        // Get .torrent file for a HuggingFace model
+        app.MapGet("/torrent/{repoId}/{**filePath}", async (HttpContext ctx, string repoId, string filePath) =>
+        {
+            var serverUrl = $"{ctx.Request.Scheme}://{ctx.Request.Host}";
+            var torrentBytes = await proxy.CreateTorrentAsync(repoId, filePath, serverUrl, ctx.RequestAborted);
+            if (torrentBytes == null)
+            {
+                ctx.Response.StatusCode = 404;
+                return;
+            }
+            ctx.Response.ContentType = "application/x-bittorrent";
+            await ctx.Response.Body.WriteAsync(torrentBytes);
+        });
+    }
+}

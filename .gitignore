@@ -1,0 +1,39 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+*.userprefs
+.vs/
+*.DotSettings.user
+
+## Build
+[Bb]uild/
+[Dd]ebug/
+[Rr]elease/
+*.nupkg
+*.snupkg
+
+## IDE
+.idea/
+*.swp
+*~
+
+## OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+## Test results
+TestResults/
+_mldump/
+_debugdump/
+WGSLDumps/
+
+## Cache
+hf-cache/
+seed-data/
+
+## Node
+node_modules/
+package-lock.json

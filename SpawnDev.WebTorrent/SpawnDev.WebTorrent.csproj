@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFramework>net10.0</TargetFramework>
+		<LangVersion>latest</LangVersion>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+		<Version>1.0.0-prerelease.1</Version>
+		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
+		<GenerateDocumentationFile>true</GenerateDocumentationFile>
+		<EmbedAllSources>true</EmbedAllSources>
+		<DebugType>Embedded</DebugType>
+		<NoWarn>$(NoWarn);CS1591</NoWarn>
+		<Title>SpawnDev.WebTorrent</Title>
+		<Authors>LostBeard</Authors>
+		<Description>Pure C# BitTorrent/WebTorrent client. No JavaScript dependencies. Runs on desktop (.NET) and browser (Blazor WASM). Supports random-access streaming for ML model delivery.</Description>
+		<PackageProjectUrl>https://github.com/LostBeard/SpawnDev.WebTorrent</PackageProjectUrl>
+		<PackageReadmeFile>README.md</PackageReadmeFile>
+		<PackageLicenseFile>LICENSE.txt</PackageLicenseFile>
+		<PackageIcon>icon-128.png</PackageIcon>
+		<RepositoryUrl>https://github.com/LostBeard/SpawnDev.WebTorrent.git</RepositoryUrl>
+		<RepositoryType>git</RepositoryType>
+		<PackageTags>BitTorrent;WebTorrent;P2P;Torrent;Blazor;WebAssembly;Streaming;MachineLearning;ModelDelivery</PackageTags>
+		<NoPackageAnalysis>true</NoPackageAnalysis>
+		<IsPackable>true</IsPackable>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<None Include="Assets\icon-128.png" Pack="true" PackagePath="\" />
+		<None Include="..\LICENSE.txt" Pack="true" PackagePath="\" />
+		<None Include="..\README.md" Pack="true" PackagePath="\" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<SupportedPlatform Include="browser" />
+		<SupportedPlatform Include="windows" />
+		<SupportedPlatform Include="linux" />
+		<SupportedPlatform Include="macos" />
+	</ItemGroup>
+
+</Project>

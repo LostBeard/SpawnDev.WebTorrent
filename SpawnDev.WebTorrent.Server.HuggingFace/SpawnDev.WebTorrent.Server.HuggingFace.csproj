@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFramework>net10.0</TargetFramework>
+		<LangVersion>latest</LangVersion>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+		<Description>HuggingFace CDN proxy for SpawnDev.WebTorrent.Server. Fetches model files from HuggingFace, caches locally, creates torrents, and serves as web seed. Optional extension — server works without it.</Description>
+		<Authors>Todd Tanner</Authors>
+		<PackageId>SpawnDev.WebTorrent.Server.HuggingFace</PackageId>
+		<PackageLicenseExpression>MIT</PackageLicenseExpression>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\SpawnDev.WebTorrent.Server\SpawnDev.WebTorrent.Server.csproj" />
+		<FrameworkReference Include="Microsoft.AspNetCore.App" />
+	</ItemGroup>
+
+</Project>

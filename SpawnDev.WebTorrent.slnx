@@ -1,0 +1,8 @@
+<Solution>
+  <Project Path="SpawnDev.WebTorrent\SpawnDev.WebTorrent.csproj" />
+  <Project Path="SpawnDev.WebTorrent.Server\SpawnDev.WebTorrent.Server.csproj" />
+  <Project Path="SpawnDev.WebTorrent.Server.HuggingFace\SpawnDev.WebTorrent.Server.HuggingFace.csproj" />
+  <Project Path="SpawnDev.WebTorrent.ServerApp\SpawnDev.WebTorrent.ServerApp.csproj" />
+  <Project Path="SpawnDev.WebTorrent.Demo.Shared\SpawnDev.WebTorrent.Demo.Shared.csproj" />
+  <Project Path="SpawnDev.WebTorrent.Demo\SpawnDev.WebTorrent.Demo.csproj" />
+</Solution>

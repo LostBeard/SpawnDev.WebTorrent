@@ -60,14 +60,28 @@ public class ModelTorrentClient : IAsyncDisposable
             ?? new MemoryChunkStore(metadata.PieceLength);
         var pieceManager = new PieceManager(metadata, store);
 
-        // 4. Download all pieces via web seed
-        var webSeed = new WebSeedConnection(_httpClient,
-            $"{_options.ServerBaseUrl}/hf/{repoId}", metadata);
+        // 4. Download all pieces via direct HTTP range requests to the web seed
+        var fileUrl = $"{_options.ServerBaseUrl}/hf/{repoId}/{filePath}";
 
         int totalPieces = metadata.PieceCount;
         for (int i = 0; i < totalPieces; i++)
         {
-            var pieceData = await webSeed.DownloadPieceAsync(i, ct);
+            long pieceStart = (long)i * metadata.PieceLength;
+            int pieceLength = (i == totalPieces - 1)
+                ? (int)(metadata.TotalLength - pieceStart)
+                : metadata.PieceLength;
+            long pieceEnd = pieceStart + pieceLength - 1;
+
+            byte[]? pieceData = null;
+            try
+            {
+                using var req = new HttpRequestMessage(HttpMethod.Get, fileUrl);
+                req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(pieceStart, pieceEnd);
+                using var resp = await _httpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+                if (resp.IsSuccessStatusCode || resp.StatusCode == System.Net.HttpStatusCode.PartialContent)
+                    pieceData = await resp.Content.ReadAsByteArrayAsync(ct);
+            }
+            catch { }
             if (pieceData != null)
             {
                 pieceManager.GetNextBlock(i); // mark as requested

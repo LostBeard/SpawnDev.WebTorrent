@@ -163,6 +163,8 @@
                                     <div class="qb-info-row"><span class="qb-label">Comment</span><span>@(sel.Swarm.Comment ?? "—")</span></div>
                                     <div class="qb-info-row"><span class="qb-label">Created</span><span>@(sel.Swarm.Created?.ToString("yyyy-MM-dd HH:mm") ?? "—")</span></div>
                                     <div class="qb-info-row"><span class="qb-label">Private</span><span>@(sel.Swarm.IsPrivate ? "Yes" : "No")</span></div>
+                                    <div class="qb-info-row"><span class="qb-label">Piece Length</span><span>@(sel.Swarm.PieceLength > 0 ? FormatBytes(sel.Swarm.PieceLength) : "—")</span></div>
+                                    <div class="qb-info-row"><span class="qb-label">Total Size</span><span>@(sel.Swarm.Length > 0 ? FormatBytes(sel.Swarm.Length) : "—")</span></div>
                                 </div>
                                 <div class="qb-action-row">
                                     <button class="qb-action-btn" @onclick="() => CopyMagnet(sel)" title="Copy magnet link">&#128279; Copy Magnet</button>

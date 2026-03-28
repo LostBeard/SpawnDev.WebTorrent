@@ -36,6 +36,10 @@
                     Seed File
                     <InputFile OnChange="SeedFromFile" style="display:none" />
                 </label>
+                <label class="qb-chip" style="border-color:#f59e0b;color:#f59e0b;cursor:pointer" title="Open a .torrent file">
+                    Open .torrent
+                    <InputFile OnChange="OpenTorrentFile" accept=".torrent" style="display:none" />
+                </label>
             </div>
         </div>
         <div class="qb-toolbar-actions">
@@ -545,6 +549,37 @@
 
         Log($"Seeding: {file.Name} ({FormatBytes(data.Length)}), {swarm.PieceManager!.PieceCount} pieces");
         StateHasChanged();
+    }
+
+    private async Task OpenTorrentFile(InputFileChangeEventArgs e)
+    {
+        if (_client == null) return;
+        var file = e.File;
+        if (file == null) return;
+
+        using var ms = new System.IO.MemoryStream();
+        await file.OpenReadStream(maxAllowedSize: 10485760).CopyToAsync(ms); // 10MB max for .torrent
+        var torrentBytes = ms.ToArray();
+
+        try
+        {
+            var metadata = TorrentParser.Parse(torrentBytes);
+            var hash = Convert.ToHexString(metadata.InfoHash).ToLowerInvariant();
+            if (_torrents.Any(t => t.InfoHashFull == hash)) { Log($"Already added: {metadata.Name}"); return; }
+
+            var swarm = await _client.AddAsync(metadata, new AddTorrentOptions { AsyncFileSystem = _asyncFs });
+            var entry = new TorrentEntry { Swarm = swarm, Name = metadata.Name, InfoHashFull = hash, InfoHashShort = hash[..8] + "..." };
+            _torrents.Add(entry); _selectedTorrent = entry;
+
+            foreach (var ws in metadata.UrlList) swarm.AddWebSeed(ws.TrimEnd('/'));
+            WireSwarmEvents(entry);
+            swarm.StartDownload();
+            _ = ConnectTrackers(entry, swarm.MagnetURI);
+
+            Log($"Opened: {metadata.Name} ({FormatBytes(metadata.TotalLength)}, {metadata.PieceCount} pieces)");
+            StateHasChanged();
+        }
+        catch (Exception ex) { Log($"Invalid .torrent: {ex.Message}"); }
     }
 
     private void PauseAll() { foreach (var t in _torrents) t.Swarm.Pause(); }

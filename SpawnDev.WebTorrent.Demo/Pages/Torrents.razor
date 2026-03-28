@@ -99,7 +99,8 @@
                                 var progress = entry.Progress;
                                 var isSelected = _selectedTorrent == entry;
                                 <tr class="@(isSelected ? "selected" : "") @(entry.Swarm.Paused ? "paused" : "")"
-                                    @onclick="() => SelectTorrent(entry)">
+                                    @onclick="() => SelectTorrent(entry)"
+                                    @oncontextmenu="(e) => ShowContextMenu(entry, e)" @oncontextmenu:preventDefault>
                                     <td class="qb-col-status">
                                         <span class="qb-status-dot @entry.StatusClass"></span>
                                     </td>
@@ -309,6 +310,33 @@
         <span>v1.1.0</span>
     </div>
 
+    @* ═══ Context Menu ═══ *@
+    @if (_contextMenuOpen)
+    {
+        <div class="qb-ctx-backdrop" @onclick="() => _contextMenuOpen = false"></div>
+        <div class="qb-ctx-menu" style="left:@(_ctxX)px;top:@(_ctxY)px">
+            @if (_contextEntry != null)
+            {
+                var ce = _contextEntry;
+                @if (ce.Swarm.Paused)
+                {
+                    <div class="qb-ctx-item" @onclick="() => { ce.Swarm.Resume(); _contextMenuOpen = false; }">&#9654; Resume</div>
+                }
+                else
+                {
+                    <div class="qb-ctx-item" @onclick="() => { ce.Swarm.Pause(); _contextMenuOpen = false; }">&#9646;&#9646; Pause</div>
+                }
+                <div class="qb-ctx-item" @onclick="() => { CopyMagnet(ce); _contextMenuOpen = false; }">&#128279; Copy Magnet URI</div>
+                @if (ce.Swarm.TorrentFileBytes != null)
+                {
+                    <div class="qb-ctx-item" @onclick="() => { ExportTorrent(ce); _contextMenuOpen = false; }">&#128190; Export .torrent</div>
+                }
+                <div class="qb-ctx-sep"></div>
+                <div class="qb-ctx-item qb-ctx-danger" @onclick="() => { RemoveTorrent(ce); _contextMenuOpen = false; }">&#10005; Remove</div>
+            }
+        </div>
+    }
+
     @* ═══ Media Modal ═══ *@
     @if (_mediaOpen)
     {
@@ -364,6 +392,11 @@
     private bool _settingsOpen;
     private int _downloadLimitKBs, _uploadLimitKBs;
     private double _globalDownSpeed, _globalUpSpeed;
+
+    // Context menu
+    private bool _contextMenuOpen;
+    private TorrentEntry? _contextEntry;
+    private double _ctxX, _ctxY;
 
     // Media
     private bool _mediaOpen, _mediaLoading;
@@ -595,6 +628,15 @@
         Log($"Removed: {entry.DisplayName}");
     }
 
+    private void ShowContextMenu(TorrentEntry entry, MouseEventArgs e)
+    {
+        _contextEntry = entry;
+        _ctxX = e.ClientX;
+        _ctxY = e.ClientY;
+        _contextMenuOpen = true;
+        SelectTorrent(entry);
+    }
+
     private void SetFilePriority(TorrentFileStream file, string? priority)
     {
         switch (priority)
@@ -815,6 +857,15 @@
 
     /* Status bar */
     .qb-statusbar { display: flex; gap: 16px; padding: 3px 10px; background: #0d1117; border-top: 1px solid #1e293b; color: #475569; font-size: 11px; }
+
+    /* Context menu */
+    .qb-ctx-backdrop { position: fixed; inset: 0; z-index: 999; }
+    .qb-ctx-menu { position: fixed; z-index: 1000; background: #1e293b; border: 1px solid #334155; border-radius: 6px; padding: 4px 0; min-width: 180px; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+    .qb-ctx-item { padding: 5px 14px; color: #e2e8f0; font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+    .qb-ctx-item:hover { background: rgba(16,185,129,.1); }
+    .qb-ctx-danger { color: #f87171; }
+    .qb-ctx-danger:hover { background: rgba(239,68,68,.1); }
+    .qb-ctx-sep { height: 1px; background: #334155; margin: 3px 0; }
 
     /* Modals */
     .qb-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.7); display: flex; align-items: center; justify-content: center; z-index: 1000; backdrop-filter: blur(3px); }

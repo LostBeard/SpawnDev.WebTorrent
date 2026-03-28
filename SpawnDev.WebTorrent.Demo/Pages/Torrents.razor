@@ -3,6 +3,7 @@
 @using SpawnDev.WebTorrent.Torrent
 @using SpawnDev.WebTorrent.Transports
 @using SpawnDev.WebTorrent.Discovery
+@using SpawnDev.WebTorrent.Storage
 @implements IAsyncDisposable
 
 <PageTitle>Torrents</PageTitle>
@@ -69,12 +70,15 @@
 
                     @if (entry.Swarm.HasMetadata)
                     {
+                        var progress = entry.PieceManager?.Progress ?? entry.Swarm.Progress;
+                        var isComplete = entry.PieceManager?.IsComplete ?? entry.Swarm.Done;
                         <div class="progress-bar-container">
-                            <div class="progress-bar" style="width: @((entry.Swarm.Progress * 100).ToString("F1"))%"></div>
+                            <div class="progress-bar" style="width: @((progress * 100).ToString("F1"))%"></div>
                         </div>
                         <div class="progress-text">
-                            @((entry.Swarm.Progress * 100).ToString("F1"))%
-                            @if (entry.Swarm.Done)
+                            @((progress * 100).ToString("F1"))%
+                            — @(entry.PieceManager?.CompletedCount ?? 0)/@(entry.Swarm.Metadata!.PieceCount) pieces
+                            @if (isComplete)
                             {
                                 <span class="done-badge">Complete</span>
                             }
@@ -221,16 +225,110 @@
             };
 
             _torrents.Add(entry);
-            Log($"Added: {entry.Name ?? entry.InfoHashShort} ({entry.Swarm.Metadata?.Files.Length ?? 0} files)");
+            Log($"Added: {entry.Name ?? entry.InfoHashShort}");
 
             // Connect to trackers
             _ = ConnectTrackers(entry, magnetUri);
+
+            // Try to fetch .torrent metadata from xs= URL
+            _ = FetchMetadataAndStartDownload(entry, magnetUri);
 
             StateHasChanged();
         }
         catch (Exception ex)
         {
             Log($"Error: {ex.Message}");
+        }
+    }
+
+    private async Task FetchMetadataAndStartDownload(TorrentEntry entry, string magnetUri)
+    {
+        // Extract xs= (exact source / .torrent URL) and ws= (web seeds) from magnet
+        string? torrentUrl = null;
+        var webSeedUrls = new List<string>();
+
+        foreach (var part in magnetUri.Split('&'))
+        {
+            var p = part.Contains('?') ? part.Split('?').Last() : part;
+            var eqIdx = p.IndexOf('=');
+            if (eqIdx < 0) continue;
+            var key = p[..eqIdx];
+            var val = Uri.UnescapeDataString(p[(eqIdx + 1)..].Replace('+', ' '));
+
+            if (key == "xs") torrentUrl = val;
+            if (key == "ws") webSeedUrls.Add(val);
+        }
+
+        // Fetch .torrent file if xs= URL is available
+        if (torrentUrl != null)
+        {
+            try
+            {
+                Log($"[{entry.Name ?? entry.InfoHashShort}] Fetching .torrent from {torrentUrl.Split('/').Last()}...");
+                using var http = new HttpClient();
+                http.Timeout = TimeSpan.FromSeconds(15);
+                var torrentBytes = await http.GetByteArrayAsync(torrentUrl);
+                var metadata = TorrentParser.Parse(torrentBytes);
+
+                // Verify info hash matches
+                if (!metadata.InfoHash.SequenceEqual(entry.Swarm.InfoHash))
+                {
+                    Log($"[{entry.Name ?? entry.InfoHashShort}] .torrent info hash mismatch — ignoring");
+                    return;
+                }
+
+                // Add web seeds from .torrent metadata
+                foreach (var ws in metadata.UrlList)
+                    if (!webSeedUrls.Contains(ws)) webSeedUrls.Add(ws);
+
+                // Set metadata on swarm (creates chunk store and file streams)
+                entry.Swarm.SetMetadata(metadata);
+                entry.Name ??= metadata.Name;
+                Log($"[{entry.Name}] Metadata loaded: {metadata.Files.Length} file(s), {FormatBytes(metadata.TotalLength)}, {metadata.PieceCount} pieces");
+
+                // Create download coordinator and start downloading via web seeds
+                var store = new MemoryChunkStore(metadata.PieceLength);
+                var pm = new PieceManager(metadata, store);
+                var coordinator = new DownloadCoordinator(pm, metadata);
+                entry.Coordinator = coordinator;
+                entry.PieceManager = pm;
+
+                // Add web seeds
+                foreach (var wsUrl in webSeedUrls)
+                {
+                    coordinator.AddWebSeed(new HttpClient { Timeout = TimeSpan.FromSeconds(30) }, wsUrl);
+                    Log($"[{entry.Name}] Web seed: {wsUrl}");
+                }
+
+                // Wire up progress events
+                coordinator.OnPieceComplete += (idx) =>
+                {
+                    InvokeAsync(StateHasChanged);
+                };
+                coordinator.OnProgressChanged += (p) =>
+                {
+                    InvokeAsync(StateHasChanged);
+                };
+                coordinator.OnDownloadComplete += () =>
+                {
+                    Log($"[{entry.Name}] Download complete!");
+                    InvokeAsync(StateHasChanged);
+                };
+
+                // Start downloading
+                coordinator.Start();
+                Log($"[{entry.Name}] Download started ({webSeedUrls.Count} web seed(s))");
+
+                await InvokeAsync(StateHasChanged);
+            }
+            catch (Exception ex)
+            {
+                Log($"[{entry.Name ?? entry.InfoHashShort}] Metadata fetch failed: {ex.Message}");
+            }
+        }
+        else
+        {
+            Log($"[{entry.Name ?? entry.InfoHashShort}] No .torrent URL (xs=) — waiting for metadata from peers");
         }
     }
 
@@ -352,6 +450,8 @@
         public string? TrackerStatus { get; set; }
         public bool Expanded { get; set; }
         public List<WebSocketTrackerClient> Trackers { get; } = new();
+        public DownloadCoordinator? Coordinator { get; set; }
+        public PieceManager? PieceManager { get; set; }
     }
 }
 

@@ -177,20 +177,39 @@ public partial class MainWindow : Window
         }
         if (trackers.Count == 0) trackers.AddRange(new[] { "wss://hub.spawndev.com:44365/announce", "wss://tracker.openwebtorrent.com" });
 
+        // Connect to ALL trackers — not just the first one
         foreach (var url in trackers)
         {
-            var te = new TrackerViewModel { Url = url, Status = "Connecting..." };
-            vm.TrackerEntries.Add(te);
-            try
+            _ = ConnectSingleTrackerAsync(vm, url);
+        }
+    }
+
+    private async Task ConnectSingleTrackerAsync(TorrentViewModel vm, string url)
+    {
+        var te = new TrackerViewModel { Url = url, Status = "Connecting..." };
+        Dispatcher.Invoke(() => vm.TrackerEntries.Add(te));
+        try
+        {
+            var tracker = new WebSocketTrackerClient(url, _client.PeerId);
+            tracker.OnAnnounceResponse += (s, l) => Dispatcher.Invoke(() =>
             {
-                var tracker = new WebSocketTrackerClient(url, _client.PeerId);
-                tracker.OnAnnounceResponse += (s, l) => Dispatcher.Invoke(() => { te.Status = $"{s}S / {l}L"; });
-                tracker.OnError += (err) => Dispatcher.Invoke(() => { te.Status = $"Error"; });
-                await tracker.StartAsync(vm.Swarm.InfoHash, 0);
-                te.Status = "Connected";
-                break;
-            }
-            catch { te.Status = "Failed"; }
+                te.Status = $"{s}S / {l}L";
+                Log($"[{vm.Name}] {new Uri(url).Host}: {s}S/{l}L");
+            });
+            tracker.OnPeer += (peer) => Dispatcher.Invoke(() =>
+            {
+                Log($"[{vm.Name}] Peer via {new Uri(url).Host}: {peer.Address[..Math.Min(16, peer.Address.Length)]}");
+                vm.Swarm.AddPeer(peer);
+            });
+            tracker.OnError += (err) => Dispatcher.Invoke(() => { te.Status = "Error"; });
+            await tracker.StartAsync(vm.Swarm.InfoHash, 0);
+            te.Status = "Connected";
+            Log($"[{vm.Name}] Tracker: {new Uri(url).Host}");
+        }
+        catch (Exception ex)
+        {
+            te.Status = "Failed";
+            Log($"[{vm.Name}] Tracker {new Uri(url).Host} failed: {ex.Message}");
         }
     }
 

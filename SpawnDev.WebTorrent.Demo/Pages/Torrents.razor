@@ -496,29 +496,45 @@
         }
         if (trackers.Count == 0) trackers.AddRange(_defaultTrackers);
 
+        // Connect to ALL trackers — not just the first one.
+        // Our tracker finds our own peers, public trackers find real seeders.
         foreach (var url in trackers)
         {
-            try
-            {
-                var tracker = new WebSocketTrackerClient(url, _client!.PeerId);
-                var shortUrl = new Uri(url).Host;
-                var te = new TrackerEntry { Url = url, Status = "Connecting..." };
-                entry.Trackers.Add(te);
-
-                tracker.OnAnnounceResponse += (s, l) =>
-                {
-                    te.Status = $"{s}S / {l}L";
-                    InvokeAsync(StateHasChanged);
-                };
-                tracker.OnPeer += (peer) => Log($"[{entry.Name ?? entry.InfoHashShort}] Peer: {peer.Address[..Math.Min(16, peer.Address.Length)]}");
-                tracker.OnError += (err) => { te.Status = $"Error: {err}"; };
-
-                await tracker.StartAsync(entry.Swarm.InfoHash, 0);
-                te.Status = "Connected";
-                break;
-            }
-            catch { }
+            _ = ConnectSingleTracker(entry, url);
         }
+    }
+
+    private async Task ConnectSingleTracker(TorrentEntry entry, string url)
+    {
+        var te = new TrackerEntry { Url = url, Status = "Connecting..." };
+        entry.Trackers.Add(te);
+        try
+        {
+            var tracker = new WebSocketTrackerClient(url, _client!.PeerId);
+
+            tracker.OnAnnounceResponse += (s, l) =>
+            {
+                te.Status = $"{s}S / {l}L";
+                Log($"[{entry.Name ?? entry.InfoHashShort}] {new Uri(url).Host}: {s} seeders, {l} leechers");
+                InvokeAsync(StateHasChanged);
+            };
+            tracker.OnPeer += (peer) =>
+            {
+                Log($"[{entry.Name ?? entry.InfoHashShort}] Peer via {new Uri(url).Host}: {peer.Address[..Math.Min(16, peer.Address.Length)]}");
+                entry.Swarm.AddPeer(peer);
+            };
+            tracker.OnError += (err) => { te.Status = $"Error"; };
+
+            await tracker.StartAsync(entry.Swarm.InfoHash, 0);
+            te.Status = "Connected";
+            Log($"[{entry.Name ?? entry.InfoHashShort}] Tracker connected: {new Uri(url).Host}");
+        }
+        catch (Exception ex)
+        {
+            te.Status = "Failed";
+            Log($"[{entry.Name ?? entry.InfoHashShort}] Tracker {new Uri(url).Host} failed: {ex.Message}");
+        }
+        await InvokeAsync(StateHasChanged);
     }
 
     private async Task RemoveTorrent(TorrentEntry entry)

@@ -119,17 +119,33 @@ public class DownloadCoordinator
                     }
                 }
 
-                // 2. Fall back to web seeds for priority pieces with no peer coverage
-                foreach (var priorityPiece in _priorityPieces.ToArray())
+                // 2. Web seed downloads
+                if (_webSeeds.Count > 0)
                 {
-                    if (_pieceManager.Bitfield[priorityPiece]) continue;
-
-                    bool peerHasIt = _activePeers.Any(p => !p.IsChoked
-                        && p.Bitfield.Length > priorityPiece && p.Bitfield[priorityPiece]);
-
-                    if (!peerHasIt)
+                    // Priority pieces first (from file read requests)
+                    foreach (var priorityPiece in _priorityPieces.ToArray())
                     {
-                        await DownloadFromWebSeed(priorityPiece, ct);
+                        if (_pieceManager.Bitfield[priorityPiece]) continue;
+
+                        bool peerHasIt = _activePeers.Any(p => !p.IsChoked
+                            && p.Bitfield.Length > priorityPiece && p.Bitfield[priorityPiece]);
+
+                        if (!peerHasIt)
+                            await DownloadFromWebSeed(priorityPiece, ct);
+                    }
+
+                    // When no peers are available, proactively download via web seeds
+                    bool hasPeers = _activePeers.Any(p => !p.IsChoked);
+                    if (!hasPeers)
+                    {
+                        for (int i = 0; i < _pieceManager.PieceCount; i++)
+                        {
+                            if (!_pieceManager.Bitfield[i])
+                            {
+                                await DownloadFromWebSeed(i, ct);
+                                break; // one piece per tick to stay responsive
+                            }
+                        }
                     }
                 }
             }

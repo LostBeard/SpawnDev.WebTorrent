@@ -16,8 +16,8 @@ namespace SpawnDev.WebTorrent.Discovery;
 public class DhtDiscovery : IDiscovery
 {
     private readonly DhtOptions _options;
-    private readonly byte[] _nodeId;
-    private readonly KademliaRoutingTable _routingTable;
+    internal readonly byte[] _nodeId;
+    internal readonly KademliaRoutingTable _routingTable;
     private UdpClient? _udp;
     private CancellationTokenSource? _cts;
     private int _transactionCounter;
@@ -336,11 +336,22 @@ public class DhtDiscovery : IDiscovery
 
     private static string Enc(byte[] b) => Encoding.Latin1.GetString(b);
 
-    private async Task SendKrpcAsync(IPEndPoint ep, byte[] data, CancellationToken ct)
+    internal async Task SendKrpcAsync(IPEndPoint ep, byte[] data, CancellationToken ct)
     {
         if (_udp == null) return;
         await _udp.SendAsync(data, data.Length, ep);
     }
+
+    /// <summary>
+    /// Create a BEP 46 mutable items handler with a new identity.
+    /// Enables publishing and subscribing to mutable data in the DHT.
+    /// </summary>
+    public DhtMutableItems CreateMutableItems() => new(this);
+
+    /// <summary>
+    /// Create a BEP 46 mutable items handler with an existing key pair.
+    /// </summary>
+    public DhtMutableItems CreateMutableItems(byte[] privateKey, byte[] publicKey) => new(this, privateKey, publicKey);
 
     public async Task StopAsync()
     {

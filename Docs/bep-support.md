@@ -53,6 +53,8 @@ Both share the `IWebRtcTransport` interface and work through the same `PeerCoord
 | Media playback | N/A | Yes | Video/audio/image via blob URL with seeking |
 
 | [5](http://bittorrent.org/beps/bep_0005.html) | DHT Protocol | Yes | N/A | Kademlia routing, KRPC over UDP, bootstrap, iterative lookup |
+| [44](http://bittorrent.org/beps/bep_0044.html) | Storing Arbitrary Data in DHT | Yes | N/A | Mutable + immutable items via KRPC put/get |
+| [46](http://bittorrent.org/beps/bep_0046.html) | Updating Torrents via DHT Mutable Items | Yes | N/A | Ed25519 signed mutable items, publish/subscribe, AI shared state |
 
 ## Not Yet Implemented
 

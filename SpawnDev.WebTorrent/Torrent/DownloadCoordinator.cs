@@ -90,6 +90,9 @@ public class DownloadCoordinator
 
     private async Task DownloadLoopAsync(CancellationToken ct)
     {
+        OnLog?.Invoke("Download loop started");
+        try
+        {
         while (!ct.IsCancellationRequested && !_pieceManager.IsComplete)
         {
             await _updateLock.WaitAsync(ct);
@@ -142,10 +145,15 @@ public class DownloadCoordinator
                         {
                             if (!_pieceManager.Bitfield[i])
                             {
+                                OnLog?.Invoke($"Web seed: downloading piece {i}...");
                                 await DownloadFromWebSeed(i, ct);
                                 break; // one piece per tick to stay responsive
                             }
                         }
+                    }
+                    else
+                    {
+                        OnLog?.Invoke($"Has {_activePeers.Count(p => !p.IsChoked)} unchoked peers, skipping web seed");
                     }
                 }
             }
@@ -156,6 +164,14 @@ public class DownloadCoordinator
 
             await Task.Delay(UpdateIntervalMs, ct);
         }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            OnLog?.Invoke($"Download loop crashed: {ex.Message}");
+            OnError?.Invoke(ex);
+        }
+        OnLog?.Invoke("Download loop ended");
     }
 
     private async Task RequestBlocksFromPeer(ActivePeer peer, int pieceIndex)
@@ -181,13 +197,19 @@ public class DownloadCoordinator
                 var data = await seed.DownloadPieceAsync(pieceIndex, ct);
                 if (data != null)
                 {
-                    // Web seeds deliver complete pieces — bypass block tracking
+                    OnLog?.Invoke($"Web seed: piece {pieceIndex} got {data.Length} bytes, verifying...");
                     var ok = await _pieceManager.ReceiveCompletePieceAsync(pieceIndex, data);
+                    OnLog?.Invoke($"Web seed: piece {pieceIndex} verify={ok}");
                     if (ok) return;
+                }
+                else
+                {
+                    OnLog?.Invoke($"Web seed: piece {pieceIndex} returned null (failed)");
                 }
             }
             catch (Exception ex)
             {
+                OnLog?.Invoke($"Web seed: piece {pieceIndex} exception: {ex.Message}");
                 OnError?.Invoke(ex);
             }
         }
@@ -195,6 +217,9 @@ public class DownloadCoordinator
 
     /// <summary>Fired on errors (for logging).</summary>
     public event Action<Exception>? OnError;
+
+    /// <summary>Fired for diagnostic log messages.</summary>
+    public event Action<string>? OnLog;
 
     private void HandlePieceComplete(int pieceIndex)
     {

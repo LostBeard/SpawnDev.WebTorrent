@@ -480,6 +480,7 @@
             };
             entry.Swarm.OnDone += () => { Log($"[{entry.Name}] Download complete!"); InvokeAsync(StateHasChanged); };
             entry.Swarm.OnError += (ex) => { Log($"[{entry.Name}] Error: {ex.Message}"); };
+            entry.Swarm.OnLog += (msg) => { Log($"[{entry.Name}] {msg}"); };
 
             Log($"[{entry.Name}] {FormatBytes(metadata.TotalLength)}, {metadata.PieceCount} pieces, {webSeedUrls.Count} web seed(s)");
             await InvokeAsync(StateHasChanged);

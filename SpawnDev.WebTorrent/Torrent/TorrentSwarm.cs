@@ -76,6 +76,7 @@ public class TorrentSwarm : IAsyncDisposable
     public event Action<PeerConnection>? OnPeerConnect;
     public event Action<PeerConnection>? OnPeerDisconnect;
     public event Action<Exception>? OnError;
+    public event Action<string>? OnLog;
 
     public TorrentSwarm(WebTorrentClient client, AddTorrentOptions options)
     {
@@ -137,6 +138,7 @@ public class TorrentSwarm : IAsyncDisposable
             OnDone?.Invoke();
         };
         _coordinator.OnError += (ex) => OnError?.Invoke(ex);
+        _coordinator.OnLog += (msg) => OnLog?.Invoke(msg);
 
         // Create file stream abstractions
         Files = metadata.Files.Select(f => new TorrentFileStream(this, f, _store)).ToArray();

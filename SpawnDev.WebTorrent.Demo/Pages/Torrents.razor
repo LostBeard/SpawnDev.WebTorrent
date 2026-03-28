@@ -166,7 +166,16 @@
                                     <div class="qb-info-row"><span class="qb-label">Private</span><span>@(sel.Swarm.IsPrivate ? "Yes" : "No")</span></div>
                                     <div class="qb-info-row"><span class="qb-label">Piece Length</span><span>@(sel.Swarm.PieceLength > 0 ? FormatBytes(sel.Swarm.PieceLength) : "—")</span></div>
                                     <div class="qb-info-row"><span class="qb-label">Total Size</span><span>@(sel.Swarm.Length > 0 ? FormatBytes(sel.Swarm.Length) : "—")</span></div>
+                                    <div class="qb-info-row"><span class="qb-label">Web Seeds</span><span>@sel.Swarm.WebSeedCount</span></div>
+                                    <div class="qb-info-row"><span class="qb-label">Files</span><span>@sel.Swarm.Files.Length</span></div>
                                 </div>
+                                @if (sel.Swarm.HasMetadata)
+                                {
+                                    <div class="qb-magnet-row">
+                                        <span class="qb-label">Magnet</span>
+                                        <input type="text" class="qb-input qb-magnet-display" readonly value="@sel.Swarm.MagnetURI" @onclick="(e) => CopyMagnet(sel)" title="Click to copy" />
+                                    </div>
+                                }
                                 <div class="qb-action-row">
                                     <button class="qb-action-btn" @onclick="() => CopyMagnet(sel)" title="Copy magnet link">&#128279; Copy Magnet</button>
                                     @if (sel.Swarm.TorrentFileBytes != null)
@@ -839,6 +848,11 @@
     .qb-info-row { display: flex; justify-content: space-between; padding: 2px 0; color: #94a3b8; font-size: 12px; }
     .qb-label { color: #475569; } .qb-hash { font-size: 10px; word-break: break-all; }
     .qb-muted { color: #334155; text-align: center; font-size: 12px; }
+
+    /* Magnet display */
+    .qb-magnet-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+    .qb-magnet-display { flex: 1; font-size: 10px; color: #64748b; cursor: pointer; padding: 3px 6px; }
+    .qb-magnet-display:hover { color: #10b981; border-color: #10b981; }
 
     /* Action row */
     .qb-action-row { display: flex; gap: 8px; align-items: center; margin: 8px 0 4px; flex-wrap: wrap; }

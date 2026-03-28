@@ -80,8 +80,6 @@
                              BorderBrush="#1e293b" BorderThickness="1" Padding="6,4" FontFamily="Consolas" FontSize="12"
                              VerticalContentAlignment="Center" KeyDown="MagnetInput_KeyDown"/>
                     <Button Grid.Column="1" Content="Add" Margin="4,0,0,0" Style="{StaticResource AccentBtn}" Click="AddButton_Click"/>
-                    <!-- Open .torrent file button next to add -->
-                    <!-- (Also supports drag-drop and CLI args) -->
                 </Grid>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="8,0">
                     <Button Content="&#9646;&#9646;" Padding="6,4" Background="#1e293b" Foreground="#94a3b8" BorderThickness="0" FontSize="11" Cursor="Hand" Click="PauseAll_Click" ToolTip="Pause All" Margin="0,0,2,0"/>

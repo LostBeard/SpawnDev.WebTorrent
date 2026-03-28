@@ -190,7 +190,7 @@ public static class TorrentParser
             var eqIdx = param.IndexOf('=');
             if (eqIdx < 0) continue;
             var key = param.Substring(0, eqIdx);
-            var value = Uri.UnescapeDataString(param.Substring(eqIdx + 1));
+            var value = Uri.UnescapeDataString(param.Substring(eqIdx + 1).Replace('+', ' '));
 
             switch (key)
             {

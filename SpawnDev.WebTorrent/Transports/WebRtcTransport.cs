@@ -1,21 +1,21 @@
+using SpawnDev.BlazorJS.JSObjects;
+using SpawnDev.BlazorJS.JSObjects.WebRTC;
+using System.Text.Json;
+
 namespace SpawnDev.WebTorrent.Transports;
 
 /// <summary>
 /// WebRTC transport for browser-to-browser P2P connections.
-/// Uses WebRTC data channels for the BitTorrent wire protocol.
-///
-/// In Blazor WASM, this wraps RTCPeerConnection via SpawnDev.BlazorJS.
-/// On desktop, this could use a native WebRTC library (future).
+/// Uses SpawnDev.BlazorJS RTCPeerConnection + RTCDataChannel for the BitTorrent wire protocol.
 ///
 /// Connection flow (via tracker signaling):
 ///   1. Initiator creates RTCPeerConnection + data channel
-///   2. Initiator creates offer SDP → sends to tracker → tracker relays to peer
-///   3. Peer receives offer → creates answer SDP → sends to tracker → tracker relays back
-///   4. ICE candidates exchange (trickle ICE or bundled in SDP)
-///   5. Data channel opens → BitTorrent wire protocol begins
-///
-/// This class provides the ITransport/IConnection interfaces over WebRTC,
-/// keeping the rest of the codebase transport-agnostic.
+///   2. Initiator creates offer SDP, waits for ICE gathering, fires OnOfferCreated
+///   3. PeerCoordinator relays offer through tracker to remote peer
+///   4. Remote peer calls HandleOfferAsync, creates answer, returns it
+///   5. PeerCoordinator relays answer back through tracker
+///   6. Original peer calls HandleAnswerAsync, sets remote description
+///   7. Data channel opens on both sides -> BitTorrent wire protocol begins
 /// </summary>
 public class WebRtcTransport : ITransport
 {
@@ -23,12 +23,12 @@ public class WebRtcTransport : ITransport
     private readonly List<WebRtcConnection> _connections = new();
 
     public string Type => "webrtc";
-    public bool CanAccept => true; // can accept incoming offers
+    public bool CanAccept => true;
 
     public event Action<IConnection>? OnConnection;
 
     /// <summary>Fired when an outgoing offer needs to be sent via the tracker.</summary>
-    public event Action<string, object>? OnOfferCreated; // toPeerId, offerSdp
+    public event Action<string, object>? OnOfferCreated;
 
     public WebRtcTransport(WebRtcTransportOptions? options = null)
     {
@@ -37,25 +37,23 @@ public class WebRtcTransport : ITransport
 
     public Task StartListeningAsync(int port = 0, CancellationToken ct = default)
     {
-        // WebRTC doesn't "listen" — it accepts incoming offers via the tracker
+        // WebRTC doesn't "listen" - it accepts incoming offers via the tracker
         return Task.CompletedTask;
     }
 
     /// <summary>
     /// Initiate a connection to a peer by creating a WebRTC offer.
-    /// The offer must be sent to the peer via the tracker signaling channel.
-    /// Call HandleAnswer() when the peer's answer arrives.
+    /// The offer is fired via OnOfferCreated for the PeerCoordinator to relay through the tracker.
+    /// Call HandleAnswerAsync() when the peer's answer arrives.
     /// </summary>
     public async Task<IConnection> ConnectAsync(string peerId, CancellationToken ct = default)
     {
         var conn = new WebRtcConnection(peerId, _options);
         _connections.Add(conn);
 
-        // Create offer — the caller must send this via tracker
         var offer = await conn.CreateOfferAsync();
         OnOfferCreated?.Invoke(peerId, offer);
 
-        // Wait for the data channel to open (after answer is received)
         await conn.WaitForOpenAsync(ct);
         OnConnection?.Invoke(conn);
         return conn;
@@ -96,13 +94,11 @@ public class WebRtcTransport : ITransport
 }
 
 /// <summary>
-/// A WebRTC peer connection wrapping RTCPeerConnection + RTCDataChannel.
+/// A single WebRTC peer connection wrapping RTCPeerConnection + RTCDataChannel
+/// via SpawnDev.BlazorJS browser interop.
 ///
-/// In browser (Blazor WASM): uses SpawnDev.BlazorJS wrappers for RTCPeerConnection.
-/// On desktop: placeholder — would need a native WebRTC library.
-///
-/// This is currently a structural placeholder. The actual JS interop implementation
-/// will use SpawnDev.BlazorJS.JSObjects.RTCPeerConnection when integrated.
+/// Handles the full lifecycle: SDP offer/answer, ICE gathering, data channel setup,
+/// and bidirectional binary data transfer for the BitTorrent wire protocol.
 /// </summary>
 public class WebRtcConnection : IConnection
 {
@@ -110,6 +106,8 @@ public class WebRtcConnection : IConnection
     private readonly TaskCompletionSource _openTcs = new();
     private readonly List<byte> _receiveBuffer = new();
     private readonly SemaphoreSlim _receiveSemaphore = new(0);
+    private RTCPeerConnection? _pc;
+    private RTCDataChannel? _dc;
 
     public string RemoteId { get; }
     public string TransportType => "webrtc";
@@ -124,28 +122,198 @@ public class WebRtcConnection : IConnection
         _options = options;
     }
 
-    /// <summary>Create an SDP offer for initiating a connection.</summary>
-    public Task<object> CreateOfferAsync()
+    private RTCPeerConnection CreatePeerConnection()
     {
-        // TODO: In browser, use RTCPeerConnection.createOffer()
-        // For now, return a placeholder
-        return Task.FromResult<object>(new { type = "offer", sdp = "placeholder" });
+        var config = new RTCConfiguration
+        {
+            IceServers = _options.IceServers.Select(url => new RTCIceServer
+            {
+                Urls = url
+            }).ToArray()
+        };
+        var pc = new RTCPeerConnection(config);
+
+        pc.OnConnectionStateChange += OnPeerConnectionStateChange;
+
+        return pc;
     }
 
-    /// <summary>Handle an incoming SDP offer and create an answer.</summary>
-    public Task<object> HandleOfferAsync(object offer)
+    private void OnPeerConnectionStateChange(Event e)
     {
-        // TODO: In browser, use RTCPeerConnection.setRemoteDescription() + createAnswer()
-        return Task.FromResult<object>(new { type = "answer", sdp = "placeholder" });
+        if (_pc == null) return;
+        var state = _pc.ConnectionState;
+        if (state == "disconnected" || state == "failed" || state == "closed")
+        {
+            IsConnected = false;
+            OnDisconnected?.Invoke();
+        }
     }
 
-    /// <summary>Handle an incoming SDP answer (completes the signaling).</summary>
-    public Task HandleAnswerAsync(object answer)
+    private void SetupDataChannel(RTCDataChannel dc)
     {
-        // TODO: In browser, use RTCPeerConnection.setRemoteDescription()
+        _dc = dc;
+        _dc.BinaryType = "arraybuffer";
+
+        _dc.OnOpen += OnDataChannelOpen;
+        _dc.OnClose += OnDataChannelClose;
+        _dc.OnMessage += OnDataChannelMessage;
+    }
+
+    private void OnDataChannelOpen(RTCDataChannelEvent e)
+    {
         IsConnected = true;
         _openTcs.TrySetResult();
-        return Task.CompletedTask;
+    }
+
+    private void OnDataChannelClose(Event e)
+    {
+        IsConnected = false;
+        OnDisconnected?.Invoke();
+    }
+
+    private void OnDataChannelMessage(MessageEvent e)
+    {
+        byte[]? bytes = null;
+        var dataType = e.TypeOfData;
+
+        if (dataType == "ArrayBuffer")
+        {
+            using var ab = e.GetData<ArrayBuffer>();
+            using var uint8 = new Uint8Array(ab);
+            bytes = uint8.ReadBytes();
+        }
+        else if (dataType == "String")
+        {
+            var text = e.GetData<string>();
+            bytes = System.Text.Encoding.UTF8.GetBytes(text);
+        }
+
+        if (bytes != null && bytes.Length > 0)
+        {
+            lock (_receiveBuffer)
+            {
+                _receiveBuffer.AddRange(bytes);
+            }
+            _receiveSemaphore.Release();
+            OnDataAvailable?.Invoke();
+        }
+    }
+
+    /// <summary>Create SDP offer (initiator side).</summary>
+    public async Task<object> CreateOfferAsync()
+    {
+        _pc = CreatePeerConnection();
+
+        // Create data channel BEFORE creating offer (required by WebRTC spec)
+        var dcOptions = new RTCDataChannelOptions
+        {
+            Ordered = _options.Ordered,
+        };
+        if (_options.MaxRetransmits.HasValue)
+            dcOptions.MaxRetransmits = (ushort)_options.MaxRetransmits.Value;
+
+        var dc = _pc.CreateDataChannel(_options.ChannelLabel, dcOptions);
+        SetupDataChannel(dc);
+
+        // Create offer and set as local description
+        var offer = await _pc.CreateOffer();
+        await _pc.SetLocalDescription(offer);
+
+        // Wait for ICE gathering to complete so all candidates are embedded in the SDP
+        await WaitForIceGatheringAsync();
+
+        // Return the complete local description (includes ICE candidates)
+        return _pc.LocalDescription!;
+    }
+
+    /// <summary>Handle incoming SDP offer (responder side) and create answer.</summary>
+    public async Task<object> HandleOfferAsync(object offer)
+    {
+        _pc = CreatePeerConnection();
+
+        // Listen for incoming data channel from the initiator
+        _pc.OnDataChannel += OnRemoteDataChannel;
+
+        // Deserialize and set the remote offer
+        var offerDesc = DeserializeDescription(offer);
+        await _pc.SetRemoteDescription(offerDesc);
+
+        // Create answer and set as local description
+        var answer = await _pc.CreateAnswer();
+        await _pc.SetLocalDescription(answer);
+
+        // Wait for ICE gathering to complete
+        await WaitForIceGatheringAsync();
+
+        // Return the complete local description (includes ICE candidates)
+        return _pc.LocalDescription!;
+    }
+
+    private void OnRemoteDataChannel(RTCDataChannelEvent e)
+    {
+        SetupDataChannel(e.Channel);
+    }
+
+    /// <summary>Handle incoming SDP answer (initiator side, completes signaling).</summary>
+    public async Task HandleAnswerAsync(object answer)
+    {
+        if (_pc == null) return;
+        var answerDesc = DeserializeDescription(answer);
+        await _pc.SetRemoteDescription(answerDesc);
+        // After this, ICE connectivity checks run and the data channel opens
+    }
+
+    /// <summary>Deserialize an SDP description from various input formats.</summary>
+    private static RTCSessionDescription DeserializeDescription(object desc)
+    {
+        if (desc is RTCSessionDescription rtcDesc)
+            return rtcDesc;
+
+        if (desc is JsonElement json)
+        {
+            var type = json.TryGetProperty("type", out var typeProp) ? typeProp.GetString() ?? "" : "";
+            var sdp = json.TryGetProperty("sdp", out var sdpProp) ? sdpProp.GetString() ?? "" : "";
+            return new RTCSessionDescription { Type = type, Sdp = sdp };
+        }
+
+        // Fallback: JSON round-trip for unknown object types
+        var jsonStr = JsonSerializer.Serialize(desc);
+        return JsonSerializer.Deserialize<RTCSessionDescription>(jsonStr)
+            ?? new RTCSessionDescription();
+    }
+
+    /// <summary>Wait for ICE gathering to complete with a timeout.</summary>
+    private async Task WaitForIceGatheringAsync(int timeoutMs = 10000)
+    {
+        if (_pc == null) return;
+        if (_pc.IceGatheringState == "complete") return;
+
+        var tcs = new TaskCompletionSource();
+
+        void handler(Event e)
+        {
+            if (_pc?.IceGatheringState == "complete")
+                tcs.TrySetResult();
+        }
+
+        _pc.OnIceGatheringStateChange += handler;
+
+        // Re-check after subscribing to avoid race condition
+        if (_pc.IceGatheringState == "complete")
+            tcs.TrySetResult();
+
+        // Wait with timeout - ICE gathering should be fast with STUN servers
+        using var cts = new CancellationTokenSource(timeoutMs);
+        cts.Token.Register(() => tcs.TrySetResult()); // proceed even on timeout
+
+        try
+        {
+            await tcs.Task;
+        }
+        finally
+        {
+            _pc.OnIceGatheringStateChange -= handler;
+        }
     }
 
     /// <summary>Wait for the data channel to open.</summary>
@@ -157,45 +325,40 @@ public class WebRtcConnection : IConnection
 
     public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
     {
-        // TODO: In browser, use RTCDataChannel.send()
+        if (_dc == null || _dc.ReadyState != "open")
+            throw new InvalidOperationException("Data channel is not open");
+
+        _dc.Send(data.ToArray());
         return Task.CompletedTask;
     }
 
     public async Task<int> ReceiveAsync(Memory<byte> buffer, CancellationToken ct = default)
     {
-        // TODO: In browser, data arrives via RTCDataChannel.onmessage event
         await _receiveSemaphore.WaitAsync(ct);
         lock (_receiveBuffer)
         {
             int count = Math.Min(buffer.Length, _receiveBuffer.Count);
-            _receiveBuffer.CopyTo(0, buffer.Span.ToArray(), 0, count);
+            for (int i = 0; i < count; i++)
+                buffer.Span[i] = _receiveBuffer[i];
             _receiveBuffer.RemoveRange(0, count);
             return count;
         }
     }
 
-    /// <summary>Called when data arrives on the data channel (from JS event).</summary>
-    public void OnDataReceived(byte[] data)
-    {
-        lock (_receiveBuffer)
-        {
-            _receiveBuffer.AddRange(data);
-        }
-        _receiveSemaphore.Release();
-        OnDataAvailable?.Invoke();
-    }
-
     public Task CloseAsync()
     {
         IsConnected = false;
+        try { _dc?.Close(); } catch { }
+        try { _pc?.Close(); } catch { }
         OnDisconnected?.Invoke();
-        // TODO: Close RTCPeerConnection and RTCDataChannel
         return Task.CompletedTask;
     }
 
     public async ValueTask DisposeAsync()
     {
         await CloseAsync();
+        _dc?.Dispose();
+        _pc?.Dispose();
         _receiveSemaphore.Dispose();
     }
 }
@@ -216,6 +379,6 @@ public class WebRtcTransportOptions
     /// <summary>Whether to use ordered delivery (slower but reliable).</summary>
     public bool Ordered { get; set; } = false;
 
-    /// <summary>Max retransmits (0 = unreliable, like UDP).</summary>
+    /// <summary>Max retransmits (null = browser default).</summary>
     public int? MaxRetransmits { get; set; } = null;
 }

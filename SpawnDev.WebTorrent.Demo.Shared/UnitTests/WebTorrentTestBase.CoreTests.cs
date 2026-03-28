@@ -361,6 +361,116 @@ public abstract partial class WebTorrentTestBase
     // ═══════════════════════════════════════════════════════════
 
     // ═══════════════════════════════════════════════════════════
+    //  DHT — Kademlia Routing Table (BEP 5)
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Dht_RoutingTable_AddNode()
+    {
+        var localId = new byte[20];
+        localId[0] = 0x01;
+        var rt = new KademliaRoutingTable(localId);
+
+        var node = new DhtNode
+        {
+            NodeId = new byte[20],
+            EndPoint = new System.Net.IPEndPoint(System.Net.IPAddress.Parse("1.2.3.4"), 6881),
+            LastSeen = DateTime.UtcNow,
+        };
+        node.NodeId[0] = 0xFF; // far from local ID
+
+        rt.AddNode(node);
+
+        if (rt.NodeCount != 1) throw new Exception($"Should have 1 node, got {rt.NodeCount}");
+    }
+
+    [TestMethod]
+    public async Task Dht_RoutingTable_GetClosest()
+    {
+        var localId = new byte[20];
+        var rt = new KademliaRoutingTable(localId);
+
+        // Add 10 nodes with different IDs
+        for (int i = 0; i < 10; i++)
+        {
+            var nid = new byte[20];
+            nid[0] = (byte)(i + 1);
+            rt.AddNode(new DhtNode
+            {
+                NodeId = nid,
+                EndPoint = new System.Net.IPEndPoint(System.Net.IPAddress.Parse($"10.0.0.{i + 1}"), 6881),
+                LastSeen = DateTime.UtcNow,
+            });
+        }
+
+        if (rt.NodeCount != 10) throw new Exception($"Should have 10 nodes, got {rt.NodeCount}");
+
+        // Get 3 closest to a target
+        var target = new byte[20];
+        target[0] = 0x02; // close to node with ID[0]=0x02
+        var closest = rt.GetClosest(target, 3);
+
+        if (closest.Count != 3) throw new Exception($"Should get 3 closest, got {closest.Count}");
+        // The closest should be the one with XOR distance 0 (ID 0x02 ^ target 0x02 = 0)
+        if (closest[0].NodeId[0] != 0x02) throw new Exception($"Closest should be 0x02, got 0x{closest[0].NodeId[0]:X2}");
+    }
+
+    [TestMethod]
+    public async Task Dht_RoutingTable_Deduplicate()
+    {
+        var localId = new byte[20];
+        var rt = new KademliaRoutingTable(localId);
+
+        var nid = new byte[20];
+        nid[0] = 0x42;
+        var node = new DhtNode
+        {
+            NodeId = nid,
+            EndPoint = new System.Net.IPEndPoint(System.Net.IPAddress.Parse("1.2.3.4"), 6881),
+            LastSeen = DateTime.UtcNow,
+        };
+
+        rt.AddNode(node);
+        rt.AddNode(node); // duplicate
+
+        if (rt.NodeCount != 1) throw new Exception($"Should deduplicate, got {rt.NodeCount}");
+    }
+
+    [TestMethod]
+    public async Task Dht_RoutingTable_BucketCapacity()
+    {
+        var localId = new byte[20];
+        var rt = new KademliaRoutingTable(localId);
+
+        // Add 20 nodes all in the same bucket (same first byte distance)
+        for (int i = 0; i < 20; i++)
+        {
+            var nid = new byte[20];
+            nid[0] = 0xFF;
+            nid[19] = (byte)i; // Different last byte
+            rt.AddNode(new DhtNode
+            {
+                NodeId = nid,
+                EndPoint = new System.Net.IPEndPoint(System.Net.IPAddress.Parse($"10.0.0.{i + 1}"), 6881),
+                LastSeen = DateTime.UtcNow,
+            });
+        }
+
+        // K=8, so bucket should cap at 8
+        if (rt.NodeCount > 8) throw new Exception($"Bucket should cap at K=8, got {rt.NodeCount}");
+    }
+
+    [TestMethod]
+    public async Task Dht_Discovery_Create()
+    {
+        var dht = new DhtDiscovery();
+        if (dht.Type != "dht") throw new Exception($"Type: '{dht.Type}'");
+        if (dht.IsReady) throw new Exception("Should not be ready before start");
+        if (dht.NodeCount != 0) throw new Exception("Should have 0 nodes");
+        await dht.DisposeAsync();
+    }
+
+    // ═══════════════════════════════════════════════════════════
     //  HTTP Tracker Client
     // ═══════════════════════════════════════════════════════════
 

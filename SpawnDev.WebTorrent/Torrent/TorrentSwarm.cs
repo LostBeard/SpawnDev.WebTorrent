@@ -322,6 +322,8 @@ public class TorrentSwarm : IAsyncDisposable
                     var data = await _store.GetAsync(pieceIndex, offset, length);
                     if (data != null)
                     {
+                        // Apply upload rate limiting
+                        await _client.UploadLimiter.WaitAsync(data.Length);
                         await wire.SendPieceAsync(pieceIndex, offset, data);
                         Uploaded += data.Length;
                         _uploadedSinceLastTick += data.Length;
@@ -354,6 +356,9 @@ public class TorrentSwarm : IAsyncDisposable
 
     private async Task RunPeerAsync(PeerConnection peer)
     {
+        using var keepAliveCts = new CancellationTokenSource();
+        _ = KeepAliveLoopAsync(peer, keepAliveCts.Token);
+
         try
         {
             await peer.Wire.RunAsync();
@@ -361,6 +366,7 @@ public class TorrentSwarm : IAsyncDisposable
         catch { }
         finally
         {
+            keepAliveCts.Cancel();
             await _peerLock.WaitAsync();
             try
             {
@@ -373,6 +379,20 @@ public class TorrentSwarm : IAsyncDisposable
             }
             OnPeerDisconnect?.Invoke(peer);
         }
+    }
+
+    private static async Task KeepAliveLoopAsync(PeerConnection peer, CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                await Task.Delay(60000, ct); // 60 seconds
+                await peer.Wire.SendKeepAliveAsync();
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch { }
     }
 
     /// <summary>Convert bool[] bitfield to packed byte[] for wire protocol.</summary>

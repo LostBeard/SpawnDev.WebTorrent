@@ -48,11 +48,25 @@ public class WebTorrentClient : IAsyncDisposable
         }
     }
 
+    /// <summary>Upload rate limiter.</summary>
+    public RateLimiter UploadLimiter { get; } = new(-1);
+
+    /// <summary>Download rate limiter.</summary>
+    public RateLimiter DownloadLimiter { get; } = new(-1);
+
     /// <summary>Maximum upload rate in bytes/sec (-1 = unlimited, 0 = disabled).</summary>
-    public long UploadLimit { get; set; }
+    public long UploadLimit
+    {
+        get => UploadLimiter.Rate;
+        set => UploadLimiter.Rate = value;
+    }
 
     /// <summary>Maximum download rate in bytes/sec (-1 = unlimited).</summary>
-    public long DownloadLimit { get; set; }
+    public long DownloadLimit
+    {
+        get => DownloadLimiter.Rate;
+        set => DownloadLimiter.Rate = value;
+    }
 
     // Events
     public event Action<TorrentSwarm>? OnTorrentAdd;

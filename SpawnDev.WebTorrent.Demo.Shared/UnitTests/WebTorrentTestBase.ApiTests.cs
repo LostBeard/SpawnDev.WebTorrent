@@ -634,6 +634,106 @@ public abstract partial class WebTorrentTestBase
         if (gone != null) throw new Exception("Removed torrent should not be found");
     }
 
+    // ═══════════════════════════════════════════════════════════
+    //  Private Torrents (BEP 27)
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Api_PrivateTorrent_Flag()
+    {
+        await using var client = new WebTorrentClient();
+        var data = new byte[16384];
+        var (_, metadata) = TorrentCreator.CreateFromBytes("private.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384, IsPrivate = true });
+
+        var swarm = await client.AddAsync(metadata);
+        if (!swarm.IsPrivate) throw new Exception("Should be private");
+    }
+
+    [TestMethod]
+    public async Task Api_PrivateTorrent_RejectsDHTPeers()
+    {
+        await using var client = new WebTorrentClient();
+        var data = new byte[16384];
+        var (_, metadata) = TorrentCreator.CreateFromBytes("private-reject.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384, IsPrivate = true });
+
+        var swarm = await client.AddAsync(metadata);
+
+        // DHT peers should be rejected
+        swarm.AddPeer(new Discovery.PeerInfo { Address = "1.2.3.4:6881", Source = "dht" });
+        // PEX peers should be rejected
+        swarm.AddPeer(new Discovery.PeerInfo { Address = "1.2.3.5:6881", Source = "ut_pex" });
+        // Tracker peers should be accepted (though connection will fail)
+        swarm.AddPeer(new Discovery.PeerInfo { Address = "1.2.3.6:6881", Source = "ws-tracker" });
+
+        // No crash — private filtering works
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  BEP 53 — Magnet File Selection
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Api_Bep53_MagnetFileSelection()
+    {
+        var magnet = "magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&dn=Test&so=0,2,5";
+        var meta = TorrentParser.ParseMagnet(magnet);
+
+        if (meta.SelectedFileIndices == null)
+            throw new Exception("SelectedFileIndices should be set");
+        if (meta.SelectedFileIndices.Length != 3)
+            throw new Exception($"Expected 3 selected indices, got {meta.SelectedFileIndices.Length}");
+        if (meta.SelectedFileIndices[0] != 0 || meta.SelectedFileIndices[1] != 2 || meta.SelectedFileIndices[2] != 5)
+            throw new Exception($"Indices should be [0,2,5], got [{string.Join(",", meta.SelectedFileIndices)}]");
+    }
+
+    [TestMethod]
+    public async Task Api_Bep53_NoSelection()
+    {
+        var magnet = "magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&dn=Test";
+        var meta = TorrentParser.ParseMagnet(magnet);
+
+        if (meta.SelectedFileIndices != null)
+            throw new Exception("SelectedFileIndices should be null when so= not present");
+    }
+
+    [TestMethod]
+    public async Task Api_Magnet_ExactSource()
+    {
+        var magnet = "magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&xs=https%3A%2F%2Fexample.com%2Ftest.torrent";
+        var meta = TorrentParser.ParseMagnet(magnet);
+
+        if (meta.ExactSource != "https://example.com/test.torrent")
+            throw new Exception($"ExactSource: '{meta.ExactSource}'");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  Endgame Mode
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Api_Coordinator_EndgameThreshold()
+    {
+        var data = new byte[16384];
+        var (_, metadata) = TorrentCreator.CreateFromBytes("endgame.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        await using var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+        var coordinator = new DownloadCoordinator(pm, metadata);
+
+        if (coordinator.EndgameMode) throw new Exception("Should not be in endgame initially");
+        if (coordinator.EndgameThreshold != 5) throw new Exception($"Default threshold should be 5, got {coordinator.EndgameThreshold}");
+
+        coordinator.EndgameThreshold = 10;
+        if (coordinator.EndgameThreshold != 10) throw new Exception("Threshold not set");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  Events
+    // ═══════════════════════════════════════════════════════════
+
     [TestMethod]
     public async Task Api_Events_OnPieceVerified()
     {

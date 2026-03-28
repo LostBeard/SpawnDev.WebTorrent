@@ -56,6 +56,12 @@ public class TorrentMetadata
     /// <summary>Original .torrent file bytes (saved on parse/create).</summary>
     public byte[]? OriginalTorrentBytes { get; set; }
 
+    /// <summary>BEP 53: Selected file indices from magnet URI (null = all files).</summary>
+    public int[]? SelectedFileIndices { get; set; }
+
+    /// <summary>Exact source URL (.torrent file) from magnet URI xs= parameter.</summary>
+    public string? ExactSource { get; set; }
+
     /// <summary>Verify a downloaded piece against its hash.</summary>
     public bool VerifyPiece(int index, byte[] data)
     {

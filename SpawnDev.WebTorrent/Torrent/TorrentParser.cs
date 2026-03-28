@@ -212,6 +212,16 @@ public static class TorrentParser
                 case "ws":
                     metadata.UrlList = metadata.UrlList.Append(value).ToArray();
                     break;
+                case "so": // BEP 53: file selection indices (comma-separated)
+                    metadata.SelectedFileIndices = value.Split(',')
+                        .Select(s => s.Trim())
+                        .Where(s => int.TryParse(s, out _))
+                        .Select(int.Parse)
+                        .ToArray();
+                    break;
+                case "xs": // Exact source (.torrent URL)
+                    metadata.ExactSource = value;
+                    break;
             }
         }
 

@@ -214,10 +214,16 @@ public class TorrentSwarm : IAsyncDisposable
         if (Paused) return;
         if (_peers.Count >= 55) return;
 
+        // Private torrents: only accept peers from trackers, not DHT/PEX
+        if (IsPrivate && info.Source != "ws-tracker" && info.Source != "udp-tracker"
+            && info.Source != "http-tracker" && info.Source != "manual")
+        {
+            return;
+        }
+
         // Deduplicate
         if (!_knownPeerAddresses.Add(info.Address)) return;
 
-        // Connect asynchronously — don't block the caller
         _ = ConnectToPeerAsync(info);
     }
 

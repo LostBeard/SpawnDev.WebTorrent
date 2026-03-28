@@ -29,6 +29,12 @@ public class DownloadCoordinator
     /// <summary>Interval between update ticks in milliseconds.</summary>
     public int UpdateIntervalMs { get; set; } = 100;
 
+    /// <summary>Whether endgame mode is active (last few pieces, request from all peers).</summary>
+    public bool EndgameMode { get; private set; }
+
+    /// <summary>Threshold: enter endgame when this many pieces remain.</summary>
+    public int EndgameThreshold { get; set; } = 5;
+
     // Events
     public event Action<int>? OnPieceComplete;
     public event Action? OnDownloadComplete;
@@ -155,7 +161,28 @@ public class DownloadCoordinator
                     }
                     else
                     {
-                        OnLog?.Invoke($"Has {_activePeers.Count(p => !p.IsChoked)} unchoked peers, skipping web seed");
+                        // Suppress verbose logging after first few ticks
+                    }
+                }
+
+                // 3. Endgame mode — when few pieces remain, request from ALL peers
+                int remaining = _pieceManager.PieceCount - _pieceManager.CompletedCount;
+                if (remaining > 0 && remaining <= EndgameThreshold && _activePeers.Count > 1)
+                {
+                    if (!EndgameMode)
+                    {
+                        EndgameMode = true;
+                        OnLog?.Invoke($"Endgame mode: {remaining} pieces remaining");
+                    }
+
+                    for (int i = 0; i < _pieceManager.PieceCount; i++)
+                    {
+                        if (_pieceManager.Bitfield[i]) continue;
+                        foreach (var peer in _activePeers)
+                        {
+                            if (!peer.IsChoked && peer.Bitfield.Length > i && peer.Bitfield[i])
+                                await RequestBlocksFromPeer(peer, i);
+                        }
                     }
                 }
             }

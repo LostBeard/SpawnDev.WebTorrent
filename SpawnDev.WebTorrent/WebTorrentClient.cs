@@ -201,6 +201,18 @@ public class WebTorrentClient : IAsyncDisposable
     public TorrentSwarm? Get(byte[] infoHash)
         => _torrents.FirstOrDefault(t => t.InfoHash.SequenceEqual(infoHash));
 
+    /// <summary>
+    /// Create an HTTP server that serves torrent content with range request support.
+    /// Access files at: http://localhost:{port}/{infoHash}/{filePath}
+    /// Desktop only — browser uses blob URLs for streaming.
+    /// </summary>
+    public TorrentHttpServer CreateServer(int port = 8080)
+    {
+        var server = new TorrentHttpServer(this, port);
+        server.Start();
+        return server;
+    }
+
     /// <summary>Remove a torrent and optionally destroy its data.</summary>
     public async Task RemoveAsync(TorrentSwarm torrent, bool destroyStore = false)
     {

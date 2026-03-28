@@ -731,6 +731,95 @@ public abstract partial class WebTorrentTestBase
     }
 
     // ═══════════════════════════════════════════════════════════
+    //  HTTP Server (createServer)
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Api_CreateServer_Properties()
+    {
+        // Browser can't use HttpListener — skip
+        if (OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("TorrentHttpServer requires desktop");
+
+        await using var client = new WebTorrentClient();
+        await using var server = client.CreateServer(18765);
+
+        if (!server.IsRunning) throw new Exception("Server should be running");
+        if (!server.BaseUrl.Contains("18765")) throw new Exception($"BaseUrl: {server.BaseUrl}");
+
+        server.Stop();
+        if (server.IsRunning) throw new Exception("Should be stopped");
+    }
+
+    [TestMethod(Timeout = 15000)]
+    public async Task Api_CreateServer_ServeFile()
+    {
+        if (OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("TorrentHttpServer requires desktop");
+
+        await using var client = new WebTorrentClient();
+        var data = new byte[32768];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 256);
+
+        var swarm = await client.SeedAsync(data, "serve-test.bin",
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        await using var server = client.CreateServer(18766);
+
+        var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
+
+        // Fetch the file via HTTP
+        using var http = new HttpClient();
+        var response = await http.GetByteArrayAsync($"http://localhost:18766/{hash}/serve-test.bin");
+
+        if (response.Length != data.Length)
+            throw new Exception($"Got {response.Length} bytes, expected {data.Length}");
+        if (!response.SequenceEqual(data))
+            throw new Exception("File content mismatch");
+
+        Console.WriteLine("[API] HTTP server served file correctly");
+    }
+
+    [TestMethod(Timeout = 15000)]
+    public async Task Api_CreateServer_RangeRequest()
+    {
+        if (OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("TorrentHttpServer requires desktop");
+
+        await using var client = new WebTorrentClient();
+        var data = new byte[32768];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 256);
+
+        var swarm = await client.SeedAsync(data, "range-test.bin",
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        await using var server = client.CreateServer(18767);
+
+        var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
+
+        using var http = new HttpClient();
+        var request = new HttpRequestMessage(HttpMethod.Get, $"http://localhost:18767/{hash}/range-test.bin");
+        request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(1000, 1999);
+
+        var response = await http.SendAsync(request);
+
+        if ((int)response.StatusCode != 206)
+            throw new Exception($"Expected 206, got {(int)response.StatusCode}");
+
+        var body = await response.Content.ReadAsByteArrayAsync();
+        if (body.Length != 1000)
+            throw new Exception($"Range response: {body.Length} bytes, expected 1000");
+
+        for (int i = 0; i < 1000; i++)
+        {
+            if (body[i] != (byte)((1000 + i) % 256))
+                throw new Exception($"Range data mismatch at {i}");
+        }
+
+        Console.WriteLine("[API] HTTP server range request correct");
+    }
+
+    // ═══════════════════════════════════════════════════════════
     //  Events
     // ═══════════════════════════════════════════════════════════
 

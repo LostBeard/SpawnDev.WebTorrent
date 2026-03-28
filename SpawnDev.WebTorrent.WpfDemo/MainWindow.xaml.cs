@@ -327,6 +327,8 @@ public partial class MainWindow : Window
         DetailDownloaded.Text = FormatBytes(vm.Swarm.Downloaded);
         DetailUploaded.Text = FormatBytes(vm.Swarm.Uploaded);
         DetailRatio.Text = vm.Swarm.Ratio.ToString("F3");
+        DetailEta.Text = vm.EtaText;
+        DetailPeerCount.Text = $"{vm.Swarm.PeerCount + (vm.Coordinator?.PeerCount ?? 0)}";
         DetailHash.Text = vm.HashFull;
 
         PanelFiles.ItemsSource = vm.Files;

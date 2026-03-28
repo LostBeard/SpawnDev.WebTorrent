@@ -174,7 +174,7 @@
                 <StackPanel Grid.Row="0" Orientation="Horizontal" Background="#0d1117">
                     <Button Content="General" Tag="general" Click="Tab_Click" Style="{StaticResource TabBtn}" x:Name="TabGeneral"
                             Foreground="{StaticResource AccentGreen}" BorderBrush="{StaticResource AccentGreen}"/>
-                    <Button Content="Files" Tag="files" Click="Tab_Click" Style="{StaticResource TabBtn}" x:Name="TabFiles"/>
+                    <Button Content="Content" Tag="files" Click="Tab_Click" Style="{StaticResource TabBtn}" x:Name="TabFiles"/>
                     <Button Content="Peers" Tag="peers" Click="Tab_Click" Style="{StaticResource TabBtn}" x:Name="TabPeers"/>
                     <Button Content="Trackers" Tag="trackers" Click="Tab_Click" Style="{StaticResource TabBtn}" x:Name="TabTrackers"/>
                     <Button Content="Log" Tag="log" Click="Tab_Click" Style="{StaticResource TabBtn}" x:Name="TabLog"/>
@@ -193,6 +193,10 @@
                             <WrapPanel>
                                 <TextBlock Width="320" Margin="0,1" FontSize="12"><Run Text="Uploaded: " Foreground="#475569"/><Run x:Name="DetailUploaded" Foreground="#94a3b8"/></TextBlock>
                                 <TextBlock Width="320" Margin="0,1" FontSize="12"><Run Text="Ratio: " Foreground="#475569"/><Run x:Name="DetailRatio" Foreground="#94a3b8"/></TextBlock>
+                            </WrapPanel>
+                            <WrapPanel>
+                                <TextBlock Width="320" Margin="0,1" FontSize="12"><Run Text="ETA: " Foreground="#475569"/><Run x:Name="DetailEta" Foreground="#94a3b8"/></TextBlock>
+                                <TextBlock Width="320" Margin="0,1" FontSize="12"><Run Text="Peers: " Foreground="#475569"/><Run x:Name="DetailPeerCount" Foreground="#94a3b8"/></TextBlock>
                             </WrapPanel>
                             <TextBlock Margin="0,1" FontSize="10" FontFamily="Consolas"><Run Text="Hash: " Foreground="#475569"/><Run x:Name="DetailHash" Foreground="#334155"/></TextBlock>
                             <StackPanel Orientation="Horizontal" Margin="0,6,0,4">

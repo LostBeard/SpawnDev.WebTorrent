@@ -360,6 +360,58 @@ public abstract partial class WebTorrentTestBase
     //  UDP Tracker Client (construction only — no network)
     // ═══════════════════════════════════════════════════════════
 
+    // ═══════════════════════════════════════════════════════════
+    //  HTTP Tracker Client
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task HttpTracker_Create()
+    {
+        var peerId = new byte[20];
+        "-SD0110-"u8.CopyTo(peerId);
+
+        var tracker = new HttpTrackerClient("https://tracker.opentrackr.org:1337/announce", peerId);
+        if (tracker.Type != "http-tracker") throw new Exception($"Type: '{tracker.Type}'");
+        if (tracker.IsConnected) throw new Exception("Should not be connected before StartAsync");
+        await tracker.DisposeAsync();
+    }
+
+    [TestMethod]
+    public async Task HttpTracker_ParseUrl()
+    {
+        var peerId = new byte[20];
+        var t1 = new HttpTrackerClient("http://tracker.example.com/announce", peerId);
+        var t2 = new HttpTrackerClient("https://tracker.example.com:8080/announce", peerId);
+        await t1.DisposeAsync();
+        await t2.DisposeAsync();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  Rate Limiter Wiring
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task RateLimiter_ClientWiring()
+    {
+        var client = new WebTorrentClient();
+
+        // Set via property
+        client.UploadLimit = 50000;
+        if (client.UploadLimiter.Rate != 50000)
+            throw new Exception("UploadLimiter.Rate should match UploadLimit");
+
+        client.DownloadLimit = 100000;
+        if (client.DownloadLimiter.Rate != 100000)
+            throw new Exception("DownloadLimiter.Rate should match DownloadLimit");
+
+        // Set to unlimited
+        client.UploadLimit = -1;
+        if (client.UploadLimiter.Rate != -1)
+            throw new Exception("Should be unlimited");
+
+        await client.DisposeAsync();
+    }
+
     [TestMethod]
     public async Task UdpTracker_Create()
     {

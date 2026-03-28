@@ -2,166 +2,229 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="SpawnDev.WebTorrent — Desktop Client"
-        Width="900" Height="700"
+        Width="1100" Height="750"
         Background="{StaticResource BgPrimary}"
         WindowStartupLocation="CenterScreen">
-    <Grid Margin="16">
+
+    <Window.Resources>
+        <!-- Common button style -->
+        <Style x:Key="AccentBtn" TargetType="Button">
+            <Setter Property="Background" Value="{StaticResource AccentGreen}"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="12,5"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}" CornerRadius="5" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="ChipBtn" TargetType="Button">
+            <Setter Property="Background" Value="#0d2e24"/>
+            <Setter Property="Foreground" Value="{StaticResource AccentGreen}"/>
+            <Setter Property="BorderBrush" Value="#1a5c3a"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="8,2"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="10" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="TabBtn" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
+            <Setter Property="BorderThickness" Value="0,0,0,2"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="Padding" Value="12,6"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid>
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="150"/>
+            <RowDefinition Height="Auto"/>   <!-- toolbar -->
+            <RowDefinition Height="*"/>      <!-- torrent list -->
+            <RowDefinition Height="Auto"/>   <!-- splitter -->
+            <RowDefinition Height="250"/>    <!-- detail panel -->
+            <RowDefinition Height="Auto"/>   <!-- status bar -->
         </Grid.RowDefinitions>
 
-        <!-- Header -->
-        <TextBlock Grid.Row="0" FontSize="22" FontWeight="Bold" Foreground="{StaticResource AccentGreen}" Margin="0,0,0,12">
-            SpawnDev.WebTorrent — Desktop
-        </TextBlock>
+        <!-- ═══ Toolbar ═══ -->
+        <StackPanel Grid.Row="0" Margin="12,8,12,4">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
 
-        <!-- Add Torrent Section -->
-        <Grid Grid.Row="1" Margin="0,0,0,8">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="Auto"/>
-            </Grid.ColumnDefinitions>
-            <TextBox x:Name="MagnetInput" Grid.Column="0"
-                     Background="{StaticResource BgSecondary}" Foreground="{StaticResource TextPrimary}"
-                     BorderBrush="{StaticResource Border}" BorderThickness="1"
-                     Padding="8,6" FontFamily="Consolas" FontSize="13"
-                     VerticalContentAlignment="Center"
-                     KeyDown="MagnetInput_KeyDown">
-                <TextBox.Style>
-                    <Style TargetType="TextBox">
-                        <Style.Triggers>
-                            <Trigger Property="Text" Value="">
-                                <Setter Property="Tag" Value="Paste magnet URI or info hash..."/>
-                            </Trigger>
-                        </Style.Triggers>
-                    </Style>
-                </TextBox.Style>
-            </TextBox>
-            <Button Grid.Column="1" Content="Add" Margin="8,0,0,0" Padding="16,6"
-                    Background="{StaticResource AccentGreen}" Foreground="White" FontWeight="Bold"
-                    BorderThickness="0" Cursor="Hand"
-                    Click="AddButton_Click"/>
-        </Grid>
+                <!-- Add input -->
+                <Grid Grid.Column="0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="MagnetInput" Grid.Column="0"
+                             Background="#111827" Foreground="{StaticResource TextPrimary}"
+                             BorderBrush="{StaticResource Border}" BorderThickness="1"
+                             Padding="8,6" FontFamily="Consolas" FontSize="12"
+                             VerticalContentAlignment="Center"
+                             KeyDown="MagnetInput_KeyDown"/>
+                    <Button Grid.Column="1" Content="+ Add" Margin="6,0,0,0" Style="{StaticResource AccentBtn}"
+                            Click="AddButton_Click" FontSize="12"/>
+                    <Button Grid.Column="2" Content="Settings" Margin="6,0,0,0" Padding="10,5"
+                            Background="#1e293b" Foreground="{StaticResource TextSecondary}" BorderThickness="1"
+                            BorderBrush="{StaticResource Border}" FontSize="11" Cursor="Hand"
+                            Click="SettingsButton_Click"/>
+                </Grid>
 
-        <!-- Quick Add Buttons -->
-        <WrapPanel Grid.Row="2" Margin="0,0,0,12">
-            <TextBlock Text="Quick add:" Foreground="{StaticResource TextMuted}" VerticalAlignment="Center" Margin="0,0,8,0" FontSize="12"/>
-            <Button Content="Big Buck Bunny" Tag="BigBuckBunny" Click="QuickAdd_Click" Style="{StaticResource {x:Type Button}}"
-                    Background="{StaticResource BgSecondary}" Foreground="{StaticResource AccentGreen}"
-                    BorderBrush="{StaticResource AccentGreen}" BorderThickness="1" Padding="8,3" Margin="0,0,6,0"
-                    FontSize="11" Cursor="Hand"/>
-            <Button Content="Sintel" Tag="Sintel" Click="QuickAdd_Click"
-                    Background="{StaticResource BgSecondary}" Foreground="{StaticResource AccentGreen}"
-                    BorderBrush="{StaticResource AccentGreen}" BorderThickness="1" Padding="8,3" Margin="0,0,6,0"
-                    FontSize="11" Cursor="Hand"/>
-            <Button Content="Cosmos Laundromat" Tag="CosmosLaundromat" Click="QuickAdd_Click"
-                    Background="{StaticResource BgSecondary}" Foreground="{StaticResource AccentGreen}"
-                    BorderBrush="{StaticResource AccentGreen}" BorderThickness="1" Padding="8,3" Margin="0,0,6,0"
-                    FontSize="11" Cursor="Hand"/>
-            <Button Content="Tears of Steel" Tag="TearsOfSteel" Click="QuickAdd_Click"
-                    Background="{StaticResource BgSecondary}" Foreground="{StaticResource AccentGreen}"
-                    BorderBrush="{StaticResource AccentGreen}" BorderThickness="1" Padding="8,3" Margin="0,0,6,0"
-                    FontSize="11" Cursor="Hand"/>
-        </WrapPanel>
+                <!-- Speed display -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="12,0,0,0" VerticalAlignment="Center">
+                    <TextBlock Foreground="{StaticResource AccentGreen}" FontSize="12" FontWeight="Bold" Margin="0,0,12,0">
+                        <Run Text="&#x25BC; "/><Run x:Name="DownSpeedText" Text="0 B/s"/>
+                    </TextBlock>
+                    <TextBlock Foreground="{StaticResource AccentBlue}" FontSize="12" FontWeight="Bold">
+                        <Run Text="&#x25B2; "/><Run x:Name="UpSpeedText" Text="0 B/s"/>
+                    </TextBlock>
+                </StackPanel>
+            </Grid>
 
-        <!-- Stats Bar -->
-        <Border Grid.Row="3" Background="{StaticResource BgSecondary}" BorderBrush="{StaticResource Border}"
-                BorderThickness="1" CornerRadius="6" Padding="8" Margin="0,0,0,8"
-                VerticalAlignment="Top" Height="Auto">
-            <StackPanel Orientation="Horizontal">
-                <TextBlock Foreground="{StaticResource TextSecondary}" FontSize="12">
-                    <Run Text="Torrents: "/><Run x:Name="TorrentCountText" Text="0" Foreground="{StaticResource TextPrimary}" FontWeight="Bold"/>
-                    <Run Text="    Peer ID: "/><Run x:Name="PeerIdText" Text="-SD0110-" Foreground="{StaticResource AccentGreen}" FontFamily="Consolas"/>
-                </TextBlock>
-            </StackPanel>
-        </Border>
+            <!-- Quick add chips -->
+            <WrapPanel Margin="0,6,0,0">
+                <TextBlock Text="Quick add:" Foreground="{StaticResource TextMuted}" VerticalAlignment="Center" Margin="0,0,6,0" FontSize="11"/>
+                <Button Content="Big Buck Bunny" Tag="BigBuckBunny" Click="QuickAdd_Click" Style="{StaticResource ChipBtn}" Margin="0,0,4,0"/>
+                <Button Content="Sintel" Tag="Sintel" Click="QuickAdd_Click" Style="{StaticResource ChipBtn}" Margin="0,0,4,0"/>
+                <Button Content="Cosmos Laundromat" Tag="CosmosLaundromat" Click="QuickAdd_Click" Style="{StaticResource ChipBtn}" Margin="0,0,4,0"/>
+                <Button Content="Tears of Steel" Tag="TearsOfSteel" Click="QuickAdd_Click" Style="{StaticResource ChipBtn}" Margin="0,0,4,0"/>
+            </WrapPanel>
+        </StackPanel>
 
-        <!-- Torrent List -->
-        <ListView x:Name="TorrentList" Grid.Row="3" Margin="0,40,0,0"
+        <!-- ═══ Torrent List ═══ -->
+        <ListView x:Name="TorrentListView" Grid.Row="1" Margin="12,4,12,0"
                   Background="Transparent" BorderThickness="0"
-                  ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-            <ListView.ItemTemplate>
-                <DataTemplate>
-                    <Border Background="{StaticResource BgCard}" BorderBrush="{StaticResource Border}"
-                            BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,0,8"
-                            MinWidth="830">
-                        <StackPanel>
-                            <!-- Name + Tags Row -->
-                            <DockPanel>
-                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                                    <Border Background="#1a3a5c" CornerRadius="3" Padding="6,2" Margin="4,0">
-                                        <TextBlock Text="{Binding SizeText}" Foreground="#60a5fa" FontSize="11"/>
-                                    </Border>
-                                    <Border Background="#1a2d3a" CornerRadius="3" Padding="6,2" Margin="4,0">
-                                        <TextBlock Text="{Binding PiecesText}" Foreground="#a78bfa" FontSize="11"/>
-                                    </Border>
-                                    <Border Background="#0f2e24" CornerRadius="3" Padding="6,2" Margin="4,0">
-                                        <TextBlock Text="{Binding HashShort}" Foreground="#34d399" FontSize="11" FontFamily="Consolas"/>
-                                    </Border>
-                                </StackPanel>
-                                <TextBlock Text="{Binding Name}" Foreground="{StaticResource TextPrimary}"
-                                           FontWeight="SemiBold" FontSize="14" TextTrimming="CharacterEllipsis"/>
-                            </DockPanel>
-
-                            <!-- Progress Bar -->
-                            <Grid Margin="0,8,0,4" Height="6">
-                                <Border Background="#1e293b" CornerRadius="3"/>
-                                <Border CornerRadius="3" HorizontalAlignment="Left" Width="{Binding ProgressWidth}">
-                                    <Border.Background>
-                                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
-                                            <GradientStop Color="#10b981" Offset="0"/>
-                                            <GradientStop Color="#3b82f6" Offset="1"/>
-                                        </LinearGradientBrush>
-                                    </Border.Background>
-                                </Border>
-                            </Grid>
-
-                            <!-- Progress Text -->
-                            <TextBlock Foreground="{StaticResource TextMuted}" FontSize="11">
-                                <Run Text="{Binding ProgressText, Mode=OneWay}"/>
-                                <Run Text="{Binding StatusText, Mode=OneWay}"/>
-                            </TextBlock>
-
-                            <!-- Files (if expanded) -->
-                            <ItemsControl ItemsSource="{Binding Files}" Margin="0,6,0,0" Visibility="{Binding FilesVisibility}">
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <DockPanel Margin="0,2">
-                                            <TextBlock DockPanel.Dock="Right" Text="{Binding SizeText}"
-                                                       Foreground="{StaticResource TextMuted}" FontSize="11" Margin="8,0,0,0"/>
-                                            <TextBlock Text="{Binding Path}" Foreground="{StaticResource TextSecondary}"
-                                                       FontSize="11" TextTrimming="CharacterEllipsis"/>
-                                        </DockPanel>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-
-                            <!-- Remove Button -->
-                            <Button Content="Remove" HorizontalAlignment="Left" Margin="0,8,0,0" Padding="8,3"
-                                    Background="#2d1a1a" Foreground="#f87171" BorderBrush="#7f1d1d" BorderThickness="1"
-                                    FontSize="11" Cursor="Hand"
-                                    Click="RemoveTorrent_Click" Tag="{Binding HashFull}"/>
-                        </StackPanel>
-                    </Border>
-                </DataTemplate>
-            </ListView.ItemTemplate>
+                  SelectionChanged="TorrentList_SelectionChanged"
+                  Foreground="{StaticResource TextSecondary}">
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Header="Name" Width="280" DisplayMemberBinding="{Binding Name}"/>
+                    <GridViewColumn Header="Size" Width="80" DisplayMemberBinding="{Binding SizeText}"/>
+                    <GridViewColumn Header="Progress" Width="100">
+                        <GridViewColumn.CellTemplate>
+                            <DataTemplate>
+                                <Grid Width="90">
+                                    <ProgressBar Value="{Binding ProgressPercent}" Maximum="100" Height="8"
+                                                 Background="#1e293b" Foreground="#10b981" BorderThickness="0"/>
+                                    <TextBlock Text="{Binding ProgressText}" Foreground="{StaticResource TextMuted}"
+                                               FontSize="10" FontFamily="Consolas" HorizontalAlignment="Right" Margin="0,-2,0,0"/>
+                                </Grid>
+                            </DataTemplate>
+                        </GridViewColumn.CellTemplate>
+                    </GridViewColumn>
+                    <GridViewColumn Header="Peers" Width="50" DisplayMemberBinding="{Binding PeerCount}"/>
+                    <GridViewColumn Header="Status" Width="90" DisplayMemberBinding="{Binding StatusText}"/>
+                    <GridViewColumn Header="Hash" Width="80" DisplayMemberBinding="{Binding HashShort}"/>
+                </GridView>
+            </ListView.View>
         </ListView>
 
-        <!-- Log Label -->
-        <TextBlock Grid.Row="4" Text="Activity Log" Foreground="{StaticResource TextSecondary}" FontSize="12" Margin="0,8,0,4"/>
+        <!-- Splitter -->
+        <GridSplitter Grid.Row="2" Height="4" HorizontalAlignment="Stretch"
+                      Background="{StaticResource Border}" Margin="12,2"/>
 
-        <!-- Activity Log -->
-        <Border Grid.Row="5" Background="{StaticResource BgSecondary}" BorderBrush="{StaticResource Border}"
-                BorderThickness="1" CornerRadius="6" Padding="8">
-            <ScrollViewer x:Name="LogScroller" VerticalScrollBarVisibility="Auto">
-                <TextBlock x:Name="LogText" Foreground="{StaticResource TextMuted}" FontFamily="Consolas"
-                           FontSize="11" TextWrapping="Wrap"/>
-            </ScrollViewer>
+        <!-- ═══ Detail Panel ═══ -->
+        <Grid Grid.Row="3" Margin="12,0,12,0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- Tabs -->
+            <StackPanel Grid.Row="0" Orientation="Horizontal" Background="#111827">
+                <Button Content="General" Tag="general" Click="Tab_Click" Style="{StaticResource TabBtn}" x:Name="TabGeneral"
+                        Foreground="{StaticResource AccentGreen}" BorderBrush="{StaticResource AccentGreen}"/>
+                <Button Content="Files" Tag="files" Click="Tab_Click" Style="{StaticResource TabBtn}" x:Name="TabFiles"/>
+                <Button Content="Trackers" Tag="trackers" Click="Tab_Click" Style="{StaticResource TabBtn}" x:Name="TabTrackers"/>
+                <Button Content="Log" Tag="log" Click="Tab_Click" Style="{StaticResource TabBtn}" x:Name="TabLog"/>
+            </StackPanel>
+
+            <!-- Tab content -->
+            <Grid Grid.Row="1" Background="#0d1117">
+                <!-- General tab -->
+                <ScrollViewer x:Name="PanelGeneral" VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="10,8">
+                        <WrapPanel>
+                            <TextBlock Width="350" Margin="0,2"><Run Text="Name: " Foreground="{StaticResource TextMuted}"/><Run x:Name="DetailName" Foreground="{StaticResource TextPrimary}"/></TextBlock>
+                            <TextBlock Width="350" Margin="0,2"><Run Text="Size: " Foreground="{StaticResource TextMuted}"/><Run x:Name="DetailSize" Foreground="{StaticResource TextSecondary}"/></TextBlock>
+                        </WrapPanel>
+                        <WrapPanel>
+                            <TextBlock Width="350" Margin="0,2"><Run Text="Pieces: " Foreground="{StaticResource TextMuted}"/><Run x:Name="DetailPieces" Foreground="{StaticResource TextSecondary}"/></TextBlock>
+                            <TextBlock Width="350" Margin="0,2"><Run Text="Downloaded: " Foreground="{StaticResource TextMuted}"/><Run x:Name="DetailDownloaded" Foreground="{StaticResource TextSecondary}"/></TextBlock>
+                        </WrapPanel>
+                        <TextBlock Margin="0,2" FontSize="11" FontFamily="Consolas"><Run Text="Hash: " Foreground="{StaticResource TextMuted}"/><Run x:Name="DetailHash" Foreground="{StaticResource TextMuted}"/></TextBlock>
+                        <TextBlock Text="Pieces" Foreground="{StaticResource TextMuted}" FontSize="10" Margin="0,8,0,2"/>
+                        <WrapPanel x:Name="PieceMapPanel"/>
+                    </StackPanel>
+                </ScrollViewer>
+
+                <!-- Files tab -->
+                <ListView x:Name="PanelFiles" Visibility="Collapsed" Background="Transparent" BorderThickness="0"
+                          Foreground="{StaticResource TextSecondary}" FontSize="12">
+                    <ListView.View>
+                        <GridView>
+                            <GridViewColumn Header="File" Width="400" DisplayMemberBinding="{Binding Path}"/>
+                            <GridViewColumn Header="Size" Width="100" DisplayMemberBinding="{Binding SizeText}"/>
+                            <GridViewColumn Header="Type" Width="60" DisplayMemberBinding="{Binding Ext}"/>
+                        </GridView>
+                    </ListView.View>
+                </ListView>
+
+                <!-- Trackers tab -->
+                <ListView x:Name="PanelTrackers" Visibility="Collapsed" Background="Transparent" BorderThickness="0"
+                          Foreground="{StaticResource TextSecondary}" FontSize="12">
+                    <ListView.View>
+                        <GridView>
+                            <GridViewColumn Header="Tracker" Width="400" DisplayMemberBinding="{Binding Url}"/>
+                            <GridViewColumn Header="Status" Width="150" DisplayMemberBinding="{Binding Status}"/>
+                        </GridView>
+                    </ListView.View>
+                </ListView>
+
+                <!-- Log tab -->
+                <ScrollViewer x:Name="PanelLog" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+                    <TextBlock x:Name="LogText" Foreground="{StaticResource TextMuted}" FontFamily="Consolas"
+                               FontSize="11" TextWrapping="Wrap" Margin="8"/>
+                </ScrollViewer>
+            </Grid>
+        </Grid>
+
+        <!-- ═══ Status Bar ═══ -->
+        <Border Grid.Row="4" Background="#111827" BorderBrush="{StaticResource Border}" BorderThickness="0,1,0,0" Padding="12,4">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Foreground="{StaticResource TextMuted}" FontSize="11">
+                    <Run x:Name="StatusTorrents" Text="0 torrents"/>
+                    <Run Text="  |  "/>
+                    <Run x:Name="StatusPeers" Text="0 peers"/>
+                    <Run Text="  |  "/>
+                    <Run Text="Peer ID: "/><Run x:Name="StatusPeerId" Text="-SD0110-" Foreground="#475569" FontFamily="Consolas"/>
+                    <Run Text="  |  "/>
+                    <Run Text="SpawnDev.WebTorrent v1.1.0"/>
+                </TextBlock>
+            </StackPanel>
         </Border>
     </Grid>
 </Window>

@@ -1,0 +1,62 @@
+<Window x:Class="SpawnDev.WebTorrent.WpfDemo.SettingsDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Settings — SpawnDev.WebTorrent"
+        Width="450" Height="400"
+        Background="{StaticResource BgPrimary}"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize">
+    <StackPanel Margin="20">
+        <!-- Transfer -->
+        <TextBlock Text="Transfer" Foreground="{StaticResource TextPrimary}" FontWeight="Bold" FontSize="14" Margin="0,0,0,8"/>
+        <Border BorderBrush="{StaticResource Border}" BorderThickness="0,0,0,1" Margin="0,0,0,12" Padding="0,0,0,12">
+            <StackPanel>
+                <Grid Margin="0,4">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="200"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                    <TextBlock Text="Download Limit (KB/s)" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center"/>
+                    <TextBox x:Name="DownLimitBox" Grid.Column="1" Background="#111827" Foreground="{StaticResource TextPrimary}"
+                             BorderBrush="{StaticResource Border}" Padding="6,3" FontFamily="Consolas" Text="0"/>
+                </Grid>
+                <Grid Margin="0,4">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="200"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                    <TextBlock Text="Upload Limit (KB/s)" Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center"/>
+                    <TextBox x:Name="UpLimitBox" Grid.Column="1" Background="#111827" Foreground="{StaticResource TextPrimary}"
+                             BorderBrush="{StaticResource Border}" Padding="6,3" FontFamily="Consolas" Text="0"/>
+                </Grid>
+                <TextBlock Text="0 = unlimited" Foreground="{StaticResource TextMuted}" FontSize="10" Margin="200,2,0,0"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Trackers -->
+        <TextBlock Text="Default Trackers" Foreground="{StaticResource TextPrimary}" FontWeight="Bold" FontSize="14" Margin="0,0,0,8"/>
+        <Border BorderBrush="{StaticResource Border}" BorderThickness="0,0,0,1" Margin="0,0,0,12" Padding="0,0,0,12">
+            <StackPanel>
+                <TextBlock Text="wss://hub.spawndev.com:44365/announce" Foreground="{StaticResource TextMuted}" FontFamily="Consolas" FontSize="10" Margin="0,1"/>
+                <TextBlock Text="wss://tracker.openwebtorrent.com" Foreground="{StaticResource TextMuted}" FontFamily="Consolas" FontSize="10" Margin="0,1"/>
+                <TextBlock Text="wss://tracker.files.fm:7073/announce" Foreground="{StaticResource TextMuted}" FontFamily="Consolas" FontSize="10" Margin="0,1"/>
+                <TextBlock Text="wss://tracker.ghostchu-services.top:443/announce" Foreground="{StaticResource TextMuted}" FontFamily="Consolas" FontSize="10" Margin="0,1"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Client Info -->
+        <TextBlock Text="Client" Foreground="{StaticResource TextPrimary}" FontWeight="Bold" FontSize="14" Margin="0,0,0,8"/>
+        <Grid Margin="0,2"><Grid.ColumnDefinitions><ColumnDefinition Width="120"/><ColumnDefinition/></Grid.ColumnDefinitions>
+            <TextBlock Text="Peer ID" Foreground="{StaticResource TextMuted}"/>
+            <TextBlock x:Name="PeerIdText" Grid.Column="1" Foreground="{StaticResource AccentGreen}" FontFamily="Consolas"/>
+        </Grid>
+        <Grid Margin="0,2"><Grid.ColumnDefinitions><ColumnDefinition Width="120"/><ColumnDefinition/></Grid.ColumnDefinitions>
+            <TextBlock Text="Version" Foreground="{StaticResource TextMuted}"/>
+            <TextBlock Text="1.1.0" Grid.Column="1" Foreground="{StaticResource TextSecondary}"/>
+        </Grid>
+        <Grid Margin="0,2"><Grid.ColumnDefinitions><ColumnDefinition Width="120"/><ColumnDefinition/></Grid.ColumnDefinitions>
+            <TextBlock Text="Platform" Foreground="{StaticResource TextMuted}"/>
+            <TextBlock Text="Desktop (.NET WPF)" Grid.Column="1" Foreground="{StaticResource TextSecondary}"/>
+        </Grid>
+
+        <!-- Close -->
+        <Button Content="Close" HorizontalAlignment="Right" Margin="0,16,0,0" Padding="16,6"
+                Background="{StaticResource BgSecondary}" Foreground="{StaticResource TextSecondary}"
+                BorderBrush="{StaticResource Border}" BorderThickness="1" Cursor="Hand"
+                Click="Close_Click"/>
+    </StackPanel>
+</Window>

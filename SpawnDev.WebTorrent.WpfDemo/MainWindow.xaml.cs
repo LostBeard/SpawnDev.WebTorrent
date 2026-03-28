@@ -1,14 +1,17 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.IO;
 using System.Net.Http;
 using System.Runtime.CompilerServices;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Shapes;
 using System.Windows.Threading;
 using SpawnDev.WebTorrent.Discovery;
 using SpawnDev.WebTorrent.Storage;
 using SpawnDev.WebTorrent.Torrent;
-using SpawnDev.WebTorrent.Transports;
 
 namespace SpawnDev.WebTorrent.WpfDemo;
 
@@ -17,6 +20,8 @@ public partial class MainWindow : Window
     private readonly WebTorrentClient _client;
     private readonly ObservableCollection<TorrentViewModel> _torrents = new();
     private readonly DispatcherTimer _refreshTimer;
+    private TorrentViewModel? _selectedVm;
+    private string _currentTab = "general";
 
     private static readonly Dictionary<string, string> CCMagnets = new()
     {
@@ -30,15 +35,17 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         _client = new WebTorrentClient();
-        TorrentList.ItemsSource = _torrents;
-        PeerIdText.Text = System.Text.Encoding.ASCII.GetString(_client.PeerId, 0, 8);
+        TorrentListView.ItemsSource = _torrents;
+        StatusPeerId.Text = System.Text.Encoding.ASCII.GetString(_client.PeerId, 0, 8);
 
-        _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+        _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _refreshTimer.Tick += (_, _) => RefreshUI();
         _refreshTimer.Start();
 
-        Log("Client initialized. Peer ID: " + PeerIdText.Text);
+        Log("SpawnDev.WebTorrent Desktop Client initialized");
     }
+
+    // ── Event Handlers ──
 
     private void MagnetInput_KeyDown(object sender, KeyEventArgs e)
     {
@@ -54,42 +61,42 @@ public partial class MainWindow : Window
 
     private void QuickAdd_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is System.Windows.Controls.Button btn && btn.Tag is string tag && CCMagnets.TryGetValue(tag, out var magnet))
+        if (sender is Button btn && btn.Tag is string tag && CCMagnets.TryGetValue(tag, out var magnet))
+            _ = AddMagnetAsync(magnet, btn.Content?.ToString());
+    }
+
+    private void SettingsButton_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new SettingsDialog(_client) { Owner = this };
+        dlg.ShowDialog();
+    }
+
+    private void TorrentList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        _selectedVm = TorrentListView.SelectedItem as TorrentViewModel;
+        UpdateDetailPanel();
+    }
+
+    private void Tab_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is Button btn && btn.Tag is string tab)
         {
-            var name = btn.Content?.ToString();
-            _ = AddMagnetAsync(magnet, name);
+            _currentTab = tab;
+            UpdateTabVisuals();
+            UpdateDetailPanel();
         }
     }
 
-    private void RemoveTorrent_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is System.Windows.Controls.Button btn && btn.Tag is string hash)
-        {
-            var entry = _torrents.FirstOrDefault(t => t.HashFull == hash);
-            if (entry != null)
-            {
-                entry.Coordinator?.Stop();
-                _torrents.Remove(entry);
-                Log($"Removed: {entry.Name}");
-                RefreshUI();
-            }
-        }
-    }
+    // ── Core Logic ──
 
     private async Task AddMagnetAsync(string magnetUri, string? displayName)
     {
         MagnetInput.Text = "";
-
         try
         {
             var swarm = await _client.AddAsync(magnetUri);
             var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
-
-            if (_torrents.Any(t => t.HashFull == hash))
-            {
-                Log($"Already added: {displayName ?? hash[..8]}");
-                return;
-            }
+            if (_torrents.Any(t => t.HashFull == hash)) { Log($"Already added: {displayName ?? hash[..8]}"); return; }
 
             var vm = new TorrentViewModel
             {
@@ -98,41 +105,32 @@ public partial class MainWindow : Window
                 HashFull = hash,
                 HashShort = hash[..8] + "...",
             };
-
             _torrents.Add(vm);
+            TorrentListView.SelectedItem = vm;
             Log($"Added: {vm.Name}");
-            RefreshUI();
 
-            // Fetch metadata and start download
             await FetchMetadataAndDownloadAsync(vm, magnetUri);
+            await ConnectTrackersAsync(vm, magnetUri);
         }
-        catch (Exception ex)
-        {
-            Log($"Error: {ex.Message}");
-        }
+        catch (Exception ex) { Log($"Error: {ex.Message}"); }
     }
 
     private async Task FetchMetadataAndDownloadAsync(TorrentViewModel vm, string magnetUri)
     {
         string? torrentUrl = null;
         var webSeedUrls = new List<string>();
-
         foreach (var part in magnetUri.Split('&'))
         {
             var p = part.Contains('?') ? part.Split('?').Last() : part;
-            var eqIdx = p.IndexOf('=');
-            if (eqIdx < 0) continue;
-            var key = p[..eqIdx];
-            var val = Uri.UnescapeDataString(p[(eqIdx + 1)..].Replace('+', ' '));
-            if (key == "xs") torrentUrl = val;
-            if (key == "ws") webSeedUrls.Add(val);
+            var eq = p.IndexOf('=');
+            if (eq < 0) continue;
+            var k = p[..eq];
+            var v = Uri.UnescapeDataString(p[(eq + 1)..].Replace('+', ' '));
+            if (k == "xs") torrentUrl = v;
+            if (k == "ws") webSeedUrls.Add(v);
         }
 
-        if (torrentUrl == null)
-        {
-            Log($"[{vm.Name}] No .torrent URL — waiting for peers");
-            return;
-        }
+        if (torrentUrl == null) { Log($"[{vm.Name}] No xs= URL"); return; }
 
         try
         {
@@ -140,12 +138,7 @@ public partial class MainWindow : Window
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
             var torrentBytes = await http.GetByteArrayAsync(torrentUrl);
             var metadata = TorrentParser.Parse(torrentBytes);
-
-            if (!metadata.InfoHash.SequenceEqual(vm.Swarm.InfoHash))
-            {
-                Log($"[{vm.Name}] Info hash mismatch!");
-                return;
-            }
+            if (!metadata.InfoHash.SequenceEqual(vm.Swarm.InfoHash)) return;
 
             foreach (var ws in metadata.UrlList)
                 if (!webSeedUrls.Contains(ws)) webSeedUrls.Add(ws);
@@ -153,82 +146,150 @@ public partial class MainWindow : Window
             vm.Swarm.SetMetadata(metadata);
             vm.Name = metadata.Name;
             vm.SizeText = FormatBytes(metadata.TotalLength);
-            vm.PiecesText = $"{metadata.PieceCount} pcs";
+
             vm.Files.Clear();
             foreach (var f in metadata.Files)
-                vm.Files.Add(new FileViewModel { Path = f.Path, SizeText = FormatBytes(f.Length) });
+                vm.Files.Add(new FileViewModel { Path = f.Path, SizeText = FormatBytes(f.Length), Ext = System.IO.Path.GetExtension(f.Path) });
 
-            Log($"[{vm.Name}] {metadata.Files.Length} file(s), {FormatBytes(metadata.TotalLength)}, {metadata.PieceCount} pieces");
+            vm.TrackerEntries.Clear();
 
-            var store = new MemoryChunkStore(metadata.PieceLength);
-            var pm = new PieceManager(metadata, store);
-            var coordinator = new DownloadCoordinator(pm, metadata);
-            vm.PieceManager = pm;
-            vm.Coordinator = coordinator;
+            foreach (var ws in webSeedUrls) vm.Swarm.AddWebSeed(ws);
+            vm.Swarm.StartDownload();
 
-            foreach (var wsUrl in webSeedUrls)
-            {
-                coordinator.AddWebSeed(new HttpClient { Timeout = TimeSpan.FromSeconds(30) }, wsUrl);
-                Log($"[{vm.Name}] Web seed: {wsUrl}");
-            }
+            vm.Swarm.OnDone += () => Dispatcher.Invoke(() => { Log($"[{vm.Name}] Download complete!"); });
 
-            coordinator.OnPieceComplete += (idx) => Dispatcher.Invoke(RefreshUI);
-            coordinator.OnDownloadComplete += () =>
-            {
-                Dispatcher.Invoke(() =>
-                {
-                    Log($"[{vm.Name}] Download complete!");
-                    RefreshUI();
-                });
-            };
-
-            coordinator.Start();
-            Log($"[{vm.Name}] Download started ({webSeedUrls.Count} web seed(s))");
-            RefreshUI();
+            Log($"[{vm.Name}] {FormatBytes(metadata.TotalLength)}, {metadata.PieceCount} pieces, {webSeedUrls.Count} web seed(s)");
         }
-        catch (Exception ex)
+        catch (Exception ex) { Log($"[{vm.Name}] {ex.Message}"); }
+    }
+
+    private async Task ConnectTrackersAsync(TorrentViewModel vm, string magnetUri)
+    {
+        var trackers = new List<string>();
+        foreach (var part in magnetUri.Split('&'))
         {
-            Log($"[{vm.Name}] Error: {ex.Message}");
+            var p = part.Contains('?') ? part.Split('?').Last() : part;
+            if (p.StartsWith("tr="))
+            {
+                var url = Uri.UnescapeDataString(p[3..].Replace('+', ' '));
+                if (url.StartsWith("wss://")) trackers.Add(url);
+            }
+        }
+        if (trackers.Count == 0) trackers.AddRange(new[] { "wss://hub.spawndev.com:44365/announce", "wss://tracker.openwebtorrent.com" });
+
+        foreach (var url in trackers)
+        {
+            var te = new TrackerViewModel { Url = url, Status = "Connecting..." };
+            vm.TrackerEntries.Add(te);
+            try
+            {
+                var tracker = new WebSocketTrackerClient(url, _client.PeerId);
+                tracker.OnAnnounceResponse += (s, l) => Dispatcher.Invoke(() => { te.Status = $"{s}S / {l}L"; });
+                tracker.OnError += (err) => Dispatcher.Invoke(() => { te.Status = $"Error"; });
+                await tracker.StartAsync(vm.Swarm.InfoHash, 0);
+                te.Status = "Connected";
+                break;
+            }
+            catch { te.Status = "Failed"; }
         }
     }
+
+    // ── UI Updates ──
 
     private void RefreshUI()
     {
-        TorrentCountText.Text = _torrents.Count.ToString();
+        StatusTorrents.Text = $"{_torrents.Count} torrents";
+        StatusPeers.Text = $"{_torrents.Sum(t => t.Swarm.PeerCount)} peers";
+
         foreach (var vm in _torrents)
         {
-            var progress = vm.PieceManager?.Progress ?? 0;
-            var completed = vm.PieceManager?.CompletedCount ?? 0;
-            var total = vm.Swarm.Metadata?.PieceCount ?? 0;
-            vm.ProgressText = $"{(progress * 100):F1}% — {completed}/{total} pieces";
-            vm.ProgressWidth = Math.Max(0, progress * 830);
-            vm.StatusText = vm.PieceManager?.IsComplete == true ? "  COMPLETE" : "";
-            vm.FilesVisibility = vm.Files.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
-            vm.OnPropertyChanged(nameof(TorrentViewModel.ProgressText));
-            vm.OnPropertyChanged(nameof(TorrentViewModel.ProgressWidth));
-            vm.OnPropertyChanged(nameof(TorrentViewModel.StatusText));
-            vm.OnPropertyChanged(nameof(TorrentViewModel.SizeText));
-            vm.OnPropertyChanged(nameof(TorrentViewModel.PiecesText));
-            vm.OnPropertyChanged(nameof(TorrentViewModel.Name));
-            vm.OnPropertyChanged(nameof(TorrentViewModel.FilesVisibility));
+            var pm = vm.Swarm.PieceManager;
+            vm.ProgressPercent = (pm?.Progress ?? 0) * 100;
+            vm.ProgressText = $"{vm.ProgressPercent:F1}%";
+            vm.PeerCount = vm.Swarm.PeerCount;
+            vm.StatusText = pm?.IsComplete == true ? "Seeding" : pm != null && pm.CompletedCount > 0 ? "Downloading" : vm.Swarm.HasMetadata ? "Waiting" : "Metadata";
+            vm.Notify();
+        }
+
+        if (_selectedVm != null && _currentTab == "general")
+            UpdatePieceMap();
+    }
+
+    private void UpdateDetailPanel()
+    {
+        if (_selectedVm == null) return;
+        var vm = _selectedVm;
+        var pm = vm.Swarm.PieceManager;
+
+        DetailName.Text = vm.Swarm.Metadata?.Name ?? vm.Name ?? "—";
+        DetailSize.Text = vm.Swarm.HasMetadata ? FormatBytes(vm.Swarm.Metadata!.TotalLength) : "—";
+        DetailPieces.Text = pm != null ? $"{pm.CompletedCount} / {pm.PieceCount}" : "—";
+        DetailDownloaded.Text = FormatBytes(vm.Swarm.Downloaded);
+        DetailHash.Text = vm.HashFull;
+
+        PanelFiles.ItemsSource = vm.Files;
+        PanelTrackers.ItemsSource = vm.TrackerEntries;
+
+        UpdateTabVisuals();
+        UpdatePieceMap();
+    }
+
+    private void UpdateTabVisuals()
+    {
+        // Tab highlighting
+        TabGeneral.Foreground = _currentTab == "general" ? (Brush)FindResource("AccentGreen") : (Brush)FindResource("TextMuted");
+        TabGeneral.BorderBrush = _currentTab == "general" ? (Brush)FindResource("AccentGreen") : Brushes.Transparent;
+        TabFiles.Foreground = _currentTab == "files" ? (Brush)FindResource("AccentGreen") : (Brush)FindResource("TextMuted");
+        TabFiles.BorderBrush = _currentTab == "files" ? (Brush)FindResource("AccentGreen") : Brushes.Transparent;
+        TabTrackers.Foreground = _currentTab == "trackers" ? (Brush)FindResource("AccentGreen") : (Brush)FindResource("TextMuted");
+        TabTrackers.BorderBrush = _currentTab == "trackers" ? (Brush)FindResource("AccentGreen") : Brushes.Transparent;
+        TabLog.Foreground = _currentTab == "log" ? (Brush)FindResource("AccentGreen") : (Brush)FindResource("TextMuted");
+        TabLog.BorderBrush = _currentTab == "log" ? (Brush)FindResource("AccentGreen") : Brushes.Transparent;
+
+        PanelGeneral.Visibility = _currentTab == "general" ? Visibility.Visible : Visibility.Collapsed;
+        PanelFiles.Visibility = _currentTab == "files" ? Visibility.Visible : Visibility.Collapsed;
+        PanelTrackers.Visibility = _currentTab == "trackers" ? Visibility.Visible : Visibility.Collapsed;
+        PanelLog.Visibility = _currentTab == "log" ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void UpdatePieceMap()
+    {
+        PieceMapPanel.Children.Clear();
+        var bf = _selectedVm?.Swarm.PieceManager?.Bitfield;
+        if (bf == null) return;
+
+        int total = bf.Length;
+        int cols = Math.Min(total, 120);
+        int step = Math.Max(1, total / cols);
+
+        for (int i = 0; i < cols; i++)
+        {
+            int start = i * step;
+            int end = Math.Min((i + 1) * step, total);
+            bool any = false;
+            for (int j = start; j < end; j++) if (bf[j]) { any = true; break; }
+
+            var rect = new Rectangle
+            {
+                Width = 5, Height = 5,
+                Fill = any ? new SolidColorBrush(Color.FromRgb(16, 185, 129)) : new SolidColorBrush(Color.FromRgb(30, 41, 59)),
+                Margin = new Thickness(0.5),
+                RadiusX = 1, RadiusY = 1,
+            };
+            PieceMapPanel.Children.Add(rect);
         }
     }
 
-    private void Log(string message)
+    private void Log(string msg)
     {
-        var line = $"[{DateTime.Now:HH:mm:ss}] {message}\n";
+        var line = $"[{DateTime.Now:HH:mm:ss}] {msg}\n";
         LogText.Text += line;
-        LogScroller.ScrollToEnd();
     }
 
-    private static string FormatBytes(long bytes)
-    {
-        if (bytes < 1024) return $"{bytes} B";
-        if (bytes < 1048576) return $"{bytes / 1024.0:F1} KB";
-        if (bytes < 1073741824) return $"{bytes / 1048576.0:F1} MB";
-        return $"{bytes / 1073741824.0:F2} GB";
-    }
+    private static string FormatBytes(long b) => b < 1024 ? $"{b} B" : b < 1048576 ? $"{b / 1024.0:F1} KB" : b < 1073741824 ? $"{b / 1048576.0:F1} MB" : $"{b / 1073741824.0:F2} GB";
 }
+
+// ── View Models ──
 
 public class TorrentViewModel : INotifyPropertyChanged
 {
@@ -236,23 +297,37 @@ public class TorrentViewModel : INotifyPropertyChanged
     public string Name { get; set; } = "";
     public string HashFull { get; set; } = "";
     public string HashShort { get; set; } = "";
-    public string SizeText { get; set; } = "";
-    public string PiecesText { get; set; } = "";
+    public string SizeText { get; set; } = "—";
     public string ProgressText { get; set; } = "0.0%";
-    public string StatusText { get; set; } = "";
-    public double ProgressWidth { get; set; }
-    public Visibility FilesVisibility { get; set; } = Visibility.Collapsed;
+    public double ProgressPercent { get; set; }
+    public int PeerCount { get; set; }
+    public string StatusText { get; set; } = "Metadata";
     public ObservableCollection<FileViewModel> Files { get; } = new();
-    public PieceManager? PieceManager { get; set; }
-    public DownloadCoordinator? Coordinator { get; set; }
+    public ObservableCollection<TrackerViewModel> TrackerEntries { get; } = new();
 
     public event PropertyChangedEventHandler? PropertyChanged;
-    public void OnPropertyChanged([CallerMemberName] string? name = null)
-        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    public void Notify()
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Name)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SizeText)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ProgressText)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ProgressPercent)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PeerCount)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(StatusText)));
+    }
 }
 
 public class FileViewModel
 {
     public string Path { get; set; } = "";
     public string SizeText { get; set; } = "";
+    public string Ext { get; set; } = "";
+}
+
+public class TrackerViewModel : INotifyPropertyChanged
+{
+    private string _status = "";
+    public string Url { get; set; } = "";
+    public string Status { get => _status; set { _status = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Status))); } }
+    public event PropertyChangedEventHandler? PropertyChanged;
 }

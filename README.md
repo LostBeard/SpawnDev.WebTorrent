@@ -143,6 +143,7 @@ Browser Client                    Desktop Client
 
 | Doc | Description |
 |-----|-------------|
+| [Quick Start](Docs/quickstart.md) | Full API examples: download, seed, stream, events, config |
 | [Architecture](Docs/architecture.md) | Project structure, data flow, transport layer, wire protocol |
 | [Peer ID](Docs/peer-id.md) | Azureus-style peer ID convention (`-SD0110-`) and version history |
 | [Trackers](Docs/trackers.md) | Default tracker list, running your own tracker, protocol details |

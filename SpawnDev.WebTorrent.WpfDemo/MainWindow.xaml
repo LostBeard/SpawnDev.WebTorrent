@@ -1,0 +1,167 @@
+<Window x:Class="SpawnDev.WebTorrent.WpfDemo.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="SpawnDev.WebTorrent — Desktop Client"
+        Width="900" Height="700"
+        Background="{StaticResource BgPrimary}"
+        WindowStartupLocation="CenterScreen">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="150"/>
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <TextBlock Grid.Row="0" FontSize="22" FontWeight="Bold" Foreground="{StaticResource AccentGreen}" Margin="0,0,0,12">
+            SpawnDev.WebTorrent — Desktop
+        </TextBlock>
+
+        <!-- Add Torrent Section -->
+        <Grid Grid.Row="1" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBox x:Name="MagnetInput" Grid.Column="0"
+                     Background="{StaticResource BgSecondary}" Foreground="{StaticResource TextPrimary}"
+                     BorderBrush="{StaticResource Border}" BorderThickness="1"
+                     Padding="8,6" FontFamily="Consolas" FontSize="13"
+                     VerticalContentAlignment="Center"
+                     KeyDown="MagnetInput_KeyDown">
+                <TextBox.Style>
+                    <Style TargetType="TextBox">
+                        <Style.Triggers>
+                            <Trigger Property="Text" Value="">
+                                <Setter Property="Tag" Value="Paste magnet URI or info hash..."/>
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBox.Style>
+            </TextBox>
+            <Button Grid.Column="1" Content="Add" Margin="8,0,0,0" Padding="16,6"
+                    Background="{StaticResource AccentGreen}" Foreground="White" FontWeight="Bold"
+                    BorderThickness="0" Cursor="Hand"
+                    Click="AddButton_Click"/>
+        </Grid>
+
+        <!-- Quick Add Buttons -->
+        <WrapPanel Grid.Row="2" Margin="0,0,0,12">
+            <TextBlock Text="Quick add:" Foreground="{StaticResource TextMuted}" VerticalAlignment="Center" Margin="0,0,8,0" FontSize="12"/>
+            <Button Content="Big Buck Bunny" Tag="BigBuckBunny" Click="QuickAdd_Click" Style="{StaticResource {x:Type Button}}"
+                    Background="{StaticResource BgSecondary}" Foreground="{StaticResource AccentGreen}"
+                    BorderBrush="{StaticResource AccentGreen}" BorderThickness="1" Padding="8,3" Margin="0,0,6,0"
+                    FontSize="11" Cursor="Hand"/>
+            <Button Content="Sintel" Tag="Sintel" Click="QuickAdd_Click"
+                    Background="{StaticResource BgSecondary}" Foreground="{StaticResource AccentGreen}"
+                    BorderBrush="{StaticResource AccentGreen}" BorderThickness="1" Padding="8,3" Margin="0,0,6,0"
+                    FontSize="11" Cursor="Hand"/>
+            <Button Content="Cosmos Laundromat" Tag="CosmosLaundromat" Click="QuickAdd_Click"
+                    Background="{StaticResource BgSecondary}" Foreground="{StaticResource AccentGreen}"
+                    BorderBrush="{StaticResource AccentGreen}" BorderThickness="1" Padding="8,3" Margin="0,0,6,0"
+                    FontSize="11" Cursor="Hand"/>
+            <Button Content="Tears of Steel" Tag="TearsOfSteel" Click="QuickAdd_Click"
+                    Background="{StaticResource BgSecondary}" Foreground="{StaticResource AccentGreen}"
+                    BorderBrush="{StaticResource AccentGreen}" BorderThickness="1" Padding="8,3" Margin="0,0,6,0"
+                    FontSize="11" Cursor="Hand"/>
+        </WrapPanel>
+
+        <!-- Stats Bar -->
+        <Border Grid.Row="3" Background="{StaticResource BgSecondary}" BorderBrush="{StaticResource Border}"
+                BorderThickness="1" CornerRadius="6" Padding="8" Margin="0,0,0,8"
+                VerticalAlignment="Top" Height="Auto">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Foreground="{StaticResource TextSecondary}" FontSize="12">
+                    <Run Text="Torrents: "/><Run x:Name="TorrentCountText" Text="0" Foreground="{StaticResource TextPrimary}" FontWeight="Bold"/>
+                    <Run Text="    Peer ID: "/><Run x:Name="PeerIdText" Text="-SD0110-" Foreground="{StaticResource AccentGreen}" FontFamily="Consolas"/>
+                </TextBlock>
+            </StackPanel>
+        </Border>
+
+        <!-- Torrent List -->
+        <ListView x:Name="TorrentList" Grid.Row="3" Margin="0,40,0,0"
+                  Background="Transparent" BorderThickness="0"
+                  ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+            <ListView.ItemTemplate>
+                <DataTemplate>
+                    <Border Background="{StaticResource BgCard}" BorderBrush="{StaticResource Border}"
+                            BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,0,8"
+                            MinWidth="830">
+                        <StackPanel>
+                            <!-- Name + Tags Row -->
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                    <Border Background="#1a3a5c" CornerRadius="3" Padding="6,2" Margin="4,0">
+                                        <TextBlock Text="{Binding SizeText}" Foreground="#60a5fa" FontSize="11"/>
+                                    </Border>
+                                    <Border Background="#1a2d3a" CornerRadius="3" Padding="6,2" Margin="4,0">
+                                        <TextBlock Text="{Binding PiecesText}" Foreground="#a78bfa" FontSize="11"/>
+                                    </Border>
+                                    <Border Background="#0f2e24" CornerRadius="3" Padding="6,2" Margin="4,0">
+                                        <TextBlock Text="{Binding HashShort}" Foreground="#34d399" FontSize="11" FontFamily="Consolas"/>
+                                    </Border>
+                                </StackPanel>
+                                <TextBlock Text="{Binding Name}" Foreground="{StaticResource TextPrimary}"
+                                           FontWeight="SemiBold" FontSize="14" TextTrimming="CharacterEllipsis"/>
+                            </DockPanel>
+
+                            <!-- Progress Bar -->
+                            <Grid Margin="0,8,0,4" Height="6">
+                                <Border Background="#1e293b" CornerRadius="3"/>
+                                <Border CornerRadius="3" HorizontalAlignment="Left" Width="{Binding ProgressWidth}">
+                                    <Border.Background>
+                                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                            <GradientStop Color="#10b981" Offset="0"/>
+                                            <GradientStop Color="#3b82f6" Offset="1"/>
+                                        </LinearGradientBrush>
+                                    </Border.Background>
+                                </Border>
+                            </Grid>
+
+                            <!-- Progress Text -->
+                            <TextBlock Foreground="{StaticResource TextMuted}" FontSize="11">
+                                <Run Text="{Binding ProgressText, Mode=OneWay}"/>
+                                <Run Text="{Binding StatusText, Mode=OneWay}"/>
+                            </TextBlock>
+
+                            <!-- Files (if expanded) -->
+                            <ItemsControl ItemsSource="{Binding Files}" Margin="0,6,0,0" Visibility="{Binding FilesVisibility}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <DockPanel Margin="0,2">
+                                            <TextBlock DockPanel.Dock="Right" Text="{Binding SizeText}"
+                                                       Foreground="{StaticResource TextMuted}" FontSize="11" Margin="8,0,0,0"/>
+                                            <TextBlock Text="{Binding Path}" Foreground="{StaticResource TextSecondary}"
+                                                       FontSize="11" TextTrimming="CharacterEllipsis"/>
+                                        </DockPanel>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <!-- Remove Button -->
+                            <Button Content="Remove" HorizontalAlignment="Left" Margin="0,8,0,0" Padding="8,3"
+                                    Background="#2d1a1a" Foreground="#f87171" BorderBrush="#7f1d1d" BorderThickness="1"
+                                    FontSize="11" Cursor="Hand"
+                                    Click="RemoveTorrent_Click" Tag="{Binding HashFull}"/>
+                        </StackPanel>
+                    </Border>
+                </DataTemplate>
+            </ListView.ItemTemplate>
+        </ListView>
+
+        <!-- Log Label -->
+        <TextBlock Grid.Row="4" Text="Activity Log" Foreground="{StaticResource TextSecondary}" FontSize="12" Margin="0,8,0,4"/>
+
+        <!-- Activity Log -->
+        <Border Grid.Row="5" Background="{StaticResource BgSecondary}" BorderBrush="{StaticResource Border}"
+                BorderThickness="1" CornerRadius="6" Padding="8">
+            <ScrollViewer x:Name="LogScroller" VerticalScrollBarVisibility="Auto">
+                <TextBlock x:Name="LogText" Foreground="{StaticResource TextMuted}" FontFamily="Consolas"
+                           FontSize="11" TextWrapping="Wrap"/>
+            </ScrollViewer>
+        </Border>
+    </Grid>
+</Window>

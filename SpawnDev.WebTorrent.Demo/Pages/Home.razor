@@ -28,6 +28,15 @@
                 <span class="btn-icon">🌐</span> Live Server
             </a>
         </div>
+
+        <div class="stats-banner">
+            <div class="stat-item"><span class="stat-num">13</span><span class="stat-desc">BEPs</span></div>
+            <div class="stat-item"><span class="stat-num">193</span><span class="stat-desc">Tests</span></div>
+            <div class="stat-item"><span class="stat-num">17K</span><span class="stat-desc">LOC</span></div>
+            <div class="stat-item"><span class="stat-num">4</span><span class="stat-desc">Transports</span></div>
+            <div class="stat-item"><span class="stat-num">4</span><span class="stat-desc">Trackers</span></div>
+            <div class="stat-item"><span class="stat-num">2</span><span class="stat-desc">Platforms</span></div>
+        </div>
     </div>
 </div>
 
@@ -231,6 +240,35 @@ app.<span class="method">MapHuggingFaceProxy</span>(proxy);
         margin: 0 auto 2rem auto;
         color: #64748b;
         line-height: 1.7;
+    }
+
+    .stats-banner {
+        display: flex;
+        gap: 2rem;
+        justify-content: center;
+        margin-top: 2rem;
+        flex-wrap: wrap;
+    }
+
+    .stat-item {
+        text-align: center;
+    }
+
+    .stat-num {
+        display: block;
+        font-size: 2rem;
+        font-weight: 800;
+        background: linear-gradient(135deg, #10b981 0%, #3b82f6 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+    }
+
+    .stat-desc {
+        font-size: 0.8rem;
+        color: #64748b;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
     }
 
     .hero-buttons {

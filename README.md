@@ -3,14 +3,14 @@
 [![NuGet](https://img.shields.io/nuget/v/SpawnDev.WebTorrent.svg)](https://www.nuget.org/packages/SpawnDev.WebTorrent)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Runs on desktop (.NET) and browser (Blazor WASM). 150 unit tests. 12 BEPs implemented.
+Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Runs on desktop (.NET) and browser (Blazor WASM). 161 tests. 13 BEPs implemented.
 
 ## Features
 
 - **Pure C#** — No JavaScript interop, no Node.js, no npm. 100% .NET.
 - **Desktop + Browser** — Same library, same API. WPF, console, Blazor WebAssembly.
 - **Real WebRTC P2P** — Browser (SpawnDev.BlazorJS) and desktop (SIPSorcery) peers interop seamlessly via the same tracker.
-- **12 BEPs** — Full wire protocol, Fast Extension, ut_metadata, ut_pex, private torrents, magnet file selection, and more.
+- **13 BEPs** — Full wire protocol, DHT, Fast Extension, ut_metadata, ut_pex, private torrents, magnet file selection, and more.
 - **3 Tracker Types** — WebSocket (browser+desktop), HTTP/HTTPS, UDP (desktop).
 - **Web Seed Download** — HTTP range requests with multi-file piece assembly (BEP 17/19).
 - **Persistent Storage** — OPFS in browser (survives page reloads), filesystem on desktop.
@@ -20,7 +20,7 @@ Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Run
 - **Speed Tracking** — Real-time download/upload bytes/sec per torrent.
 - **HuggingFace Integration** — Optional server extension that proxies HuggingFace model CDN with local caching and automatic torrent generation.
 - **.torrent Creation** — Create and parse .torrent files. Complete Bencode encoder/decoder.
-- **150 Unit Tests** — Every feature tested via PlaywrightMultiTest against real-world torrents.
+- **161 Unit Tests** — Every feature tested via PlaywrightMultiTest against real-world torrents.
 
 ## Packages
 
@@ -93,11 +93,12 @@ Both demos connect to the same trackers and can P2P with each other.
 
 ## BEP Support
 
-12 BitTorrent Enhancement Proposals implemented:
+13 BitTorrent Enhancement Proposals implemented:
 
 | BEP | Title | Desktop | Browser |
 |-----|-------|---------|---------|
 | 3 | BitTorrent Protocol | Yes | Yes |
+| 5 | DHT (Kademlia) | Yes | N/A |
 | 6 | Fast Extension | Yes | Yes |
 | 9 | Magnet Links / ut_metadata | Yes | Yes |
 | 10 | Extension Protocol | Yes | Yes |

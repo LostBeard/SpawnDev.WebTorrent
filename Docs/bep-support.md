@@ -52,11 +52,12 @@ Both share the `IWebRtcTransport` interface and work through the same `PeerCoord
 | Seeding | Yes | Yes | Respond to Request with Piece data |
 | Media playback | N/A | Yes | Video/audio/image via blob URL with seeking |
 
+| [5](http://bittorrent.org/beps/bep_0005.html) | DHT Protocol | Yes | N/A | Kademlia routing, KRPC over UDP, bootstrap, iterative lookup |
+
 ## Not Yet Implemented
 
 | BEP | Title | Priority | Notes |
 |-----|-------|----------|-------|
-| [5](http://bittorrent.org/beps/bep_0005.html) | DHT Protocol | Medium | DhtDiscovery stub exists, needs Kademlia routing |
 | [14](http://bittorrent.org/beps/bep_0014.html) | Local Service Discovery | Low | Desktop only, UDP broadcast |
 | [29](http://bittorrent.org/beps/bep_0029.html) | uTorrent Transport Protocol (uTP) | Low | UDP-based, desktop only |
 | [48](http://bittorrent.org/beps/bep_0048.html) | Tracker Scrape | Low | Get counts without announcing |
@@ -64,4 +65,4 @@ Both share the `IWebRtcTransport` interface and work through the same `PeerCoord
 
 ## Test Coverage
 
-144 unit tests covering all implemented BEPs, the full download pipeline, API surface, and cross-platform functionality. Tested via PlaywrightMultiTest against real-world torrents.
+161 tests (158 pass, 3 skip for desktop-only) covering all 13 implemented BEPs, the full download pipeline, P2P integration, API surface, and cross-platform functionality. Tested via PlaywrightMultiTest against real-world torrents (Big Buck Bunny, Sintel).

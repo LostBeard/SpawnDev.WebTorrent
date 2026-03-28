@@ -100,6 +100,9 @@
                 <Button Content="Sintel" Tag="Sintel" Click="QuickAdd_Click" Style="{StaticResource ChipBtn}" Margin="0,0,3,0"/>
                 <Button Content="Cosmos Laundromat" Tag="CosmosLaundromat" Click="QuickAdd_Click" Style="{StaticResource ChipBtn}" Margin="0,0,3,0"/>
                 <Button Content="Tears of Steel" Tag="TearsOfSteel" Click="QuickAdd_Click" Style="{StaticResource ChipBtn}" Margin="0,0,3,0"/>
+                <Button Content="Seed Test" Click="SeedTest_Click" Background="#0d1a3a" Foreground="{StaticResource AccentBlue}" BorderBrush="#1a3a6e" BorderThickness="1" Padding="8,1" FontSize="11" Cursor="Hand" ToolTip="Create and seed a test torrent">
+                    <Button.Template><ControlTemplate TargetType="Button"><Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="8" Padding="{TemplateBinding Padding}"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border></ControlTemplate></Button.Template>
+                </Button>
             </WrapPanel>
         </StackPanel>
 

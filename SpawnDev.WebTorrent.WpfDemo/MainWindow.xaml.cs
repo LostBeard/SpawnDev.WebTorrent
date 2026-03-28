@@ -386,6 +386,33 @@ public partial class MainWindow : Window
         LogText.Text += line;
     }
 
+    private async void SeedTest_Click(object sender, RoutedEventArgs e)
+    {
+        var data = new byte[65536];
+        Random.Shared.NextBytes(data);
+        var name = $"SpawnDev-Test-{DateTime.Now:HHmmss}.bin";
+
+        var swarm = await _client.SeedAsync(data, name,
+            new TorrentCreatorOptions
+            {
+                PieceLength = 16384,
+                Trackers = new[] { "wss://hub.spawndev.com:44365/announce", "wss://tracker.openwebtorrent.com" },
+                Comment = "Test torrent from SpawnDev.WebTorrent WPF demo",
+            });
+
+        var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
+        var vm = new TorrentViewModel
+        {
+            Swarm = swarm, Name = name, HashFull = hash, HashShort = hash[..8] + "...",
+            SizeText = FormatBytes(data.Length),
+        };
+        _torrents.Add(vm);
+        TorrentListView.SelectedItem = vm;
+
+        await ConnectTrackersAsync(vm, swarm.MagnetURI);
+        Log($"Seeding: {name}, magnet: {swarm.MagnetURI[..Math.Min(60, swarm.MagnetURI.Length)]}...");
+    }
+
     // ── Pause/Resume/Filter ──
     private void PauseAll_Click(object sender, RoutedEventArgs e) { foreach (var t in _torrents) t.Swarm.Pause(); }
     private void ResumeAll_Click(object sender, RoutedEventArgs e) { foreach (var t in _torrents) t.Swarm.Resume(); }

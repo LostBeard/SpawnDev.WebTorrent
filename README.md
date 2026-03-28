@@ -148,6 +148,7 @@ Browser Client                    Desktop Client
 | [Peer ID](Docs/peer-id.md) | Azureus-style peer ID convention (`-SD0110-`) and version history |
 | [Trackers](Docs/trackers.md) | Default tracker list, running your own tracker, protocol details |
 | [BEP Support](Docs/bep-support.md) | BitTorrent Enhancement Proposal implementation status |
+| [AI Agents](Docs/ai-agents.md) | DHT pub/sub for AI agent communication, shared compute, BEP 46 |
 | [Deployment](Docs/deployment.md) | Production server setup, GitHub Pages demo, local development |
 
 ## Credits

@@ -290,6 +290,24 @@ public class TorrentSwarm : IAsyncDisposable
                 _coordinator?.AddPeer(wire, peer.PeerBitfield);
             };
 
+            // BEP 6: HaveAll — peer has every piece
+            wire.OnHaveAll += () =>
+            {
+                if (Metadata != null)
+                {
+                    peer.PeerBitfield = new bool[Metadata.PieceCount];
+                    Array.Fill(peer.PeerBitfield, true);
+                    _coordinator?.AddPeer(wire, peer.PeerBitfield);
+                }
+            };
+
+            // BEP 6: HaveNone — peer has no pieces
+            wire.OnHaveNone += () =>
+            {
+                if (Metadata != null)
+                    peer.PeerBitfield = new bool[Metadata.PieceCount];
+            };
+
             wire.OnHave += (pieceIndex) =>
             {
                 if (pieceIndex < peer.PeerBitfield.Length)

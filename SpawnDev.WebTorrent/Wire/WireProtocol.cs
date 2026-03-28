@@ -68,6 +68,12 @@ public class WireProtocol : IAsyncDisposable
     public event Action<int, byte[]>? OnExtended;        // extensionId, payload
     public event Action? OnKeepAlive;
     public event Action? OnHandshakeComplete;
+    // BEP 6: Fast Extension
+    public event Action<int>? OnSuggestPiece;           // pieceIndex
+    public event Action? OnHaveAll;
+    public event Action? OnHaveNone;
+    public event Action<int, int, int>? OnRejectRequest; // pieceIndex, offset, length
+    public event Action<int>? OnAllowedFast;             // pieceIndex
 
     /// <summary>Protocol string for BitTorrent handshake.</summary>
     private static readonly byte[] ProtocolString = "BitTorrent protocol"u8.ToArray();
@@ -89,6 +95,8 @@ public class WireProtocol : IAsyncDisposable
         reserved ??= new byte[8];
         // Set BEP 10 (Extension Protocol) support flag
         reserved[5] |= 0x10;
+        // Set BEP 6 (Fast Extension) support flag
+        reserved[7] |= 0x04;
 
         var handshake = new byte[68];
         handshake[0] = 19; // protocol string length
@@ -158,6 +166,43 @@ public class WireProtocol : IAsyncDisposable
         WriteInt32BE(payload, 1, pieceIndex);
         WriteInt32BE(payload, 5, offset);
         Array.Copy(data, 0, payload, 9, data.Length);
+        return SendFramedAsync(payload);
+    }
+
+    // ── BEP 6: Fast Extension ──
+
+    /// <summary>Send a HaveAll message (we have every piece).</summary>
+    public Task SendHaveAllAsync() => SendFramedAsync(new[] { (byte)MessageType.HaveAll });
+
+    /// <summary>Send a HaveNone message (we have no pieces).</summary>
+    public Task SendHaveNoneAsync() => SendFramedAsync(new[] { (byte)MessageType.HaveNone });
+
+    /// <summary>Send a SuggestPiece message.</summary>
+    public Task SendSuggestPieceAsync(int pieceIndex)
+    {
+        var payload = new byte[5];
+        payload[0] = (byte)MessageType.SuggestPiece;
+        WriteInt32BE(payload, 1, pieceIndex);
+        return SendFramedAsync(payload);
+    }
+
+    /// <summary>Send a RejectRequest message (refuse a block request).</summary>
+    public Task SendRejectRequestAsync(int pieceIndex, int offset, int length)
+    {
+        var payload = new byte[13];
+        payload[0] = (byte)MessageType.RejectRequest;
+        WriteInt32BE(payload, 1, pieceIndex);
+        WriteInt32BE(payload, 5, offset);
+        WriteInt32BE(payload, 9, length);
+        return SendFramedAsync(payload);
+    }
+
+    /// <summary>Send an AllowedFast message.</summary>
+    public Task SendAllowedFastAsync(int pieceIndex)
+    {
+        var payload = new byte[5];
+        payload[0] = (byte)MessageType.AllowedFast;
+        WriteInt32BE(payload, 1, pieceIndex);
         return SendFramedAsync(payload);
     }
 
@@ -233,6 +278,17 @@ public class WireProtocol : IAsyncDisposable
                     OnPiece?.Invoke(ReadInt32BE(payload, 1), ReadInt32BE(payload, 5), payload[9..]); break;
                 case MessageType.Cancel when payload.Length >= 13:
                     OnCancel?.Invoke(ReadInt32BE(payload, 1), ReadInt32BE(payload, 5), ReadInt32BE(payload, 9)); break;
+                // BEP 6: Fast Extension
+                case MessageType.SuggestPiece when payload.Length >= 5:
+                    OnSuggestPiece?.Invoke(ReadInt32BE(payload, 1)); break;
+                case MessageType.HaveAll:
+                    OnHaveAll?.Invoke(); break;
+                case MessageType.HaveNone:
+                    OnHaveNone?.Invoke(); break;
+                case MessageType.RejectRequest when payload.Length >= 13:
+                    OnRejectRequest?.Invoke(ReadInt32BE(payload, 1), ReadInt32BE(payload, 5), ReadInt32BE(payload, 9)); break;
+                case MessageType.AllowedFast when payload.Length >= 5:
+                    OnAllowedFast?.Invoke(ReadInt32BE(payload, 1)); break;
                 case MessageType.Extended when payload.Length >= 2:
                     int extId = payload[1];
                     var extPayload = payload.Length > 2 ? payload[2..] : Array.Empty<byte>();

@@ -396,6 +396,80 @@ public abstract partial class WebTorrentTestBase
     //  Client — Incoming Connection Routing
     // ═══════════════════════════════════════════════════════════
 
+    // ═══════════════════════════════════════════════════════════
+    //  BEP 6 — Fast Extension
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Bep6_HandshakeFlag()
+    {
+        var captured = new List<byte>();
+        var mock = new MockConnection(captured);
+        var wire = new WireProtocol(mock);
+
+        var infoHash = new byte[20];
+        var peerId = new byte[20];
+        await wire.SendHandshakeAsync(infoHash, peerId);
+
+        // BEP 6 flag: reserved[7] bit 2 (0x04)
+        if ((captured[27] & 0x04) == 0)
+            throw new Exception("BEP 6 Fast Extension flag not set in reserved bytes");
+        // BEP 10 flag should also be set
+        if ((captured[25] & 0x10) == 0)
+            throw new Exception("BEP 10 Extension Protocol flag not set");
+    }
+
+    [TestMethod]
+    public async Task Bep6_SendHaveAll()
+    {
+        var captured = new List<byte>();
+        var mock = new MockConnection(captured);
+        var wire = new WireProtocol(mock);
+
+        await wire.SendHaveAllAsync();
+        // Should be: 00 00 00 01 0E (length=1, type=HaveAll=14)
+        if (captured.Count != 5) throw new Exception($"Expected 5 bytes, got {captured.Count}");
+        if (captured[3] != 1) throw new Exception("Length should be 1");
+        if (captured[4] != (byte)MessageType.HaveAll) throw new Exception($"Type should be HaveAll(14), got {captured[4]}");
+    }
+
+    [TestMethod]
+    public async Task Bep6_SendHaveNone()
+    {
+        var captured = new List<byte>();
+        var mock = new MockConnection(captured);
+        var wire = new WireProtocol(mock);
+
+        await wire.SendHaveNoneAsync();
+        if (captured.Count != 5) throw new Exception($"Expected 5 bytes, got {captured.Count}");
+        if (captured[4] != (byte)MessageType.HaveNone) throw new Exception($"Type should be HaveNone(15), got {captured[4]}");
+    }
+
+    [TestMethod]
+    public async Task Bep6_SendRejectRequest()
+    {
+        var captured = new List<byte>();
+        var mock = new MockConnection(captured);
+        var wire = new WireProtocol(mock);
+
+        await wire.SendRejectRequestAsync(5, 0, 16384);
+        // 4 bytes length + 1 type + 4+4+4 = 17 total
+        if (captured.Count != 17) throw new Exception($"Expected 17 bytes, got {captured.Count}");
+        if (captured[4] != (byte)MessageType.RejectRequest) throw new Exception("Wrong message type");
+    }
+
+    [TestMethod]
+    public async Task Bep6_SendAllowedFast()
+    {
+        var captured = new List<byte>();
+        var mock = new MockConnection(captured);
+        var wire = new WireProtocol(mock);
+
+        await wire.SendAllowedFastAsync(42);
+        if (captured.Count != 9) throw new Exception($"Expected 9 bytes, got {captured.Count}");
+        if (captured[4] != (byte)MessageType.AllowedFast) throw new Exception("Wrong message type");
+    }
+
     [TestMethod]
     public async Task Client_AddTransport()
     {

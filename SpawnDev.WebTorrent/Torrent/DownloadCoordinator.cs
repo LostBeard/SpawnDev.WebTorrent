@@ -176,15 +176,25 @@ public class DownloadCoordinator
         {
             if (!seed.IsAvailable) continue;
 
-            var data = await seed.DownloadPieceAsync(pieceIndex, ct);
-            if (data != null)
+            try
             {
-                // Feed the entire piece as one block
-                await _pieceManager.ReceiveBlockAsync(pieceIndex, 0, data);
-                return;
+                var data = await seed.DownloadPieceAsync(pieceIndex, ct);
+                if (data != null)
+                {
+                    // Web seeds deliver complete pieces — bypass block tracking
+                    var ok = await _pieceManager.ReceiveCompletePieceAsync(pieceIndex, data);
+                    if (ok) return;
+                }
+            }
+            catch (Exception ex)
+            {
+                OnError?.Invoke(ex);
             }
         }
     }
+
+    /// <summary>Fired on errors (for logging).</summary>
+    public event Action<Exception>? OnError;
 
     private void HandlePieceComplete(int pieceIndex)
     {

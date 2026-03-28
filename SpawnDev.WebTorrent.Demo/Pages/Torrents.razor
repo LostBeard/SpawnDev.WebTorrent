@@ -473,8 +473,13 @@
             foreach (var ws in webSeedUrls) entry.Swarm.AddWebSeed(ws);
             entry.Swarm.StartDownload();
 
-            entry.Swarm.OnPieceVerified += (_) => InvokeAsync(StateHasChanged);
+            entry.Swarm.OnPieceVerified += (idx) =>
+            {
+                Log($"[{entry.Name}] Piece {idx} verified ({entry.Swarm.PieceManager?.CompletedCount}/{entry.Swarm.Metadata?.PieceCount})");
+                InvokeAsync(StateHasChanged);
+            };
             entry.Swarm.OnDone += () => { Log($"[{entry.Name}] Download complete!"); InvokeAsync(StateHasChanged); };
+            entry.Swarm.OnError += (ex) => { Log($"[{entry.Name}] Error: {ex.Message}"); };
 
             Log($"[{entry.Name}] {FormatBytes(metadata.TotalLength)}, {metadata.PieceCount} pieces, {webSeedUrls.Count} web seed(s)");
             await InvokeAsync(StateHasChanged);

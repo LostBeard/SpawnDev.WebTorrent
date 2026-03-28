@@ -136,6 +136,7 @@ public class TorrentSwarm : IAsyncDisposable
             Done = true;
             OnDone?.Invoke();
         };
+        _coordinator.OnError += (ex) => OnError?.Invoke(ex);
 
         // Create file stream abstractions
         Files = metadata.Files.Select(f => new TorrentFileStream(this, f, _store)).ToArray();

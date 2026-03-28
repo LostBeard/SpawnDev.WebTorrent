@@ -225,11 +225,12 @@ public class TorrentSwarm : IAsyncDisposable
     {
         try
         {
-            // Find a suitable transport from the client
             var transport = FindTransport(info);
             if (transport == null) return;
 
-            var conn = await transport.ConnectAsync(info.Address);
+            // Connection timeout: 25 seconds for WebRTC, 5 seconds for TCP
+            using var cts = new CancellationTokenSource(25000);
+            var conn = await transport.ConnectAsync(info.Address, cts.Token);
 
             // Perform BitTorrent handshake
             var wire = new WireProtocol(conn);
@@ -436,16 +437,77 @@ public class TorrentSwarm : IAsyncDisposable
         OnDone?.Invoke();
     }
 
-    /// <summary>Start the download coordinator.</summary>
+    /// <summary>Start the download coordinator and choke rotation.</summary>
     public void StartDownload()
     {
         _coordinator?.Start();
+        StartChokeRotation();
     }
 
-    /// <summary>Stop the download coordinator.</summary>
+    /// <summary>Stop the download coordinator and choke rotation.</summary>
     public void StopDownload()
     {
         _coordinator?.Stop();
+        _chokeRotationCts?.Cancel();
+    }
+
+    private CancellationTokenSource? _chokeRotationCts;
+
+    /// <summary>
+    /// Choke/unchoke rotation (BEP 3).
+    /// Every 10 seconds: unchoke the best uploading peers (up to 4).
+    /// Every 30 seconds: optimistic unchoke one random choked peer.
+    /// </summary>
+    private void StartChokeRotation()
+    {
+        _chokeRotationCts = new CancellationTokenSource();
+        _ = ChokeRotationLoopAsync(_chokeRotationCts.Token);
+    }
+
+    private async Task ChokeRotationLoopAsync(CancellationToken ct)
+    {
+        int tick = 0;
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                await Task.Delay(10000, ct); // 10 second rechoke interval
+                tick++;
+
+                var peers = _peers.ToArray();
+                if (peers.Length == 0) continue;
+
+                // Unchoke up to 4 interested peers
+                int unchokedCount = 0;
+                foreach (var peer in peers)
+                {
+                    if (unchokedCount < 4)
+                    {
+                        try { await peer.Wire.SendMessageAsync(Wire.MessageType.Unchoke); }
+                        catch { }
+                        unchokedCount++;
+                    }
+                    else
+                    {
+                        try { await peer.Wire.SendMessageAsync(Wire.MessageType.Choke); }
+                        catch { }
+                    }
+                }
+
+                // Every 30 seconds: optimistic unchoke a random choked peer
+                if (tick % 3 == 0 && peers.Length > 4)
+                {
+                    var chokedPeers = peers.Skip(4).ToArray();
+                    if (chokedPeers.Length > 0)
+                    {
+                        var lucky = chokedPeers[Random.Shared.Next(chokedPeers.Length)];
+                        try { await lucky.Wire.SendMessageAsync(Wire.MessageType.Unchoke); }
+                        catch { }
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
     }
 
     /// <summary>Pause — stop connecting to new peers.</summary>
@@ -700,6 +762,33 @@ public class TorrentFileStream
 
         return result;
     }
+
+    /// <summary>
+    /// Get a ReadableStream for this file (browser). Reads on demand as the stream is consumed.
+    /// </summary>
+    public async IAsyncEnumerable<byte[]> StreamAsync(long start = 0, long end = -1,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+    {
+        if (end < 0) end = Length - 1;
+        int chunkSize = _swarm.Metadata?.PieceLength ?? 262144;
+        long pos = start;
+
+        while (pos <= end)
+        {
+            int readLen = (int)Math.Min(chunkSize, end - pos + 1);
+            var data = await ReadAsync(pos, readLen, ct);
+            yield return data;
+            pos += readLen;
+        }
+    }
+
+    /// <summary>
+    /// Get the file as a Blob (browser). Blocks until fully downloaded.
+    /// In browser, returns a JS Blob via SpawnDev.BlazorJS.
+    /// On desktop, returns the raw bytes.
+    /// </summary>
+    public async Task<byte[]> GetBlobBytesAsync(CancellationToken ct = default)
+        => await ReadAsync(0, (int)Length, ct);
 
     private static string GetMimeType(string ext) => ext switch
     {

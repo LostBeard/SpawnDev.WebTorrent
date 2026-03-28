@@ -502,6 +502,138 @@ public abstract partial class WebTorrentTestBase
         if (removedSwarm != swarm) throw new Exception("OnTorrentRemove should pass the swarm");
     }
 
+    // ═══════════════════════════════════════════════════════════
+    //  File Streaming
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Api_File_StreamAsync()
+    {
+        await using var client = new WebTorrentClient();
+        var data = new byte[65536]; // 4 pieces
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)((i * 3 + 5) % 256);
+
+        var swarm = await client.SeedAsync(data, "stream-test.bin",
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        var file = swarm.Files[0];
+        var assembled = new List<byte>();
+
+        await foreach (var chunk in file.StreamAsync())
+        {
+            assembled.AddRange(chunk);
+        }
+
+        if (assembled.Count != data.Length)
+            throw new Exception($"Stream returned {assembled.Count} bytes, expected {data.Length}");
+        if (!assembled.ToArray().SequenceEqual(data))
+            throw new Exception("Stream content mismatch");
+    }
+
+    [TestMethod]
+    public async Task Api_File_StreamAsync_Range()
+    {
+        await using var client = new WebTorrentClient();
+        var data = new byte[65536];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 256);
+
+        var swarm = await client.SeedAsync(data, "stream-range.bin",
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        var file = swarm.Files[0];
+        var assembled = new List<byte>();
+
+        // Read only bytes 1000-2999
+        await foreach (var chunk in file.StreamAsync(start: 1000, end: 2999))
+        {
+            assembled.AddRange(chunk);
+        }
+
+        if (assembled.Count != 2000)
+            throw new Exception($"Range stream returned {assembled.Count} bytes, expected 2000");
+        for (int i = 0; i < 2000; i++)
+        {
+            var expected = (byte)((1000 + i) % 256);
+            if (assembled[i] != expected)
+                throw new Exception($"Byte mismatch at {i}: expected {expected}, got {assembled[i]}");
+        }
+    }
+
+    [TestMethod]
+    public async Task Api_File_GetBlobBytes()
+    {
+        await using var client = new WebTorrentClient();
+        var data = new byte[32768];
+        Random.Shared.NextBytes(data);
+
+        var swarm = await client.SeedAsync(data, "blob.bin",
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        var blob = await swarm.Files[0].GetBlobBytesAsync();
+        if (!blob.SequenceEqual(data))
+            throw new Exception("Blob bytes mismatch");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  Speed Tracking
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Api_Swarm_SpeedTracking()
+    {
+        await using var client = new WebTorrentClient();
+        var data = new byte[16384];
+        var (_, metadata) = TorrentCreator.CreateFromBytes("speed.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        var swarm = await client.AddAsync(metadata);
+
+        // Initially zero
+        swarm.UpdateSpeed();
+        if (swarm.DownloadSpeed != 0) throw new Exception("Initial download speed should be 0");
+        if (swarm.UploadSpeed != 0) throw new Exception("Initial upload speed should be 0");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  Concurrent Torrents
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Api_Client_MultipleTorrents()
+    {
+        await using var client = new WebTorrentClient();
+
+        var torrents = new List<TorrentSwarm>();
+        for (int i = 0; i < 5; i++)
+        {
+            var data = new byte[16384];
+            Random.Shared.NextBytes(data);
+            var swarm = await client.SeedAsync(data, $"multi-{i}.bin",
+                new TorrentCreatorOptions { PieceLength = 16384 });
+            torrents.Add(swarm);
+        }
+
+        if (client.Torrents.Count != 5)
+            throw new Exception($"Expected 5 torrents, got {client.Torrents.Count}");
+
+        // All should be done
+        foreach (var t in torrents)
+            if (!t.Done) throw new Exception($"Torrent {t.Metadata!.Name} should be done");
+
+        // Remove one
+        await client.RemoveAsync(torrents[2]);
+        if (client.Torrents.Count != 4)
+            throw new Exception($"Expected 4 after remove, got {client.Torrents.Count}");
+
+        // Get by hash should still work for remaining
+        var found = client.Get(torrents[0].InfoHash);
+        if (found == null) throw new Exception("Should find torrent 0");
+
+        // Get removed should return null
+        var gone = client.Get(torrents[2].InfoHash);
+        if (gone != null) throw new Exception("Removed torrent should not be found");
+    }
+
     [TestMethod]
     public async Task Api_Events_OnPieceVerified()
     {

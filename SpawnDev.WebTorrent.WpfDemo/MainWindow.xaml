@@ -85,6 +85,7 @@
                     <Button Content="&#9646;&#9646;" Padding="6,4" Background="#1e293b" Foreground="#94a3b8" BorderThickness="0" FontSize="11" Cursor="Hand" Click="PauseAll_Click" ToolTip="Pause All" Margin="0,0,2,0"/>
                     <Button Content="&#9654;" Padding="6,4" Background="#1e293b" Foreground="#94a3b8" BorderThickness="0" FontSize="11" Cursor="Hand" Click="ResumeAll_Click" ToolTip="Resume All" Margin="0,0,2,0"/>
                     <Button Content="&#9881;" Padding="6,4" Background="#1e293b" Foreground="#94a3b8" BorderThickness="0" FontSize="11" Cursor="Hand" Click="SettingsButton_Click" ToolTip="Settings"/>
+                    <Button Content="Tests" Padding="6,4" Background="#1e293b" Foreground="#f59e0b" BorderThickness="0" FontSize="11" Cursor="Hand" Click="TestsButton_Click" ToolTip="Run Unit Tests" Margin="2,0,0,0"/>
                 </StackPanel>
                 <StackPanel Grid.Column="2" VerticalAlignment="Center">
                     <TextBlock FontSize="12" FontWeight="Bold">

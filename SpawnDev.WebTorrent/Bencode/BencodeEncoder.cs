@@ -44,22 +44,44 @@ public static class BencodeEncoder
     /// <summary>Encode a complete object to bytes.</summary>
     public static byte[] Encode(object value)
     {
-        return Encoding.UTF8.GetBytes(EncodeObject(value));
+        var parts = new List<byte>();
+        EncodeObjectBytes(value, parts);
+        return parts.ToArray();
     }
 
-    private static string EncodeObject(object value)
+    private static void EncodeObjectBytes(object value, List<byte> output)
     {
-        return value switch
+        switch (value)
         {
-            string s => EncodeString(s),
-            long l => EncodeInt(l),
-            int i => EncodeInt(i),
-            byte[] b => EncodeString(Encoding.UTF8.GetString(b)), // simplified
-            IList<object> list => EncodeList(list.Select(EncodeObject)),
-            SortedDictionary<string, object> dict =>
-                EncodeDictionary(new SortedDictionary<string, string>(
-                    dict.ToDictionary(kv => kv.Key, kv => EncodeObject(kv.Value)))),
-            _ => throw new ArgumentException($"Cannot bencode type: {value.GetType()}")
-        };
+            case byte[] b:
+                output.AddRange(EncodeBytes(b));
+                break;
+            case string s:
+                output.AddRange(Encoding.UTF8.GetBytes(EncodeString(s)));
+                break;
+            case long l:
+                output.AddRange(Encoding.UTF8.GetBytes(EncodeInt(l)));
+                break;
+            case int i:
+                output.AddRange(Encoding.UTF8.GetBytes(EncodeInt(i)));
+                break;
+            case IList<object> list:
+                output.AddRange(Encoding.ASCII.GetBytes("l"));
+                foreach (var item in list)
+                    EncodeObjectBytes(item, output);
+                output.AddRange(Encoding.ASCII.GetBytes("e"));
+                break;
+            case IDictionary<string, object> dict:
+                output.AddRange(Encoding.ASCII.GetBytes("d"));
+                foreach (var kv in dict.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+                {
+                    output.AddRange(Encoding.UTF8.GetBytes(EncodeString(kv.Key)));
+                    EncodeObjectBytes(kv.Value, output);
+                }
+                output.AddRange(Encoding.ASCII.GetBytes("e"));
+                break;
+            default:
+                throw new ArgumentException($"Cannot bencode type: {value.GetType()}");
+        }
     }
 }

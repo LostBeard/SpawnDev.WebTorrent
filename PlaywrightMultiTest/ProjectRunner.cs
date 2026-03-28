@@ -340,7 +340,8 @@ namespace PlaywrightMultiTest
 
                         rowTest.TestFunc = async (page) =>
                         {
-                            var result = await ProcessRunner.Run(publishedBinary, rowTest.Name, timeout: 120_000).ConfigureAwait(false);
+                            var runArgs = rowTest.Name;
+                            var result = await ProcessRunner.Run(publishedBinary, runArgs, timeout: 120_000).ConfigureAwait(false);
                             var resultLines = result.Text.Split(new[] { '\n', '\r' }, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
                             var testResltTest = resultLines.LastOrDefault(o => o.StartsWith("TEST: "))?.Substring(6);
                             var unitTest = testResltTest != null ? JsonSerializer.Deserialize<UnitTest>(testResltTest) : null;

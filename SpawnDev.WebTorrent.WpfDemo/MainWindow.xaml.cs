@@ -138,6 +138,17 @@ public partial class MainWindow : Window
         dlg.ShowDialog();
     }
 
+    private void TestsButton_Click(object sender, RoutedEventArgs e)
+    {
+        var testWindow = new SpawnDev.UnitTesting.Desktop.UnitTestsWindow
+        {
+            TestTypes = new[] { typeof(DesktopTests) },
+            AutoRun = true,
+            Owner = this,
+        };
+        testWindow.Show();
+    }
+
     private void TorrentList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         _selectedVm = TorrentListView.SelectedItem as TorrentViewModel;

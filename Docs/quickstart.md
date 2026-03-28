@@ -113,6 +113,7 @@ torrent.StartDownload();
 ```csharp
 // In Blazor WASM — pieces survive page reloads
 var asyncFs = new AsyncFSFileSystemDirectoryHandle(blazorJsRuntime);
+await asyncFs.Ready;
 
 var torrent = await client.AddAsync(magnet, new AddTorrentOptions
 {

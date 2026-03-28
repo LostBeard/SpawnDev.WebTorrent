@@ -107,12 +107,13 @@ public class TorrentSwarm : IAsyncDisposable
     /// <summary>Seed ratio (uploaded / downloaded). 0 if nothing downloaded.</summary>
     public double Ratio => Downloaded > 0 ? (double)Uploaded / Downloaded : 0;
 
-    /// <summary>Estimated time remaining in milliseconds (-1 if unknown).</summary>
+    /// <summary>Estimated time remaining in milliseconds. 0 if done, -1 if unknown.</summary>
     public long TimeRemaining
     {
         get
         {
-            if (Done || Metadata == null || DownloadSpeed <= 0) return -1;
+            if (Done) return 0;
+            if (Metadata == null || DownloadSpeed <= 0) return -1;
             long remaining = Metadata.TotalLength - Downloaded;
             return (long)(remaining / DownloadSpeed * 1000);
         }

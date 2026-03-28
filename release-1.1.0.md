@@ -7,7 +7,7 @@
 
 - **Real P2P** — WebRTC peer connections actually work (browser + desktop)
 - **15 BEPs implemented** — up from 3 partial in v1.0.0
-- **244 unit tests** — up from 49 in v1.0.0
+- **363 unit tests** — up from 49 in v1.0.0
 - **AI Agent Communication** — BEP 46 DHT mutable items with AgentChannel pub/sub
 - **Web seed downloading works** — pieces actually download and verify
 - **Full torrent client UI** — qBittorrent v5 style Blazor + WPF demos
@@ -117,7 +117,7 @@
 ## Stats
 - 83 source files
 - 19,000+ lines of C#
-- 244 Playwright tests (236 pass, 8 skip)
+- 363 Playwright tests (290 pass, 0 fail, 12 skip)
 - 133 git commits
 - 15 BEPs implemented
 - 0 TODO/FIXME stubs remaining

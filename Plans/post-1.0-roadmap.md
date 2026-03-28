@@ -1,22 +1,19 @@
-# SpawnDev.WebTorrent — Post-1.0 Roadmap
+# SpawnDev.WebTorrent — Post-1.1 Roadmap
 
-## Distributed Compute via P2P Network
+## Completed in v1.1.0
 
-The WebTorrent P2P network we're building for model delivery creates a natural foundation for **distributed compute sharing across devices**. Every connected browser/desktop is already exchanging data over WebRTC — extending this to share compute workloads is a natural evolution.
+These were originally on the roadmap and are now **shipped**:
 
-### Vision: Peer-to-Peer GPU Compute
+- **Pure C# DHT (Kademlia)** — Full routing table, KRPC protocol, bootstrap, iterative lookup, get_peers, announce_peer. 160 k-buckets, K=8.
+- **AI Agent Communication** — BEP 46 DHT mutable items with ECDSA-P256 signing. AgentChannel high-level pub/sub. Named channels. Works in browser (WebCrypto) and desktop.
+- **SwarmCompute Foundation** — PublishTaskAsync, JoinAsWorkerAsync, SubmitResultAsync. Task distribution framework over WebRTC.
+- **Wire Protocol Extensions** — BEP 10 extension framework, ut_metadata (BEP 9), ut_pex (BEP 11), sd_compute message types.
 
-- **Model inference sharding** — Split a large model across multiple browser peers. Each peer runs inference on their portion (using SpawnDev.ILGPU), passes intermediate tensors to the next peer via WebRTC data channels. A 14B model that doesn't fit on one device runs across 4 devices with 4GB each.
+## Distributed Compute via P2P Network (4.0.0 — Active Development)
 
-- **Parallel batch processing** — Distribute inference batches across peers. One client sends images to N peers, each runs classification, results aggregate back. Linear speedup for embarrassingly parallel workloads.
+Moved into SpawnDev.ILGPU.ML 4.0.0 scope. See `D:\users\tj\Projects\SpawnDev.ILGPU.ML\Plans\v4.0.0-checklist.md`.
 
-- **Training data parallelism** — Distributed training across browser peers. Each peer computes gradients on their local data, gradients are aggregated via the P2P network (all-reduce over WebRTC). Privacy-preserving: raw data never leaves the device.
-
-- **Volunteer compute pools** — Users opt in to donate idle GPU time. Like Folding@Home but for ML inference in the browser. The "AI Assistant" demo could distribute inference across volunteering peers when the local device is underpowered.
-
-### Architecture Extension
-
-The wire protocol extension system (BEP 10) already supports custom message types:
+### Architecture: sd_compute Wire Extension
 
 ```
 sd_compute extension:
@@ -28,24 +25,23 @@ sd_compute extension:
   - RESULT:       "Computation complete"
 ```
 
-This rides the same WebRTC connections used for piece exchange — no new infrastructure needed.
+Rides the same WebRTC connections used for piece exchange — no new infrastructure needed.
 
-### Prerequisites
-
-- SpawnDev.WebTorrent 1.0 (P2P connectivity proven)
-- SpawnDev.ILGPU.ML (GPU inference engine)
-- SpawnDev.BlazorJS (browser API access)
-- Wire protocol extension framework (already built)
-- Tensor serialization over data channels
+### Key Features (in 4.0.0 checklist)
+- **Model inference sharding** — 14B model across 4 devices with 4GB each
+- **Parallel batch processing** — Linear speedup for parallel workloads
+- **Training data parallelism** — All-reduce over WebRTC, privacy-preserving
+- **Volunteer compute pools** — Folding@Home for ML inference
+- **AcceleratorType.P2P** — 7th SpawnDev.ILGPU backend, transparent distribution
+- **BEP 46 shared memory** — KV cache, model weights, coordination over DHT
 
 ### Security Considerations
-
 - Compute tasks must be verifiable (hash of expected output)
 - Malicious peers could return garbage tensors — need redundant compute + voting
 - Privacy: intermediate tensors may leak information about the input
 - Bandwidth: tensor transfer must be smaller than the compute savings
 
-## Other Post-1.0 Features
+## Future Features (Post-4.0.0)
 
 ### BEP 52 (BitTorrent v2)
 - SHA-256 piece hashes (stronger integrity for weight files)
@@ -57,27 +53,6 @@ This rides the same WebRTC connections used for piece exchange — no new infras
 - Mount a torrent as a drive (Dokan on desktop, OPFS in browser)
 - File access triggers piece downloads transparently
 
-### Pure C# DHT (Kademlia)
-- Decentralized peer discovery without tracker dependency
-- Eliminates single point of failure
-- Required for truly serverless P2P
-
-### AI Agent Communication Protocol
-- Custom wire extension for multi-agent coordination
-- Agents discover each other via the torrent swarm
-- Task distribution, result aggregation, consensus protocols
-- Enables browser-based AI agent swarms
-
-### SpawnDev.ILGPU P2P Backend (7th Backend)
-- New `AcceleratorType.P2P` — distributes kernels across connected devices
-- Same C# kernel code, same `LoadAutoGroupedStreamKernel` API
-- The Accelerator handles sharding, tensor transfer, and result aggregation transparently
-- Developer writes one kernel, it runs on 1 GPU or 10 GPUs across a household
-- Combine every device in a home: phone, laptop, tablet, desktop, old gaming PC
-- Each device contributes whatever GPU it has (CUDA, WebGPU, OpenCL, Wasm)
-- Buffer management handles data locality — tensors migrate to where they're needed
-- The living room becomes a compute cluster
-
 ### GPU-Accelerated Piece Hashing
 - Use SpawnDev.ILGPU for parallel SHA-1/SHA-256 computation
 - Batch-verify thousands of pieces on GPU
@@ -87,3 +62,30 @@ This rides the same WebRTC connections used for piece exchange — no new infras
 - Detect metered connections (mobile data)
 - Respect upload limits (configurable, default conservative)
 - Smart seeding: prioritize pieces that are rare in the swarm
+
+### Push Notifications for Compute Swarms
+- Web Push API to recall opted-in volunteers when swarm capacity is low
+- Service worker stays registered after tab closes — no app install needed
+- Coordinator detects low capacity → publishes "help wanted" via BEP 46
+- Server picks up the signal → fires push to opted-in devices
+- User taps notification → browser opens join link → auto-joins swarm
+- Consent levels: "always notify", "this swarm only", "never"
+- Works on Android Chrome without any app install
+
+### Compute Request Board (hub.spawndev.com)
+- Server endpoint: `POST /compute/request` — coordinator posts "looking for compute nodes"
+- Server endpoint: `GET /compute/requests` — volunteers browse available swarms
+- Request includes: swarm name, owner, purpose, estimated duration, TFLOPS needed, join link
+- Volunteers click join link → auto-joins the swarm
+- Requests expire after configurable TTL (default 1 hour)
+- Server relays push notifications to opted-in volunteers matching the request
+- WebSocket feed for real-time request updates
+- Public API — any app can post/browse compute requests
+- Privacy: coordinator chooses what to disclose (name only, or full details)
+
+### Compute Swarm Consent & Trust
+- Join consent flow: "Always join" / "Join this time" / "Not now"
+- Per-origin trust saved in localStorage
+- Family devices auto-join trusted swarms silently
+- Unknown swarms show swarm name, owner, purpose before asking
+- Coordinator can kick/block misbehaving peers

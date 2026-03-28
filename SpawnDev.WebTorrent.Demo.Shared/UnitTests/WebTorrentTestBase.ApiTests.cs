@@ -190,9 +190,9 @@ public abstract partial class WebTorrentTestBase
             new TorrentCreatorOptions { PieceLength = 16384 });
 
         var swarm = await client.SeedAsync(data, "eta.bin");
-        // After seed, Done is true, so TimeRemaining should be -1
-        if (swarm.TimeRemaining != -1)
-            throw new Exception($"TimeRemaining should be -1 when done, got {swarm.TimeRemaining}");
+        // After seed, Done is true, so TimeRemaining should be 0 (nothing left to download)
+        if (swarm.TimeRemaining != 0)
+            throw new Exception($"TimeRemaining should be 0 when done, got {swarm.TimeRemaining}");
     }
 
     [TestMethod]

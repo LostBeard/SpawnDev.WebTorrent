@@ -1,3 +1,4 @@
+using SpawnDev.BlazorJS;
 using SpawnDev.UnitTesting;
 using SpawnDev.WebTorrent.ModelDelivery;
 using SpawnDev.WebTorrent.Storage;
@@ -13,6 +14,12 @@ namespace SpawnDev.WebTorrent.Demo.Shared.UnitTests;
 /// </summary>
 public abstract partial class WebTorrentTestBase
 {
+    /// <summary>
+    /// BlazorJS runtime injected via DI in browser test subclasses.
+    /// Null on desktop (tests that need it should check OperatingSystem.IsBrowser()).
+    /// </summary>
+    protected BlazorJSRuntime? JS { get; set; }
+
     // ═══════════════════════════════════════════════════════════
     //  Bencode Tests
     // ═══════════════════════════════════════════════════════════

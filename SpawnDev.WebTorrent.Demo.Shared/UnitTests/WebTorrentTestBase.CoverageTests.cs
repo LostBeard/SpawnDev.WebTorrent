@@ -214,8 +214,9 @@ public abstract partial class WebTorrentTestBase
         // It tests the full OPFS persistence pipeline
         try
         {
-            var fs = new SpawnDev.AsyncFileSystem.BrowserWASM.AsyncFSFileSystemDirectoryHandle(
-                SpawnDev.BlazorJS.BlazorJSRuntime.JS);
+            if (JS == null) throw new UnsupportedTestException("BlazorJSRuntime not available");
+            var fs = new SpawnDev.AsyncFileSystem.BrowserWASM.AsyncFSFileSystemDirectoryHandle(JS);
+            await fs.Ready;
 
             await using var store = new AsyncFSChunkStore(fs, "test-opfs-" + Guid.NewGuid().ToString("N")[..8], 16384);
 

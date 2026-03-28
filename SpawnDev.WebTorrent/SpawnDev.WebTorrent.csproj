@@ -14,7 +14,7 @@
 		<NoWarn>$(NoWarn);CS1591</NoWarn>
 		<Title>SpawnDev.WebTorrent</Title>
 		<Authors>LostBeard</Authors>
-		<Description>Pure C# BitTorrent/WebTorrent client. 15 BEPs, real WebRTC P2P (browser + desktop), DHT with mutable items (BEP 46 — AI agent communication), web seeds, media streaming, OPFS storage. No JavaScript dependencies. Runs on desktop (.NET + SIPSorcery) and browser (Blazor WASM + SpawnDev.BlazorJS). 244 unit tests.</Description>
+		<Description>Pure C# BitTorrent/WebTorrent client. 15 BEPs, real WebRTC P2P (browser + desktop), DHT with mutable items (BEP 46 — AI agent communication), web seeds, media streaming, OPFS storage. No JavaScript dependencies. Runs on desktop (.NET + SIPSorcery) and browser (Blazor WASM + SpawnDev.BlazorJS). 363 unit tests.</Description>
 		<PackageProjectUrl>https://github.com/LostBeard/SpawnDev.WebTorrent</PackageProjectUrl>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
 		<PackageLicenseFile>LICENSE.txt</PackageLicenseFile>

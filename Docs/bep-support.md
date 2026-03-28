@@ -67,4 +67,4 @@ Both share the `IWebRtcTransport` interface and work through the same `PeerCoord
 
 ## Test Coverage
 
-244 tests (236 pass, 8 skip for desktop-only) covering all 15 implemented BEPs, the full download pipeline, P2P integration, controlled swarm, AI agent communication, and cross-platform functionality. Tested via PlaywrightMultiTest against real-world torrents (Big Buck Bunny, Sintel).
+363 tests (351 pass, 12 skip for desktop-only) covering all 15 implemented BEPs, the full download pipeline, P2P integration, controlled swarm, AI agent communication, parser round-trips, storage backends, PieceManager state machine, swarm properties, and cross-platform functionality. Tested via PlaywrightMultiTest against real-world torrents (Big Buck Bunny, Sintel).

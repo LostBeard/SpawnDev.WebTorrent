@@ -1,6 +1,6 @@
 # BEP (BitTorrent Enhancement Proposal) Support
 
-Status of BEP implementation in SpawnDev.WebTorrent.
+Status of BEP implementation in SpawnDev.WebTorrent v1.1.0.
 
 ## Implemented
 
@@ -15,30 +15,53 @@ Status of BEP implementation in SpawnDev.WebTorrent.
 | [17](http://bittorrent.org/beps/bep_0017.html) | HTTP Seeding (Hoffman) | Yes | Yes | HTTP range request web seeds |
 | [19](http://bittorrent.org/beps/bep_0019.html) | WebSeed (GetRight style) | Yes | Yes | Multi-file piece assembly, path-safe URL encoding |
 | [20](http://bittorrent.org/beps/bep_0020.html) | Peer ID Conventions | Yes | Yes | Azureus-style: `-SD0110-` (see [peer-id.md](peer-id.md)) |
-| [23](http://bittorrent.org/beps/bep_0023.html) | Tracker Returns Compact Peer Lists | Yes | Yes | Via UDP tracker compact format |
+| [23](http://bittorrent.org/beps/bep_0023.html) | Tracker Returns Compact Peer Lists | Yes | Yes | Via UDP and HTTP tracker compact format |
 | [27](http://bittorrent.org/beps/bep_0027.html) | Private Torrents | Yes | Yes | DHT/PEX peers rejected, only tracker peers accepted |
 | [53](http://bittorrent.org/beps/bep_0053.html) | Magnet URI — Select Specific Files | Yes | Yes | `so=` parameter parsed, `SelectedFileIndices` property |
 
-## WebTorrent Protocol Extensions
+## Tracker Support
+
+| Type | Desktop | Browser | Protocol |
+|------|---------|---------|----------|
+| WebSocket (wss://) | Yes | Yes | JSON signaling with WebRTC offer/answer relay |
+| HTTP/HTTPS | Yes | Yes | URL-encoded announce, compact/non-compact peer lists |
+| UDP | Yes | N/A | BEP 15 binary protocol (connect/announce/scrape) |
+
+## WebRTC Transport
+
+| Platform | Library | Notes |
+|----------|---------|-------|
+| Browser | SpawnDev.BlazorJS RTCPeerConnection | Full signaling via tracker relay |
+| Desktop | SIPSorcery 10.0.3 RTCPeerConnection | Same signaling protocol, cross-platform P2P |
+
+Both share the `IWebRtcTransport` interface and work through the same `PeerCoordinator` signaling flow.
+
+## Additional Features
 
 | Feature | Desktop | Browser | Notes |
 |---------|---------|---------|-------|
-| WebRTC Data Channels | Yes (SIPSorcery) | Yes (SpawnDev.BlazorJS) | Browser-to-browser and desktop-to-browser P2P |
-| WebSocket Tracker | Yes | Yes | JSON signaling with WebRTC offer/answer relay |
-| Web Seed HTTP Range | Yes | Yes | Multi-file torrents, correct byte range mapping |
+| Web seed HTTP range | Yes | Yes | Multi-file piece assembly |
+| Upload rate limiting | Yes | Yes | Token bucket via RateLimiter |
+| Download rate limiting | Yes | Yes | Token bucket via RateLimiter |
+| OPFS persistent storage | N/A | Yes | Via SpawnDev.AsyncFileSystem |
+| FileSystem storage | Yes | N/A | FileChunkStore in temp directory |
+| Keep-alive timer | Yes | Yes | 60-second interval per peer |
+| Choke/unchoke rotation | Yes | Yes | 10s rechoke, 30s optimistic unchoke |
+| Endgame mode | Yes | Yes | Request from all peers when <=5 pieces remain |
+| Speed tracking | Yes | Yes | Real-time bytes/sec per torrent |
+| Seeding | Yes | Yes | Respond to Request with Piece data |
+| Media playback | N/A | Yes | Video/audio/image via blob URL with seeking |
 
 ## Not Yet Implemented
 
 | BEP | Title | Priority | Notes |
 |-----|-------|----------|-------|
 | [5](http://bittorrent.org/beps/bep_0005.html) | DHT Protocol | Medium | DhtDiscovery stub exists, needs Kademlia routing |
-| [14](http://bittorrent.org/beps/bep_0014.html) | Local Service Discovery | Low | Desktop only. UDP broadcast. |
+| [14](http://bittorrent.org/beps/bep_0014.html) | Local Service Discovery | Low | Desktop only, UDP broadcast |
 | [29](http://bittorrent.org/beps/bep_0029.html) | uTorrent Transport Protocol (uTP) | Low | UDP-based, desktop only |
-| [48](http://bittorrent.org/beps/bep_0048.html) | Tracker Scrape | Low | Get seeder/leecher counts without announcing |
-| [7](http://bittorrent.org/beps/bep_0007.html) | IPv6 Tracker Extension | Low | |
-| [32](http://bittorrent.org/beps/bep_0032.html) | DHT Extensions for IPv6 | Low | Requires BEP 5 first |
+| [48](http://bittorrent.org/beps/bep_0048.html) | Tracker Scrape | Low | Get counts without announcing |
 | [52](http://bittorrent.org/beps/bep_0052.html) | BitTorrent Protocol v2 | Future | SHA-256, Merkle trees |
 
 ## Test Coverage
 
-140 unit tests covering all implemented BEPs. Every protocol message format, every extension handler, and every download pipeline path is tested through PlaywrightMultiTest (browser) and verified against real-world torrents (Big Buck Bunny, Sintel, etc.).
+144 unit tests covering all implemented BEPs, the full download pipeline, API surface, and cross-platform functionality. Tested via PlaywrightMultiTest against real-world torrents.

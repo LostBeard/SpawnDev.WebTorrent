@@ -59,6 +59,57 @@ public partial class MainWindow : Window
         _refreshTimer.Start();
 
         Log("SpawnDev.WebTorrent Desktop Client initialized");
+
+        // Handle command-line .torrent files (open with this app)
+        Loaded += async (_, _) =>
+        {
+            var args = Environment.GetCommandLineArgs();
+            foreach (var arg in args.Skip(1))
+            {
+                if (arg.EndsWith(".torrent", StringComparison.OrdinalIgnoreCase) && System.IO.File.Exists(arg))
+                {
+                    try
+                    {
+                        var bytes = await System.IO.File.ReadAllBytesAsync(arg);
+                        var metadata = Torrent.TorrentParser.Parse(bytes);
+                        await AddFromMetadata(metadata);
+                        Log($"Opened: {arg}");
+                    }
+                    catch (Exception ex) { Log($"Failed to open {arg}: {ex.Message}"); }
+                }
+                else if (arg.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase))
+                {
+                    await AddMagnetAsync(arg, null);
+                }
+            }
+        };
+    }
+
+    private async Task AddFromMetadata(Torrent.TorrentMetadata metadata)
+    {
+        var hash = Convert.ToHexString(metadata.InfoHash).ToLowerInvariant();
+        if (_torrents.Any(t => t.HashFull == hash)) return;
+
+        var swarm = await _client.AddAsync(metadata);
+        var vm = new TorrentViewModel
+        {
+            Swarm = swarm,
+            Name = metadata.Name,
+            HashFull = hash,
+            HashShort = hash[..8] + "...",
+            SizeText = FormatBytes(metadata.TotalLength),
+        };
+        foreach (var f in metadata.Files)
+            vm.Files.Add(new FileViewModel { Path = f.Path, SizeText = FormatBytes(f.Length), Ext = System.IO.Path.GetExtension(f.Path) });
+
+        _torrents.Add(vm);
+        TorrentListView.SelectedItem = vm;
+
+        foreach (var ws in metadata.UrlList) swarm.AddWebSeed(ws.TrimEnd('/'));
+        swarm.StartDownload();
+
+        await FetchMetadataAndDownloadAsync(vm, "");
+        await ConnectTrackersAsync(vm, "");
     }
 
     // ── Event Handlers ──

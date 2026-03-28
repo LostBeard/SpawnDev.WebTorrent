@@ -6,10 +6,11 @@
 ## Highlights
 
 - **Real P2P** — WebRTC peer connections actually work (browser + desktop)
-- **13 BEPs implemented** — up from 3 partial in v1.0.0
-- **161 unit tests** — up from 49 in v1.0.0
+- **15 BEPs implemented** — up from 3 partial in v1.0.0
+- **244 unit tests** — up from 49 in v1.0.0
+- **AI Agent Communication** — BEP 46 DHT mutable items with AgentChannel pub/sub
 - **Web seed downloading works** — pieces actually download and verify
-- **Full torrent client UI** — professional-quality Blazor + WPF demos
+- **Full torrent client UI** — qBittorrent v5 style Blazor + WPF demos
 - **Zero TODO stubs** — every feature is implemented
 
 ## New Features
@@ -114,8 +115,10 @@
 - SIPSorcery 10.0.3 (desktop WebRTC)
 
 ## Stats
-- 73 source files
-- 15,444 lines of C#
-- 161 Playwright tests (158 pass, 3 skip)
-- 71 git commits
+- 83 source files
+- 19,000+ lines of C#
+- 244 Playwright tests (236 pass, 8 skip)
+- 133 git commits
+- 15 BEPs implemented
 - 0 TODO/FIXME stubs remaining
+- 0 compiler warnings

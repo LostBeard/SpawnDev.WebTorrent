@@ -276,10 +276,19 @@
                                 break;
 
                             case "log":
+                                <div style="display:flex;justify-content:flex-end;padding:2px 0">
+                                    <button class="qb-action-btn" style="font-size:10px" @onclick="() => _logMessages.Clear()">Clear</button>
+                                </div>
                                 <div class="qb-log">
                                     @foreach (var msg in _logMessages.TakeLast(100))
                                     {
-                                        <div class="qb-log-line">@msg</div>
+                                        var cls = msg.Contains("Error") || msg.Contains("error") || msg.Contains("Failed") ? "qb-log-err"
+                                            : msg.Contains("Tracker") || msg.Contains("seeders") ? "qb-log-tracker"
+                                            : msg.Contains("P2P") || msg.Contains("Peer") || msg.Contains("peer") ? "qb-log-peer"
+                                            : msg.Contains("Piece") || msg.Contains("verified") || msg.Contains("complete") ? "qb-log-piece"
+                                            : msg.Contains("Seeding") || msg.Contains("Download complete") ? "qb-log-done"
+                                            : "";
+                                        <div class="qb-log-line @cls">@msg</div>
                                     }
                                 </div>
                                 break;
@@ -798,6 +807,11 @@
     /* Log */
     .qb-log { font-family: Consolas, monospace; font-size: 11px; display: flex; flex-direction: column-reverse; }
     .qb-log-line { color: #475569; padding: 1px 0; }
+    .qb-log-err { color: #f87171; }
+    .qb-log-tracker { color: #10b981; }
+    .qb-log-peer { color: #60a5fa; }
+    .qb-log-piece { color: #a78bfa; }
+    .qb-log-done { color: #fbbf24; font-weight: 600; }
 
     /* Status bar */
     .qb-statusbar { display: flex; gap: 16px; padding: 3px 10px; background: #0d1117; border-top: 1px solid #1e293b; color: #475569; font-size: 11px; }

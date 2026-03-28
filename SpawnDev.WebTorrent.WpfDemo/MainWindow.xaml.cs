@@ -615,6 +615,7 @@ public class FileViewModel
     public string Path { get; set; } = "";
     public string SizeText { get; set; } = "";
     public string Ext { get; set; } = "";
+    public string ProgressText { get; set; } = "0%";
 }
 
 public class TrackerViewModel : INotifyPropertyChanged

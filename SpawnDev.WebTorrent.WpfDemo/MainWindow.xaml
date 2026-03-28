@@ -210,9 +210,10 @@
                               Foreground="#94a3b8" FontSize="12" MouseDoubleClick="PanelFiles_DoubleClick">
                         <ListView.View>
                             <GridView>
-                                <GridViewColumn Header="File" Width="380" DisplayMemberBinding="{Binding Path}"/>
-                                <GridViewColumn Header="Size" Width="90" DisplayMemberBinding="{Binding SizeText}"/>
-                                <GridViewColumn Header="Type" Width="55" DisplayMemberBinding="{Binding Ext}"/>
+                                <GridViewColumn Header="File" Width="300" DisplayMemberBinding="{Binding Path}"/>
+                                <GridViewColumn Header="Size" Width="80" DisplayMemberBinding="{Binding SizeText}"/>
+                                <GridViewColumn Header="Type" Width="50" DisplayMemberBinding="{Binding Ext}"/>
+                                <GridViewColumn Header="Progress" Width="80" DisplayMemberBinding="{Binding ProgressText}"/>
                             </GridView>
                         </ListView.View>
                     </ListView>

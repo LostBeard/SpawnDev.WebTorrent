@@ -325,6 +325,8 @@ public partial class MainWindow : Window
         DetailSize.Text = vm.Swarm.HasMetadata ? FormatBytes(vm.Swarm.Metadata!.TotalLength) : "—";
         DetailPieces.Text = pm != null ? $"{pm.CompletedCount} / {pm.PieceCount}" : "—";
         DetailDownloaded.Text = FormatBytes(vm.Swarm.Downloaded);
+        DetailUploaded.Text = FormatBytes(vm.Swarm.Uploaded);
+        DetailRatio.Text = vm.Swarm.Ratio.ToString("F3");
         DetailHash.Text = vm.HashFull;
 
         PanelFiles.ItemsSource = vm.Files;

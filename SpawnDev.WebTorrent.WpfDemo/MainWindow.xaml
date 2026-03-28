@@ -80,6 +80,8 @@
                              BorderBrush="#1e293b" BorderThickness="1" Padding="6,4" FontFamily="Consolas" FontSize="12"
                              VerticalContentAlignment="Center" KeyDown="MagnetInput_KeyDown"/>
                     <Button Grid.Column="1" Content="Add" Margin="4,0,0,0" Style="{StaticResource AccentBtn}" Click="AddButton_Click"/>
+                    <!-- Open .torrent file button next to add -->
+                    <!-- (Also supports drag-drop and CLI args) -->
                 </Grid>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="8,0">
                     <Button Content="&#9646;&#9646;" Padding="6,4" Background="#1e293b" Foreground="#94a3b8" BorderThickness="0" FontSize="11" Cursor="Hand" Click="PauseAll_Click" ToolTip="Pause All" Margin="0,0,2,0"/>
@@ -186,6 +188,10 @@
                             <WrapPanel>
                                 <TextBlock Width="320" Margin="0,1" FontSize="12"><Run Text="Pieces: " Foreground="#475569"/><Run x:Name="DetailPieces" Foreground="#94a3b8"/></TextBlock>
                                 <TextBlock Width="320" Margin="0,1" FontSize="12"><Run Text="Downloaded: " Foreground="#475569"/><Run x:Name="DetailDownloaded" Foreground="#94a3b8"/></TextBlock>
+                            </WrapPanel>
+                            <WrapPanel>
+                                <TextBlock Width="320" Margin="0,1" FontSize="12"><Run Text="Uploaded: " Foreground="#475569"/><Run x:Name="DetailUploaded" Foreground="#94a3b8"/></TextBlock>
+                                <TextBlock Width="320" Margin="0,1" FontSize="12"><Run Text="Ratio: " Foreground="#475569"/><Run x:Name="DetailRatio" Foreground="#94a3b8"/></TextBlock>
                             </WrapPanel>
                             <TextBlock Margin="0,1" FontSize="10" FontFamily="Consolas"><Run Text="Hash: " Foreground="#475569"/><Run x:Name="DetailHash" Foreground="#334155"/></TextBlock>
                             <StackPanel Orientation="Horizontal" Margin="0,6,0,4">

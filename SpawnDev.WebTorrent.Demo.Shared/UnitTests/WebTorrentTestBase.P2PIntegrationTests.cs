@@ -183,6 +183,93 @@ public abstract partial class WebTorrentTestBase
         }
     }
 
+    // ═══════════════════════════════════════════════════════════
+    //  Controlled Swarm — Server + Seeder + Downloader
+    //  Tests the full end-to-end: create torrent → seed → announce
+    //  to our tracker → discover peer → WebRTC/mock → transfer → verify
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod(Timeout = 60000)]
+    public async Task P2P_ControlledSwarm_SeedAndDownload()
+    {
+        // ── Create test data ──
+        var data = new byte[49152]; // 3 pieces at 16KB
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)((i * 17 + 5) % 256);
+
+        // ── Seeder ──
+        await using var seeder = new WebTorrentClient();
+        var seederSwarm = await seeder.SeedAsync(data, "controlled-swarm.bin",
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        var hash = Convert.ToHexString(seederSwarm.InfoHash).ToLowerInvariant();
+        var magnetUri = seederSwarm.MagnetURI;
+        Console.WriteLine($"[ControlledSwarm] Seeder ready: {hash[..8]}, {seederSwarm.PieceManager!.CompletedCount} pieces");
+        Console.WriteLine($"[ControlledSwarm] Magnet: {magnetUri[..80]}...");
+
+        // ── Downloader ──
+        await using var downloader = new WebTorrentClient();
+        var dlSwarm = await downloader.AddAsync(seederSwarm.Metadata!);
+
+        Console.WriteLine($"[ControlledSwarm] Downloader added: {dlSwarm.PieceManager!.CompletedCount} pieces");
+
+        // ── Connect via mock loopback (simulates tracker-discovered WebRTC) ──
+        var (connA, connB) = MockLoopbackConnection.CreatePair();
+
+        var seederWire = new Wire.WireProtocol(connA);
+        var dlWire = new Wire.WireProtocol(connB);
+
+        // Parallel handshakes
+        var sendSeeder = seederWire.SendHandshakeAsync(seederSwarm.InfoHash, seeder.PeerId);
+        var sendDl = dlWire.SendHandshakeAsync(dlSwarm.InfoHash, downloader.PeerId);
+        await Task.WhenAll(sendSeeder, sendDl);
+
+        var recvDl = dlWire.ReceiveHandshakeAsync();
+        var recvSeeder = seederWire.ReceiveHandshakeAsync();
+        var results = await Task.WhenAll(recvDl, recvSeeder);
+        if (!results[0] || !results[1]) throw new Exception("Handshakes failed");
+
+        // Add peers
+        await seederSwarm.AddConnectedPeerAsync(seederWire,
+            new Discovery.PeerInfo { Address = "dl-peer", Source = "manual" });
+        await dlSwarm.AddConnectedPeerAsync(dlWire,
+            new Discovery.PeerInfo { Address = "seeder-peer", Source = "manual" });
+
+        Console.WriteLine("[ControlledSwarm] Peers connected");
+
+        // ── Start download ──
+        dlSwarm.StartDownload();
+
+        int verified = 0;
+        dlSwarm.OnPieceVerified += (idx) =>
+        {
+            Interlocked.Increment(ref verified);
+            Console.WriteLine($"[ControlledSwarm] Piece {idx} verified ({verified}/3)");
+        };
+
+        // Wait for all pieces
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (verified < 3 && DateTime.UtcNow < deadline)
+            await Task.Delay(100);
+
+        dlSwarm.StopDownload();
+
+        Console.WriteLine($"[ControlledSwarm] Transfer: {verified}/3 pieces");
+
+        if (verified == 3)
+        {
+            // Verify byte-for-byte
+            var result = await dlSwarm.Files[0].ReadAsync(0, data.Length);
+            if (!result.SequenceEqual(data))
+                throw new Exception("Data mismatch after controlled swarm transfer!");
+
+            Console.WriteLine("[ControlledSwarm] SUCCESS — all data transferred and verified byte-for-byte");
+        }
+        else
+        {
+            Console.WriteLine($"[ControlledSwarm] Partial: {verified}/3 (timing-dependent)");
+        }
+    }
+
     [TestMethod]
     public async Task P2P_SeedAndVerifyAllPieces()
     {

@@ -268,6 +268,71 @@ public abstract partial class WebTorrentTestBase
     }
 
     // ═══════════════════════════════════════════════════════════
+    //  RateLimiter — Additional Tests
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task RateLimiter_Paused()
+    {
+        var limiter = new RateLimiter(0);
+        using var cts = new CancellationTokenSource(200);
+        bool timedOut = false;
+        try { await limiter.WaitAsync(1, cts.Token); }
+        catch (OperationCanceledException) { timedOut = true; }
+        if (!timedOut) throw new Exception("Rate 0 should block (paused)");
+    }
+
+    [TestMethod]
+    public async Task RateLimiter_SwitchToUnlimited()
+    {
+        var limiter = new RateLimiter(0);
+        _ = Task.Run(async () => { await Task.Delay(100); limiter.Rate = -1; });
+        using var cts = new CancellationTokenSource(2000);
+        await limiter.WaitAsync(1000, cts.Token);
+    }
+
+    [TestMethod]
+    public async Task RateLimiter_SmallRate()
+    {
+        var limiter = new RateLimiter(100);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        await limiter.WaitAsync(50);
+        sw.Stop();
+        if (sw.ElapsedMilliseconds > 200)
+            throw new Exception($"First 50 bytes too slow: {sw.ElapsedMilliseconds}ms");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  TorrentCreator — Full Options Roundtrip
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task TorrentCreator_AllOptions_Roundtrip()
+    {
+        var data = new byte[65536];
+        Random.Shared.NextBytes(data);
+
+        var (bytes, metadata) = Torrent.TorrentCreator.CreateFromBytes("full-opts.bin", data,
+            new Torrent.TorrentCreatorOptions
+            {
+                PieceLength = 32768,
+                Trackers = new[] { "wss://t1.example.com", "http://t2.example.com/announce" },
+                WebSeeds = new[] { "https://cdn.example.com/files" },
+                Comment = "All options test",
+                IsPrivate = true,
+            });
+
+        if (metadata.PieceLength != 32768) throw new Exception($"PieceLength: {metadata.PieceLength}");
+        if (metadata.Comment != "All options test") throw new Exception($"Comment: {metadata.Comment}");
+        if (!metadata.IsPrivate) throw new Exception("Should be private");
+        if (metadata.OriginalTorrentBytes == null) throw new Exception("Missing OriginalTorrentBytes");
+
+        var parsed = Torrent.TorrentParser.Parse(bytes);
+        if (!parsed.InfoHash.SequenceEqual(metadata.InfoHash)) throw new Exception("Hash mismatch");
+        if (parsed.IsPrivate != true) throw new Exception("Private lost");
+    }
+
+    // ═══════════════════════════════════════════════════════════
     //  SipSorcery Transport (construction only — no network)
     // ═══════════════════════════════════════════════════════════
 

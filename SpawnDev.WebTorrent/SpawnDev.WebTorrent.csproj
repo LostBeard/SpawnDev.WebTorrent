@@ -14,14 +14,14 @@
 		<NoWarn>$(NoWarn);CS1591</NoWarn>
 		<Title>SpawnDev.WebTorrent</Title>
 		<Authors>LostBeard</Authors>
-		<Description>Pure C# BitTorrent/WebTorrent client. No JavaScript dependencies. Runs on desktop (.NET) and browser (Blazor WASM). Supports random-access streaming for ML model delivery.</Description>
+		<Description>Pure C# BitTorrent/WebTorrent client. 13 BEPs, real WebRTC P2P (browser + desktop), DHT, web seeds, media streaming, OPFS storage. No JavaScript dependencies. Runs on desktop (.NET + SIPSorcery) and browser (Blazor WASM + SpawnDev.BlazorJS). 161 unit tests.</Description>
 		<PackageProjectUrl>https://github.com/LostBeard/SpawnDev.WebTorrent</PackageProjectUrl>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
 		<PackageLicenseFile>LICENSE.txt</PackageLicenseFile>
 		<PackageIcon>icon-128.png</PackageIcon>
 		<RepositoryUrl>https://github.com/LostBeard/SpawnDev.WebTorrent.git</RepositoryUrl>
 		<RepositoryType>git</RepositoryType>
-		<PackageTags>BitTorrent;WebTorrent;P2P;Torrent;Blazor;WebAssembly;Streaming;MachineLearning;ModelDelivery</PackageTags>
+		<PackageTags>BitTorrent;WebTorrent;P2P;Torrent;Blazor;WebAssembly;WebRTC;DHT;Streaming;MachineLearning;ModelDelivery;SIPSorcery</PackageTags>
 		<NoPackageAnalysis>true</NoPackageAnalysis>
 		<IsPackable>true</IsPackable>
 	</PropertyGroup>

@@ -32,7 +32,6 @@ public enum MessageType : byte
 public class WireProtocol : IAsyncDisposable
 {
     private readonly Transports.IConnection _connection;
-    private bool _handshakeComplete;
 
     /// <summary>Remote peer's info hash (from handshake).</summary>
     public byte[]? RemoteInfoHash { get; private set; }
@@ -128,8 +127,6 @@ public class WireProtocol : IAsyncDisposable
         RemoteReserved = buf[20..28];
         RemoteInfoHash = buf[28..48];
         RemotePeerId = buf[48..68];
-        _handshakeComplete = true;
-
         OnHandshakeComplete?.Invoke();
         return true;
     }

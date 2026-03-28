@@ -77,7 +77,9 @@ public class TcpConnection : IConnection
     public string TransportType => "tcp";
     public bool IsConnected => _client.Connected;
 
+#pragma warning disable CS0067 // TCP uses stream-based receive, not event-driven
     public event Action? OnDataAvailable;
+#pragma warning restore CS0067
     public event Action? OnDisconnected;
 
     public TcpConnection(TcpClient client)

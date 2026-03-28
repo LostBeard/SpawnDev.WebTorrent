@@ -225,6 +225,7 @@ public class TorrentSwarm : IAsyncDisposable
             _coordinator.AddPeer(peer.Wire, peer.PeerBitfield);
         }
 
+        OnMetadata?.Invoke();
         OnReady?.Invoke();
     }
 
@@ -279,7 +280,7 @@ public class TorrentSwarm : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            OnError?.Invoke(new Exception($"Failed to connect to {info.Address}: {ex.Message}"));
+            OnWarning?.Invoke($"Failed to connect to {info.Address}: {ex.Message}");
         }
     }
 

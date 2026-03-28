@@ -37,6 +37,8 @@ SpawnDev.WebTorrent/
 │   ├── PeerCoordinator               # Tracker → WebRTC signaling → wire protocol
 │   ├── TorrentHttpServer             # HTTP server with range requests
 │   ├── RateLimiter                   # Token bucket throttling
+│   ├── AgentChannel                  # AI agent pub/sub (BEP 46)
+│   ├── SwarmCompute                  # AcceleratorType.P2P foundation
 │   └── WebTorrentClient              # Main client API
 │
 ├── SpawnDev.WebTorrent.Server/       # Server library (NuGet 1.0.0)
@@ -113,9 +115,9 @@ SpawnDev.WebTorrent/
 | FileChunkStore | Desktop | Filesystem | Downloaded pieces in temp directory |
 | MemoryChunkStore | Both | None | Testing, fallback |
 
-## BEP Implementation (13)
+## BEP Implementation (15)
 
-BEP 3, 5, 6, 9, 10, 11, 15, 17, 19, 20, 23, 27, 53
+BEP 3, 5, 6, 9, 10, 11, 15, 17, 19, 20, 23, 27, 44, 46, 53
 
 ## Port Assignments
 

@@ -14,7 +14,9 @@
 
 <PageTitle>SpawnDev.WebTorrent Client</PageTitle>
 
-<div class="qb" tabindex="0" @onkeydown="OnKeyDown">
+<div class="qb" tabindex="0" @onkeydown="OnKeyDown"
+     @ondragover="OnDragOver" @ondragover:preventDefault
+     @ondrop="OnDrop" @ondrop:preventDefault>
     @* ═══ Toolbar ═══ *@
     <div class="qb-toolbar">
         <div class="qb-toolbar-group">
@@ -671,6 +673,29 @@
         if (entry.WebRtcTransport != null) await entry.WebRtcTransport.DisposeAsync();
         if (_client != null) await _client.RemoveAsync(entry.Swarm);
         Log($"Removed: {entry.DisplayName}");
+    }
+
+    private void OnDragOver(DragEventArgs e) { }
+
+    private async Task OnDrop(DragEventArgs e)
+    {
+        // Try to get dropped text (magnet URI or URL)
+        try
+        {
+            var text = await JS.CallAsync<string>("eval", "event.dataTransfer?.getData('text/plain') || ''");
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                text = text.Trim();
+                if (text.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase) ||
+                    text.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                    text.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                {
+                    await AddMagnetInternal(text, null);
+                    Log($"Added via drag-drop: {text[..Math.Min(50, text.Length)]}...");
+                }
+            }
+        }
+        catch { }
     }
 
     private async Task OnKeyDown(KeyboardEventArgs e)

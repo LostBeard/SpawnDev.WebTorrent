@@ -8,18 +8,18 @@
         AllowDrop="True" Drop="Window_Drop" DragOver="Window_DragOver">
 
     <Window.Resources>
-        <!-- Common button style -->
         <Style x:Key="AccentBtn" TargetType="Button">
             <Setter Property="Background" Value="{StaticResource AccentGreen}"/>
             <Setter Property="Foreground" Value="White"/>
             <Setter Property="FontWeight" Value="Bold"/>
             <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Padding" Value="12,5"/>
+            <Setter Property="Padding" Value="10,4"/>
             <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FontSize" Value="12"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border Background="{TemplateBinding Background}" CornerRadius="5" Padding="{TemplateBinding Padding}">
+                        <Border Background="{TemplateBinding Background}" CornerRadius="3" Padding="{TemplateBinding Padding}">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
                     </ControlTemplate>
@@ -31,14 +31,14 @@
             <Setter Property="Foreground" Value="{StaticResource AccentGreen}"/>
             <Setter Property="BorderBrush" Value="#1a5c3a"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Padding" Value="8,2"/>
+            <Setter Property="Padding" Value="8,1"/>
             <Setter Property="FontSize" Value="11"/>
             <Setter Property="Cursor" Value="Hand"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
                         <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="10" Padding="{TemplateBinding Padding}">
+                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="8" Padding="{TemplateBinding Padding}">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
                     </ControlTemplate>
@@ -47,10 +47,10 @@
         </Style>
         <Style x:Key="TabBtn" TargetType="Button">
             <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
+            <Setter Property="Foreground" Value="#475569"/>
             <Setter Property="BorderThickness" Value="0,0,0,2"/>
             <Setter Property="BorderBrush" Value="Transparent"/>
-            <Setter Property="Padding" Value="12,6"/>
+            <Setter Property="Padding" Value="10,4"/>
             <Setter Property="FontSize" Value="12"/>
             <Setter Property="Cursor" Value="Hand"/>
         </Style>
@@ -58,175 +58,175 @@
 
     <Grid>
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>   <!-- toolbar -->
-            <RowDefinition Height="*"/>      <!-- torrent list -->
-            <RowDefinition Height="Auto"/>   <!-- splitter -->
-            <RowDefinition Height="250"/>    <!-- detail panel -->
-            <RowDefinition Height="Auto"/>   <!-- status bar -->
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <!-- ═══ Toolbar ═══ -->
-        <StackPanel Grid.Row="0" Margin="12,8,12,4">
+        <StackPanel Grid.Row="0" Margin="8,6,8,4">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
-
-                <!-- Add input -->
                 <Grid Grid.Column="0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <TextBox x:Name="MagnetInput" Grid.Column="0"
-                             Background="#111827" Foreground="{StaticResource TextPrimary}"
-                             BorderBrush="{StaticResource Border}" BorderThickness="1"
-                             Padding="8,6" FontFamily="Consolas" FontSize="12"
-                             VerticalContentAlignment="Center"
-                             KeyDown="MagnetInput_KeyDown"/>
-                    <Button Grid.Column="1" Content="+ Add" Margin="6,0,0,0" Style="{StaticResource AccentBtn}"
-                            Click="AddButton_Click" FontSize="12"/>
-                    <Button Grid.Column="2" Content="Settings" Margin="6,0,0,0" Padding="10,5"
-                            Background="#1e293b" Foreground="{StaticResource TextSecondary}" BorderThickness="1"
-                            BorderBrush="{StaticResource Border}" FontSize="11" Cursor="Hand"
-                            Click="SettingsButton_Click"/>
+                    <TextBox x:Name="MagnetInput" Grid.Column="0" Background="#111827" Foreground="{StaticResource TextPrimary}"
+                             BorderBrush="#1e293b" BorderThickness="1" Padding="6,4" FontFamily="Consolas" FontSize="12"
+                             VerticalContentAlignment="Center" KeyDown="MagnetInput_KeyDown"/>
+                    <Button Grid.Column="1" Content="Add" Margin="4,0,0,0" Style="{StaticResource AccentBtn}" Click="AddButton_Click"/>
                 </Grid>
-
-                <!-- Speed display -->
-                <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="12,0,0,0" VerticalAlignment="Center">
-                    <TextBlock Foreground="{StaticResource AccentGreen}" FontSize="12" FontWeight="Bold" Margin="0,0,12,0">
-                        <Run Text="&#x25BC; "/><Run x:Name="DownSpeedText" Text="0 B/s"/>
-                    </TextBlock>
-                    <TextBlock Foreground="{StaticResource AccentBlue}" FontSize="12" FontWeight="Bold">
-                        <Run Text="&#x25B2; "/><Run x:Name="UpSpeedText" Text="0 B/s"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="8,0">
+                    <Button Content="&#9646;&#9646;" Padding="6,4" Background="#1e293b" Foreground="#94a3b8" BorderThickness="0" FontSize="11" Cursor="Hand" Click="PauseAll_Click" ToolTip="Pause All" Margin="0,0,2,0"/>
+                    <Button Content="&#9654;" Padding="6,4" Background="#1e293b" Foreground="#94a3b8" BorderThickness="0" FontSize="11" Cursor="Hand" Click="ResumeAll_Click" ToolTip="Resume All" Margin="0,0,2,0"/>
+                    <Button Content="&#9881;" Padding="6,4" Background="#1e293b" Foreground="#94a3b8" BorderThickness="0" FontSize="11" Cursor="Hand" Click="SettingsButton_Click" ToolTip="Settings"/>
+                </StackPanel>
+                <StackPanel Grid.Column="2" VerticalAlignment="Center">
+                    <TextBlock FontSize="12" FontWeight="Bold">
+                        <Run Foreground="{StaticResource AccentGreen}">&#x25BC; </Run><Run x:Name="DownSpeedText" Foreground="{StaticResource AccentGreen}" Text="0 B/s"/>
+                        <Run Text="  "/>
+                        <Run Foreground="{StaticResource AccentBlue}">&#x25B2; </Run><Run x:Name="UpSpeedText" Foreground="{StaticResource AccentBlue}" Text="0 B/s"/>
                     </TextBlock>
                 </StackPanel>
             </Grid>
-
-            <!-- Quick add chips -->
-            <WrapPanel Margin="0,6,0,0">
-                <TextBlock Text="Quick add:" Foreground="{StaticResource TextMuted}" VerticalAlignment="Center" Margin="0,0,6,0" FontSize="11"/>
-                <Button Content="Big Buck Bunny" Tag="BigBuckBunny" Click="QuickAdd_Click" Style="{StaticResource ChipBtn}" Margin="0,0,4,0"/>
-                <Button Content="Sintel" Tag="Sintel" Click="QuickAdd_Click" Style="{StaticResource ChipBtn}" Margin="0,0,4,0"/>
-                <Button Content="Cosmos Laundromat" Tag="CosmosLaundromat" Click="QuickAdd_Click" Style="{StaticResource ChipBtn}" Margin="0,0,4,0"/>
-                <Button Content="Tears of Steel" Tag="TearsOfSteel" Click="QuickAdd_Click" Style="{StaticResource ChipBtn}" Margin="0,0,4,0"/>
+            <WrapPanel Margin="0,4,0,0">
+                <TextBlock Text="Quick:" Foreground="#475569" VerticalAlignment="Center" Margin="0,0,4,0" FontSize="11"/>
+                <Button Content="Big Buck Bunny" Tag="BigBuckBunny" Click="QuickAdd_Click" Style="{StaticResource ChipBtn}" Margin="0,0,3,0"/>
+                <Button Content="Sintel" Tag="Sintel" Click="QuickAdd_Click" Style="{StaticResource ChipBtn}" Margin="0,0,3,0"/>
+                <Button Content="Cosmos Laundromat" Tag="CosmosLaundromat" Click="QuickAdd_Click" Style="{StaticResource ChipBtn}" Margin="0,0,3,0"/>
+                <Button Content="Tears of Steel" Tag="TearsOfSteel" Click="QuickAdd_Click" Style="{StaticResource ChipBtn}" Margin="0,0,3,0"/>
             </WrapPanel>
         </StackPanel>
 
-        <!-- ═══ Torrent List ═══ -->
-        <ListView x:Name="TorrentListView" Grid.Row="1" Margin="12,4,12,0"
-                  Background="Transparent" BorderThickness="0"
-                  SelectionChanged="TorrentList_SelectionChanged"
-                  Foreground="{StaticResource TextSecondary}">
-            <ListView.View>
-                <GridView>
-                    <GridViewColumn Header="Name" Width="280" DisplayMemberBinding="{Binding Name}"/>
-                    <GridViewColumn Header="Size" Width="80" DisplayMemberBinding="{Binding SizeText}"/>
-                    <GridViewColumn Header="Progress" Width="100">
-                        <GridViewColumn.CellTemplate>
-                            <DataTemplate>
-                                <Grid Width="90">
-                                    <ProgressBar Value="{Binding ProgressPercent}" Maximum="100" Height="8"
-                                                 Background="#1e293b" Foreground="#10b981" BorderThickness="0"/>
-                                    <TextBlock Text="{Binding ProgressText}" Foreground="{StaticResource TextMuted}"
-                                               FontSize="10" FontFamily="Consolas" HorizontalAlignment="Right" Margin="0,-2,0,0"/>
-                                </Grid>
-                            </DataTemplate>
-                        </GridViewColumn.CellTemplate>
-                    </GridViewColumn>
-                    <GridViewColumn Header="Peers" Width="50" DisplayMemberBinding="{Binding PeerCount}"/>
-                    <GridViewColumn Header="Status" Width="90" DisplayMemberBinding="{Binding StatusText}"/>
-                    <GridViewColumn Header="Hash" Width="80" DisplayMemberBinding="{Binding HashShort}"/>
-                </GridView>
-            </ListView.View>
-        </ListView>
-
-        <!-- Splitter -->
-        <GridSplitter Grid.Row="2" Height="4" HorizontalAlignment="Stretch"
-                      Background="{StaticResource Border}" Margin="12,2"/>
-
-        <!-- ═══ Detail Panel ═══ -->
-        <Grid Grid.Row="3" Margin="12,0,12,0">
+        <!-- ═══ Main Body ═══ -->
+        <Grid Grid.Row="1" Margin="8,0,8,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="130"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
             <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="220"/>
             </Grid.RowDefinitions>
 
-            <!-- Tabs -->
-            <StackPanel Grid.Row="0" Orientation="Horizontal" Background="#111827">
-                <Button Content="General" Tag="general" Click="Tab_Click" Style="{StaticResource TabBtn}" x:Name="TabGeneral"
-                        Foreground="{StaticResource AccentGreen}" BorderBrush="{StaticResource AccentGreen}"/>
-                <Button Content="Files" Tag="files" Click="Tab_Click" Style="{StaticResource TabBtn}" x:Name="TabFiles"/>
-                <Button Content="Trackers" Tag="trackers" Click="Tab_Click" Style="{StaticResource TabBtn}" x:Name="TabTrackers"/>
-                <Button Content="Log" Tag="log" Click="Tab_Click" Style="{StaticResource TabBtn}" x:Name="TabLog"/>
+            <!-- Sidebar -->
+            <StackPanel Grid.Column="0" Grid.RowSpan="3" Background="#0d1117" Margin="0,0,4,0">
+                <Button Content="All" Click="FilterAll_Click" Background="Transparent" Foreground="{StaticResource AccentGreen}"
+                        BorderThickness="0" HorizontalContentAlignment="Left" Padding="8,5" FontSize="12" Cursor="Hand"/>
+                <Button Content="Downloading" Click="FilterDownloading_Click" Background="Transparent" Foreground="#94a3b8"
+                        BorderThickness="0" HorizontalContentAlignment="Left" Padding="8,5" FontSize="12" Cursor="Hand"/>
+                <Button Content="Seeding" Click="FilterSeeding_Click" Background="Transparent" Foreground="#94a3b8"
+                        BorderThickness="0" HorizontalContentAlignment="Left" Padding="8,5" FontSize="12" Cursor="Hand"/>
+                <Button Content="Paused" Click="FilterPaused_Click" Background="Transparent" Foreground="#94a3b8"
+                        BorderThickness="0" HorizontalContentAlignment="Left" Padding="8,5" FontSize="12" Cursor="Hand"/>
             </StackPanel>
 
-            <!-- Tab content -->
-            <Grid Grid.Row="1" Background="#0d1117">
-                <!-- General tab -->
-                <ScrollViewer x:Name="PanelGeneral" VerticalScrollBarVisibility="Auto">
-                    <StackPanel Margin="10,8">
-                        <WrapPanel>
-                            <TextBlock Width="350" Margin="0,2"><Run Text="Name: " Foreground="{StaticResource TextMuted}"/><Run x:Name="DetailName" Foreground="{StaticResource TextPrimary}"/></TextBlock>
-                            <TextBlock Width="350" Margin="0,2"><Run Text="Size: " Foreground="{StaticResource TextMuted}"/><Run x:Name="DetailSize" Foreground="{StaticResource TextSecondary}"/></TextBlock>
-                        </WrapPanel>
-                        <WrapPanel>
-                            <TextBlock Width="350" Margin="0,2"><Run Text="Pieces: " Foreground="{StaticResource TextMuted}"/><Run x:Name="DetailPieces" Foreground="{StaticResource TextSecondary}"/></TextBlock>
-                            <TextBlock Width="350" Margin="0,2"><Run Text="Downloaded: " Foreground="{StaticResource TextMuted}"/><Run x:Name="DetailDownloaded" Foreground="{StaticResource TextSecondary}"/></TextBlock>
-                        </WrapPanel>
-                        <TextBlock Margin="0,2" FontSize="11" FontFamily="Consolas"><Run Text="Hash: " Foreground="{StaticResource TextMuted}"/><Run x:Name="DetailHash" Foreground="{StaticResource TextMuted}"/></TextBlock>
-                        <TextBlock Text="Pieces" Foreground="{StaticResource TextMuted}" FontSize="10" Margin="0,8,0,2"/>
-                        <WrapPanel x:Name="PieceMapPanel"/>
-                    </StackPanel>
-                </ScrollViewer>
+            <!-- Torrent List -->
+            <ListView x:Name="TorrentListView" Grid.Column="1" Grid.Row="0"
+                      Background="Transparent" BorderThickness="0"
+                      SelectionChanged="TorrentList_SelectionChanged"
+                      Foreground="{StaticResource TextSecondary}" FontSize="12">
+                <ListView.View>
+                    <GridView>
+                        <GridViewColumn Header="Name" Width="260" DisplayMemberBinding="{Binding Name}"/>
+                        <GridViewColumn Header="Size" Width="70" DisplayMemberBinding="{Binding SizeText}"/>
+                        <GridViewColumn Header="Progress" Width="90">
+                            <GridViewColumn.CellTemplate>
+                                <DataTemplate>
+                                    <Grid Width="80">
+                                        <ProgressBar Value="{Binding ProgressPercent}" Maximum="100" Height="12"
+                                                     Background="#1e293b" Foreground="#10b981" BorderThickness="0"/>
+                                        <TextBlock Text="{Binding ProgressText}" Foreground="White" FontSize="10"
+                                                   FontFamily="Consolas" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </GridViewColumn.CellTemplate>
+                        </GridViewColumn>
+                        <GridViewColumn Header="DL" Width="70" DisplayMemberBinding="{Binding DownSpeedText}"/>
+                        <GridViewColumn Header="UL" Width="70" DisplayMemberBinding="{Binding UpSpeedText}"/>
+                        <GridViewColumn Header="ETA" Width="55" DisplayMemberBinding="{Binding EtaText}"/>
+                        <GridViewColumn Header="Peers" Width="45" DisplayMemberBinding="{Binding PeerCount}"/>
+                        <GridViewColumn Header="Status" Width="80" DisplayMemberBinding="{Binding StatusText}"/>
+                    </GridView>
+                </ListView.View>
+            </ListView>
 
-                <!-- Files tab (double-click to play media) -->
-                <ListView x:Name="PanelFiles" Visibility="Collapsed" Background="Transparent" BorderThickness="0"
-                          Foreground="{StaticResource TextSecondary}" FontSize="12"
-                          MouseDoubleClick="PanelFiles_DoubleClick">
-                    <ListView.View>
-                        <GridView>
-                            <GridViewColumn Header="File" Width="400" DisplayMemberBinding="{Binding Path}"/>
-                            <GridViewColumn Header="Size" Width="100" DisplayMemberBinding="{Binding SizeText}"/>
-                            <GridViewColumn Header="Type" Width="60" DisplayMemberBinding="{Binding Ext}"/>
-                        </GridView>
-                    </ListView.View>
-                </ListView>
+            <!-- Splitter -->
+            <GridSplitter Grid.Column="1" Grid.Row="1" Height="3" HorizontalAlignment="Stretch" Background="#1e293b"/>
 
-                <!-- Trackers tab -->
-                <ListView x:Name="PanelTrackers" Visibility="Collapsed" Background="Transparent" BorderThickness="0"
-                          Foreground="{StaticResource TextSecondary}" FontSize="12">
-                    <ListView.View>
-                        <GridView>
-                            <GridViewColumn Header="Tracker" Width="400" DisplayMemberBinding="{Binding Url}"/>
-                            <GridViewColumn Header="Status" Width="150" DisplayMemberBinding="{Binding Status}"/>
-                        </GridView>
-                    </ListView.View>
-                </ListView>
-
-                <!-- Log tab -->
-                <ScrollViewer x:Name="PanelLog" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
-                    <TextBlock x:Name="LogText" Foreground="{StaticResource TextMuted}" FontFamily="Consolas"
-                               FontSize="11" TextWrapping="Wrap" Margin="8"/>
-                </ScrollViewer>
+            <!-- Detail Panel -->
+            <Grid Grid.Column="1" Grid.Row="2">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                <StackPanel Grid.Row="0" Orientation="Horizontal" Background="#0d1117">
+                    <Button Content="General" Tag="general" Click="Tab_Click" Style="{StaticResource TabBtn}" x:Name="TabGeneral"
+                            Foreground="{StaticResource AccentGreen}" BorderBrush="{StaticResource AccentGreen}"/>
+                    <Button Content="Files" Tag="files" Click="Tab_Click" Style="{StaticResource TabBtn}" x:Name="TabFiles"/>
+                    <Button Content="Trackers" Tag="trackers" Click="Tab_Click" Style="{StaticResource TabBtn}" x:Name="TabTrackers"/>
+                    <Button Content="Log" Tag="log" Click="Tab_Click" Style="{StaticResource TabBtn}" x:Name="TabLog"/>
+                </StackPanel>
+                <Grid Grid.Row="1" Background="#0d1117">
+                    <ScrollViewer x:Name="PanelGeneral" VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="8,6">
+                            <WrapPanel>
+                                <TextBlock Width="320" Margin="0,1" FontSize="12"><Run Text="Name: " Foreground="#475569"/><Run x:Name="DetailName" Foreground="{StaticResource TextPrimary}"/></TextBlock>
+                                <TextBlock Width="320" Margin="0,1" FontSize="12"><Run Text="Size: " Foreground="#475569"/><Run x:Name="DetailSize" Foreground="#94a3b8"/></TextBlock>
+                            </WrapPanel>
+                            <WrapPanel>
+                                <TextBlock Width="320" Margin="0,1" FontSize="12"><Run Text="Pieces: " Foreground="#475569"/><Run x:Name="DetailPieces" Foreground="#94a3b8"/></TextBlock>
+                                <TextBlock Width="320" Margin="0,1" FontSize="12"><Run Text="Downloaded: " Foreground="#475569"/><Run x:Name="DetailDownloaded" Foreground="#94a3b8"/></TextBlock>
+                            </WrapPanel>
+                            <TextBlock Margin="0,1" FontSize="10" FontFamily="Consolas"><Run Text="Hash: " Foreground="#475569"/><Run x:Name="DetailHash" Foreground="#334155"/></TextBlock>
+                            <TextBlock Text="Pieces" Foreground="#475569" FontSize="10" Margin="0,6,0,2"/>
+                            <WrapPanel x:Name="PieceMapPanel"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                    <ListView x:Name="PanelFiles" Visibility="Collapsed" Background="Transparent" BorderThickness="0"
+                              Foreground="#94a3b8" FontSize="12" MouseDoubleClick="PanelFiles_DoubleClick">
+                        <ListView.View>
+                            <GridView>
+                                <GridViewColumn Header="File" Width="380" DisplayMemberBinding="{Binding Path}"/>
+                                <GridViewColumn Header="Size" Width="90" DisplayMemberBinding="{Binding SizeText}"/>
+                                <GridViewColumn Header="Type" Width="55" DisplayMemberBinding="{Binding Ext}"/>
+                            </GridView>
+                        </ListView.View>
+                    </ListView>
+                    <ListView x:Name="PanelTrackers" Visibility="Collapsed" Background="Transparent" BorderThickness="0"
+                              Foreground="#94a3b8" FontSize="12">
+                        <ListView.View>
+                            <GridView>
+                                <GridViewColumn Header="Tracker" Width="380" DisplayMemberBinding="{Binding Url}"/>
+                                <GridViewColumn Header="Status" Width="140" DisplayMemberBinding="{Binding Status}"/>
+                            </GridView>
+                        </ListView.View>
+                    </ListView>
+                    <ScrollViewer x:Name="PanelLog" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+                        <TextBlock x:Name="LogText" Foreground="#475569" FontFamily="Consolas" FontSize="11" TextWrapping="Wrap" Margin="8"/>
+                    </ScrollViewer>
+                </Grid>
             </Grid>
         </Grid>
 
         <!-- ═══ Status Bar ═══ -->
-        <Border Grid.Row="4" Background="#111827" BorderBrush="{StaticResource Border}" BorderThickness="0,1,0,0" Padding="12,4">
-            <StackPanel Orientation="Horizontal">
-                <TextBlock Foreground="{StaticResource TextMuted}" FontSize="11">
-                    <Run x:Name="StatusTorrents" Text="0 torrents"/>
-                    <Run Text="  |  "/>
-                    <Run x:Name="StatusPeers" Text="0 peers"/>
-                    <Run Text="  |  "/>
-                    <Run Text="Peer ID: "/><Run x:Name="StatusPeerId" Text="-SD0110-" Foreground="#475569" FontFamily="Consolas"/>
-                    <Run Text="  |  "/>
-                    <Run Text="SpawnDev.WebTorrent v1.1.0"/>
-                </TextBlock>
-            </StackPanel>
+        <Border Grid.Row="2" Background="#0d1117" BorderBrush="#1e293b" BorderThickness="0,1,0,0" Padding="10,3">
+            <TextBlock Foreground="#475569" FontSize="11">
+                <Run x:Name="StatusTorrents" Text="0 torrents"/>
+                <Run Text="  "/>
+                <Run x:Name="StatusPeers" Text="0 peers"/>
+                <Run Text="  DL: "/><Run x:Name="StatusDL" Text="0 B/s"/>
+                <Run Text="  UL: "/><Run x:Name="StatusUL" Text="0 B/s"/>
+                <Run Text="  "/>
+                <Run x:Name="StatusPeerId" Text="-SD0110-" Foreground="#334155" FontFamily="Consolas"/>
+                <Run Text="  v1.1.0"/>
+            </TextBlock>
         </Border>
     </Grid>
 </Window>

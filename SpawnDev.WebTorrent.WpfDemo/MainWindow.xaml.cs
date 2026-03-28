@@ -288,10 +288,14 @@ public partial class MainWindow : Window
 
     private void RefreshUI()
     {
+        var totalDown = _torrents.Sum(t => t.Swarm.DownloadSpeed);
+        var totalUp = _torrents.Sum(t => t.Swarm.UploadSpeed);
         StatusTorrents.Text = $"{_torrents.Count} torrents";
         StatusPeers.Text = $"{_torrents.Sum(t => t.Swarm.PeerCount)} peers";
-        DownSpeedText.Text = FormatSpeed(_torrents.Sum(t => t.Swarm.DownloadSpeed));
-        UpSpeedText.Text = FormatSpeed(_torrents.Sum(t => t.Swarm.UploadSpeed));
+        StatusDL.Text = FormatSpeed(totalDown);
+        StatusUL.Text = FormatSpeed(totalUp);
+        DownSpeedText.Text = FormatSpeed(totalDown);
+        UpSpeedText.Text = FormatSpeed(totalUp);
 
         foreach (var vm in _torrents)
         {
@@ -302,6 +306,8 @@ public partial class MainWindow : Window
             vm.DownSpeedText = vm.Swarm.DownloadSpeed > 0 ? FormatSpeed(vm.Swarm.DownloadSpeed) : "";
             vm.UpSpeedText = vm.Swarm.UploadSpeed > 0 ? FormatSpeed(vm.Swarm.UploadSpeed) : "";
             vm.StatusText = pm?.IsComplete == true ? "Seeding" : pm != null && pm.CompletedCount > 0 ? "Downloading" : vm.Swarm.HasMetadata ? "Waiting" : "Metadata";
+            var eta = vm.Swarm.TimeRemaining;
+            vm.EtaText = eta < 0 ? (pm?.IsComplete == true ? "" : "∞") : eta < 60000 ? $"{eta / 1000}s" : eta < 3600000 ? $"{eta / 60000}m" : $"{eta / 3600000}h";
             vm.Notify();
         }
 
@@ -379,6 +385,14 @@ public partial class MainWindow : Window
         var line = $"[{DateTime.Now:HH:mm:ss}] {msg}\n";
         LogText.Text += line;
     }
+
+    // ── Pause/Resume/Filter ──
+    private void PauseAll_Click(object sender, RoutedEventArgs e) { foreach (var t in _torrents) t.Swarm.Pause(); }
+    private void ResumeAll_Click(object sender, RoutedEventArgs e) { foreach (var t in _torrents) t.Swarm.Resume(); }
+    private void FilterAll_Click(object sender, RoutedEventArgs e) { TorrentListView.ItemsSource = _torrents; }
+    private void FilterDownloading_Click(object sender, RoutedEventArgs e) { TorrentListView.ItemsSource = _torrents.Where(t => !t.Swarm.Done && t.Swarm.HasMetadata).ToList(); }
+    private void FilterSeeding_Click(object sender, RoutedEventArgs e) { TorrentListView.ItemsSource = _torrents.Where(t => t.Swarm.Done).ToList(); }
+    private void FilterPaused_Click(object sender, RoutedEventArgs e) { TorrentListView.ItemsSource = _torrents.Where(t => t.Swarm.Paused).ToList(); }
 
     // ── Drag & Drop ──
 
@@ -480,6 +494,7 @@ public class TorrentViewModel : INotifyPropertyChanged
     public string StatusText { get; set; } = "Metadata";
     public string DownSpeedText { get; set; } = "";
     public string UpSpeedText { get; set; } = "";
+    public string EtaText { get; set; } = "";
     public ObservableCollection<FileViewModel> Files { get; } = new();
     public ObservableCollection<TrackerViewModel> TrackerEntries { get; } = new();
     public PeerCoordinator? Coordinator { get; set; }

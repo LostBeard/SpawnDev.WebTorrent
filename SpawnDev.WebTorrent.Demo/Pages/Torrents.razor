@@ -169,6 +169,19 @@
                                     <div class="qb-info-row"><span class="qb-label">Web Seeds</span><span>@sel.Swarm.WebSeedCount</span></div>
                                     <div class="qb-info-row"><span class="qb-label">Files</span><span>@sel.Swarm.Files.Length</span></div>
                                 </div>
+                                @if (sel.SpeedHistory.Count > 1)
+                                {
+                                    <div class="qb-sparkline-label">Transfer Speed</div>
+                                    <svg class="qb-sparkline" viewBox="0 0 200 40" preserveAspectRatio="none">
+                                        @{
+                                            var hist = sel.SpeedHistory;
+                                            var maxSpeed = Math.Max(hist.Max(), 1024.0);
+                                            var points = string.Join(" ", hist.Select((v, i) =>
+                                                $"{i * 200.0 / Math.Max(hist.Count - 1, 1):F1},{(40 - v / maxSpeed * 38):F1}"));
+                                        }
+                                        <polyline points="@points" fill="none" stroke="#10b981" stroke-width="1.5" vector-effect="non-scaling-stroke"/>
+                                    </svg>
+                                }
                                 @if (sel.Swarm.HasMetadata)
                                 {
                                     <div class="qb-magnet-row">
@@ -441,7 +454,12 @@
 
         _refreshTimer = new System.Threading.Timer(_ =>
         {
-            foreach (var t in _torrents) t.Swarm.UpdateSpeed();
+            foreach (var t in _torrents)
+            {
+                t.Swarm.UpdateSpeed();
+                t.SpeedHistory.Add(t.Swarm.DownloadSpeed);
+                if (t.SpeedHistory.Count > 60) t.SpeedHistory.RemoveAt(0); // 60 second window
+            }
             _globalDownSpeed = _torrents.Sum(t => t.Swarm.DownloadSpeed);
             _globalUpSpeed = _torrents.Sum(t => t.Swarm.UploadSpeed);
             InvokeAsync(StateHasChanged);
@@ -764,6 +782,7 @@
         public string SizeText => Swarm.HasMetadata ? FormatBytes(Swarm.Metadata!.TotalLength) : "—";
         public string EtaText { get { var t = Swarm.TimeRemaining; return t < 0 ? (IsDone ? "—" : "∞") : t < 60000 ? $"{t / 1000}s" : t < 3600000 ? $"{t / 60000}m" : $"{t / 3600000}h {(t % 3600000) / 60000}m"; } }
         public bool Sequential { get; set; }
+        public List<double> SpeedHistory { get; } = new();
         public string StatusClass => IsDone ? "qb-dot-seed" : Swarm.Paused ? "qb-dot-paused" : HasMetadata ? "qb-dot-dl" : "qb-dot-meta";
     }
     private class TrackerEntry { public string Url { get; set; } = ""; public string Status { get; set; } = ""; }
@@ -848,6 +867,10 @@
     .qb-info-row { display: flex; justify-content: space-between; padding: 2px 0; color: #94a3b8; font-size: 12px; }
     .qb-label { color: #475569; } .qb-hash { font-size: 10px; word-break: break-all; }
     .qb-muted { color: #334155; text-align: center; font-size: 12px; }
+
+    /* Sparkline */
+    .qb-sparkline-label { color: #475569; font-size: 10px; margin-top: 8px; }
+    .qb-sparkline { width: 100%; height: 40px; background: #111827; border-radius: 3px; margin: 2px 0 6px; }
 
     /* Magnet display */
     .qb-magnet-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }

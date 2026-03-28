@@ -180,6 +180,48 @@ file.Downloaded    // verified bytes for this file
 file.Includes(5)   // does piece 5 contain this file?
 ```
 
+## AI Agent Communication (BEP 46)
+
+```csharp
+using SpawnDev.WebTorrent.Discovery;
+
+var dht = new DhtDiscovery();
+await dht.StartAsync(infoHash, 6881);
+
+// Create agent with named channels
+var agent = new AgentChannel(dht);
+
+// Publish state to the DHT (max 1000 bytes)
+await agent.PublishStateAsync(myStateBytes);
+
+// Named channels for different data types
+var weights = agent.Channel("weights");
+var cache = agent.Channel("kv-cache");
+await weights.PublishTorrentAsync(modelInfoHash);
+
+// Subscribe to another agent's updates
+agent.OnAgentUpdate += (pubKey, value, seq) =>
+{
+    Console.WriteLine($"Agent update: seq {seq}");
+};
+await agent.SubscribeAsync(otherAgentPublicKey);
+```
+
+## Swarm Compute (AcceleratorType.P2P Foundation)
+
+```csharp
+// Host: publish a compute task
+var swarm = new SwarmCompute(client, dht);
+var task = await swarm.PublishTaskAsync(
+    taskData: Encoding.UTF8.GetBytes("kernel:matmul"),
+    inputData: myInputTensor);
+
+// Worker: join and listen for tasks
+swarm.OnWorkerJoined += (worker) =>
+    Console.WriteLine($"Worker joined: {worker.Capabilities}");
+await swarm.JoinAsWorkerAsync(myCapabilities);
+```
+
 ## Cleanup
 
 ```csharp

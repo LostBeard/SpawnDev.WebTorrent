@@ -412,8 +412,12 @@
                     @foreach (var t in _defaultTrackers) { <div class="qb-mono" style="font-size:0.7rem;color:#475569">@t</div> }
                     <h4>Client</h4>
                     <div class="qb-setting"><label>Peer ID</label><span class="qb-mono" style="color:#10b981">@PeerIdString</span></div>
+                    <div class="qb-setting"><label>Version</label><span>1.1.0</span></div>
                     <div class="qb-setting"><label>Platform</label><span>@(OperatingSystem.IsBrowser() ? "Browser (Blazor WASM)" : "Desktop")</span></div>
                     <div class="qb-setting"><label>Storage</label><span>@(_asyncFs != null ? "OPFS (persistent)" : "Memory")</span></div>
+                    <div class="qb-setting"><label>WebRTC</label><span>SpawnDev.BlazorJS</span></div>
+                    <div class="qb-setting"><label>BEPs</label><span>3, 5, 6, 9, 10, 11, 15, 17, 19, 20, 23, 27, 53</span></div>
+                    <div class="qb-setting"><label>Tests</label><span>193 (189 pass, 4 skip)</span></div>
                 </div>
             </div>
         </div>

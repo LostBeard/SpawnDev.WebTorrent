@@ -46,6 +46,15 @@ public class TorrentSwarm : IAsyncDisposable
     /// <summary>Total bytes uploaded.</summary>
     public long Uploaded { get; private set; }
 
+    /// <summary>Tracker announce URLs from metadata.</summary>
+    public string[] Announce => Metadata?.AnnounceList?.SelectMany(t => t).ToArray() ?? Array.Empty<string>();
+
+    /// <summary>Total bytes received (including unverified). Used for bandwidth stats.</summary>
+    public long Received { get; private set; }
+
+    /// <summary>Number of web seed URLs configured.</summary>
+    public int WebSeedCount => _coordinator != null ? 0 : 0; // TODO: expose from coordinator
+
     /// <summary>Connected peer count.</summary>
     public int PeerCount => _peers.Count;
 
@@ -120,6 +129,17 @@ public class TorrentSwarm : IAsyncDisposable
 
     /// <summary>Whether this is a private torrent (BEP 27 — no DHT/PEX).</summary>
     public bool IsPrivate => Metadata?.IsPrivate ?? false;
+
+    /// <summary>Standard piece length (except possibly last piece).</summary>
+    public int PieceLength => Metadata?.PieceLength ?? 0;
+
+    /// <summary>Length of the last piece.</summary>
+    public int LastPieceLength => Metadata != null
+        ? (int)(Metadata.TotalLength - (long)(Metadata.PieceCount - 1) * Metadata.PieceLength)
+        : 0;
+
+    /// <summary>Total torrent size in bytes.</summary>
+    public long Length => Metadata?.TotalLength ?? 0;
 
     // Events
     public event Action? OnReady;

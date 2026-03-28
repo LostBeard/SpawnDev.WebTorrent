@@ -352,6 +352,15 @@
         <span>@(_asyncFs != null ? "OPFS" : "MEM")</span>
     </div>
 
+    @* ═══ Toast Notification ═══ *@
+    @if (_toastVisible)
+    {
+        <div class="qb-toast @(_toastFading ? "qb-toast-fade" : "")">
+            <span>@_toastMessage</span>
+            <button class="qb-icon-btn" style="color:#f1f5f9" @onclick="() => _toastVisible = false">&#10005;</button>
+        </div>
+    }
+
     @* ═══ Context Menu ═══ *@
     @if (_contextMenuOpen)
     {
@@ -439,6 +448,11 @@
     private bool _settingsOpen;
     private int _downloadLimitKBs, _uploadLimitKBs;
     private double _globalDownSpeed, _globalUpSpeed;
+
+    // Toast
+    private bool _toastVisible;
+    private bool _toastFading;
+    private string _toastMessage = "";
 
     // Global speed history
     private readonly List<double> _globalDownHistory = new();
@@ -654,7 +668,7 @@
     private void WireSwarmEvents(TorrentEntry entry)
     {
         entry.Swarm.OnPieceVerified += (_) => InvokeAsync(StateHasChanged);
-        entry.Swarm.OnDone += () => { Log($"[{entry.DisplayName}] Download complete!"); InvokeAsync(StateHasChanged); };
+        entry.Swarm.OnDone += () => { Log($"[{entry.DisplayName}] Download complete!"); ShowToast($"Download complete: {entry.DisplayName}"); InvokeAsync(StateHasChanged); };
         entry.Swarm.OnError += (ex) => Log($"[{entry.DisplayName}] Error: {ex.Message}");
         entry.Swarm.OnLog += (msg) => Log($"[{entry.DisplayName}] {msg}");
     }
@@ -758,6 +772,24 @@
                 await CopyMagnet(_selectedTorrent);
                 break;
         }
+    }
+
+    private void ShowToast(string message)
+    {
+        _toastMessage = message;
+        _toastVisible = true;
+        _toastFading = false;
+        _ = FadeToastAsync();
+    }
+
+    private async Task FadeToastAsync()
+    {
+        await Task.Delay(4000);
+        _toastFading = true;
+        await InvokeAsync(StateHasChanged);
+        await Task.Delay(500);
+        _toastVisible = false;
+        await InvokeAsync(StateHasChanged);
     }
 
     private void ShowProperties(TorrentEntry entry)
@@ -1007,6 +1039,11 @@
 
     /* Status bar */
     .qb-statusbar { display: flex; gap: 16px; padding: 3px 10px; background: #0d1117; border-top: 1px solid #1e293b; color: #475569; font-size: 11px; }
+
+    /* Toast */
+    .qb-toast { position: fixed; bottom: 40px; right: 16px; z-index: 1001; background: linear-gradient(135deg, #10b981, #3b82f6); color: white; padding: 10px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.4); animation: qb-toast-in .3s ease; }
+    .qb-toast-fade { opacity: 0; transition: opacity .5s; }
+    @@keyframes qb-toast-in { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 
     /* Context menu */
     .qb-ctx-backdrop { position: fixed; inset: 0; z-index: 999; }

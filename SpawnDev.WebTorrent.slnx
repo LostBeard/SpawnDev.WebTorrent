@@ -6,5 +6,6 @@
   <Project Path="SpawnDev.WebTorrent.Demo.Shared\SpawnDev.WebTorrent.Demo.Shared.csproj" />
   <Project Path="SpawnDev.WebTorrent.Demo\SpawnDev.WebTorrent.Demo.csproj" />
   <Project Path="SpawnDev.WebTorrent.WpfDemo\SpawnDev.WebTorrent.WpfDemo.csproj" />
+  <Project Path="SpawnDev.WebTorrent.TestPeer\SpawnDev.WebTorrent.TestPeer.csproj" />
   <Project Path="PlaywrightMultiTest\PlaywrightMultiTest.csproj" />
 </Solution>

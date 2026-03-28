@@ -244,4 +244,67 @@ public abstract partial class WebTorrentTestBase
 
         Console.WriteLine($"[Swarm] SUCCESS: {piecesVerified} pieces downloaded and verified via web seed");
     }
+
+    // ═══════════════════════════════════════════════════════════
+    //  Demo Page Simulation — exact flow of Torrents.razor
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod(Timeout = 120000)]
+    public async Task Download_DemoPageFlow_BigBuckBunny()
+    {
+        var magnetUri = "magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&dn=Big+Buck+Bunny&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Fbig-buck-bunny.torrent";
+
+        await using var client = new WebTorrentClient();
+        var swarm = await client.AddAsync(magnetUri);
+
+        // Parse xs= and ws= (same as Torrents.razor)
+        string? torrentUrl = null;
+        var webSeedUrls = new List<string>();
+        foreach (var part in magnetUri.Split('&'))
+        {
+            var p = part.Contains('?') ? part.Split('?').Last() : part;
+            var eq = p.IndexOf('=');
+            if (eq < 0) continue;
+            var k = p[..eq];
+            var v = Uri.UnescapeDataString(p[(eq + 1)..].Replace('+', ' '));
+            if (k == "xs") torrentUrl = v;
+            if (k == "ws") webSeedUrls.Add(v);
+        }
+
+        if (torrentUrl == null) throw new UnsupportedTestException("No xs= URL");
+
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+        byte[] torrentBytes;
+        try { torrentBytes = await http.GetByteArrayAsync(torrentUrl); }
+        catch (Exception ex) { throw new UnsupportedTestException($"Fetch failed: {ex.Message}"); }
+
+        var metadata = TorrentParser.Parse(torrentBytes);
+        if (!metadata.InfoHash.SequenceEqual(swarm.InfoHash))
+            throw new Exception("Info hash mismatch");
+
+        foreach (var ws in metadata.UrlList)
+            if (!webSeedUrls.Contains(ws)) webSeedUrls.Add(ws);
+
+        Console.WriteLine($"[DemoFlow] {metadata.Name}, {metadata.TotalLength:N0} bytes, {metadata.PieceCount} pieces, {webSeedUrls.Count} seeds");
+
+        swarm.SetMetadata(metadata);
+        foreach (var ws in webSeedUrls) swarm.AddWebSeed(ws.TrimEnd('/'));
+
+        int piecesVerified = 0;
+        swarm.OnPieceVerified += (_) => Interlocked.Increment(ref piecesVerified);
+        swarm.OnLog += (msg) => Console.WriteLine($"[DemoFlow] {msg}");
+
+        swarm.StartDownload();
+
+        var deadline = DateTime.UtcNow.AddSeconds(60);
+        while (piecesVerified < 3 && DateTime.UtcNow < deadline)
+            await Task.Delay(500);
+
+        swarm.StopDownload();
+
+        if (piecesVerified < 3)
+            throw new Exception($"Demo flow failed: {piecesVerified} pieces");
+
+        Console.WriteLine($"[DemoFlow] SUCCESS — {piecesVerified} pieces via demo flow");
+    }
 }

@@ -213,21 +213,35 @@
                                 @if (sel.Swarm.HasMetadata)
                                 {
                                     <table class="qb-sub-table">
-                                        <thead><tr><th>File</th><th class="qb-col-fsize">Size</th><th class="qb-col-fprog">Progress</th><th class="qb-col-ftype">Type</th><th></th></tr></thead>
+                                        <thead><tr><th>File</th><th class="qb-col-fsize">Size</th><th class="qb-col-fprog-wide">Progress</th><th class="qb-col-fdl">Downloaded</th><th class="qb-col-ftype">Type</th><th class="qb-col-fpri">Priority</th><th></th></tr></thead>
                                         <tbody>
                                             @foreach (var file in sel.Swarm.Files)
                                             {
                                                 var f = file;
                                                 var ext = System.IO.Path.GetExtension(f.Path).ToLowerInvariant();
-                                                <tr>
+                                                <tr class="@(f.Done ? "qb-file-done" : "")">
                                                     <td>@f.Path</td>
                                                     <td class="qb-col-fsize">@FormatBytes(f.Length)</td>
-                                                    <td class="qb-col-fprog">@((f.Progress * 100).ToString("F0"))%</td>
+                                                    <td class="qb-col-fprog-wide">
+                                                        <div class="qb-file-progress">
+                                                            <div class="qb-file-progress-fill @(f.Done ? "done" : "")" style="width:@((f.Progress * 100).ToString("F1"))%"></div>
+                                                            <span class="qb-file-progress-label">@((f.Progress * 100).ToString("F1"))%</span>
+                                                        </div>
+                                                    </td>
+                                                    <td class="qb-col-fdl qb-mono">@FormatBytes(f.Downloaded)</td>
                                                     <td class="qb-col-ftype"><span class="qb-ext">@ext</span></td>
+                                                    <td class="qb-col-fpri">
+                                                        @{var ff = f;}
+                                                        <select class="qb-pri-select" @onchange="(e) => SetFilePriority(ff, e.Value?.ToString())">
+                                                            <option value="normal" selected>Normal</option>
+                                                            <option value="high">High</option>
+                                                            <option value="skip">Skip</option>
+                                                        </select>
+                                                    </td>
                                                     <td>
                                                         @if (IsPlayable(ext))
                                                         {
-                                                            <button class="qb-play-btn" @onclick="() => OpenMedia(f, ext)">&#9654; Play</button>
+                                                            <button class="qb-play-btn" @onclick="() => OpenMedia(f, ext)">&#9654;</button>
                                                         }
                                                     </td>
                                                 </tr>
@@ -549,6 +563,16 @@
         Log($"Removed: {entry.DisplayName}");
     }
 
+    private void SetFilePriority(TorrentFileStream file, string? priority)
+    {
+        switch (priority)
+        {
+            case "high": file.Select(10); Log($"File priority: {file.Name} → High"); break;
+            case "skip": file.Deselect(); Log($"File priority: {file.Name} → Skip"); break;
+            default: file.Select(1); Log($"File priority: {file.Name} → Normal"); break;
+        }
+    }
+
     private void ToggleSequential(TorrentEntry entry, bool sequential)
     {
         entry.Sequential = sequential;
@@ -737,7 +761,13 @@
     .qb-sub-table { width: 100%; border-collapse: collapse; font-size: 12px; }
     .qb-sub-table th { color: #475569; padding: 3px 6px; text-align: left; font-size: 10px; text-transform: uppercase; border-bottom: 1px solid #1e293b; }
     .qb-sub-table td { padding: 3px 6px; color: #94a3b8; border-bottom: 1px solid rgba(255,255,255,.02); }
-    .qb-col-fsize { width: 70px; text-align: right; } .qb-col-fprog { width: 50px; text-align: right; } .qb-col-ftype { width: 50px; text-align: center; }
+    .qb-col-fsize { width: 70px; text-align: right; } .qb-col-fprog { width: 50px; text-align: right; } .qb-col-fprog-wide { width: 100px; } .qb-col-fdl { width: 70px; text-align: right; } .qb-col-ftype { width: 50px; text-align: center; } .qb-col-fpri { width: 70px; }
+    .qb-file-progress { position: relative; height: 12px; background: #1e293b; border-radius: 2px; overflow: hidden; }
+    .qb-file-progress-fill { height: 100%; background: linear-gradient(90deg,#10b981,#3b82f6); transition: width .3s; }
+    .qb-file-progress-fill.done { background: #10b981; }
+    .qb-file-progress-label { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 9px; font-family: Consolas, monospace; color: #f1f5f9; text-shadow: 0 0 2px rgba(0,0,0,.8); }
+    .qb-file-done td { color: #10b981 !important; }
+    .qb-pri-select { background: #111827; color: #94a3b8; border: 1px solid #1e293b; border-radius: 3px; padding: 1px 4px; font-size: 10px; cursor: pointer; }
     .qb-ext { background: rgba(255,255,255,.05); padding: 1px 4px; border-radius: 2px; font-size: 10px; font-family: Consolas, monospace; }
     .qb-play-btn { background: rgba(16,185,129,.1); color: #10b981; border: none; padding: 1px 8px; border-radius: 3px; font-size: 11px; cursor: pointer; font-weight: 600; }
     .qb-play-btn:hover { background: rgba(16,185,129,.2); }

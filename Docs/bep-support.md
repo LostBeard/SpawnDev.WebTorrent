@@ -7,6 +7,7 @@ Status of BEP implementation in SpawnDev.WebTorrent v1.1.0.
 | BEP | Title | Desktop | Browser | Notes |
 |-----|-------|---------|---------|-------|
 | [3](http://bittorrent.org/beps/bep_0003.html) | The BitTorrent Protocol | Yes | Yes | Full wire protocol, piece exchange, SHA-1 verification |
+| [5](http://bittorrent.org/beps/bep_0005.html) | DHT Protocol | Yes | N/A | Kademlia routing, KRPC over UDP, bootstrap, iterative lookup |
 | [6](http://bittorrent.org/beps/bep_0006.html) | Fast Extension | Yes | Yes | HaveAll, HaveNone, SuggestPiece, RejectRequest, AllowedFast |
 | [9](http://bittorrent.org/beps/bep_0009.html) | Extension for Peers to Send Metadata | Yes | Yes | ut_metadata: request/data/reject, 16KB pieces, SHA-1 verify |
 | [10](http://bittorrent.org/beps/bep_0010.html) | Extension Protocol | Yes | Yes | Handshake negotiation, message routing, extension framework |
@@ -17,6 +18,8 @@ Status of BEP implementation in SpawnDev.WebTorrent v1.1.0.
 | [20](http://bittorrent.org/beps/bep_0020.html) | Peer ID Conventions | Yes | Yes | Azureus-style: `-SD0110-` (see [peer-id.md](peer-id.md)) |
 | [23](http://bittorrent.org/beps/bep_0023.html) | Tracker Returns Compact Peer Lists | Yes | Yes | Via UDP and HTTP tracker compact format |
 | [27](http://bittorrent.org/beps/bep_0027.html) | Private Torrents | Yes | Yes | DHT/PEX peers rejected, only tracker peers accepted |
+| [44](http://bittorrent.org/beps/bep_0044.html) | Storing Arbitrary Data in DHT | Yes | N/A | Mutable + immutable items via KRPC put/get |
+| [46](http://bittorrent.org/beps/bep_0046.html) | Updating Torrents via DHT Mutable Items | Yes | N/A | ECDSA-P256 signed, publish/subscribe, AI shared state, AgentChannel |
 | [53](http://bittorrent.org/beps/bep_0053.html) | Magnet URI — Select Specific Files | Yes | Yes | `so=` parameter parsed, `SelectedFileIndices` property |
 
 ## Tracker Support
@@ -51,10 +54,7 @@ Both share the `IWebRtcTransport` interface and work through the same `PeerCoord
 | Speed tracking | Yes | Yes | Real-time bytes/sec per torrent |
 | Seeding | Yes | Yes | Respond to Request with Piece data |
 | Media playback | N/A | Yes | Video/audio/image via blob URL with seeking |
-
-| [5](http://bittorrent.org/beps/bep_0005.html) | DHT Protocol | Yes | N/A | Kademlia routing, KRPC over UDP, bootstrap, iterative lookup |
-| [44](http://bittorrent.org/beps/bep_0044.html) | Storing Arbitrary Data in DHT | Yes | N/A | Mutable + immutable items via KRPC put/get |
-| [46](http://bittorrent.org/beps/bep_0046.html) | Updating Torrents via DHT Mutable Items | Yes | N/A | ECDSA-P256 signed mutable items (WebCrypto native), publish/subscribe, AI shared state, AgentChannel |
+| AI Agent Communication | Yes | Yes | AgentChannel pub/sub, SwarmCompute task distribution |
 
 ## Not Yet Implemented
 

@@ -166,6 +166,9 @@ public class WebTorrentClient : IAsyncDisposable
                 await swarm.Store.PutAsync(i, pieceData);
                 swarm.PieceManager.MarkComplete(i);
             }
+
+            // Mark swarm as done since all pieces are seeded
+            swarm.MarkDone();
         }
 
         return swarm;

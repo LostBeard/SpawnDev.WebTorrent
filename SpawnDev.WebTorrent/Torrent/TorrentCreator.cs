@@ -162,6 +162,7 @@ public static class TorrentCreator
             UrlList = options.WebSeeds,
             CreatedBy = options.CreatedBy,
             CreationDate = DateTimeOffset.UtcNow,
+            Comment = options.Comment,
             IsPrivate = options.IsPrivate,
             OriginalTorrentBytes = torrentBytes,
         };

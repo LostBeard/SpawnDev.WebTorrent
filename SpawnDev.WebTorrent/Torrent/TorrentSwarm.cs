@@ -388,6 +388,13 @@ public class TorrentSwarm : IAsyncDisposable
         }
     }
 
+    /// <summary>Mark the swarm as fully downloaded (for seeding).</summary>
+    internal void MarkDone()
+    {
+        Done = true;
+        OnDone?.Invoke();
+    }
+
     /// <summary>Start the download coordinator.</summary>
     public void StartDownload()
     {

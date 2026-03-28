@@ -28,6 +28,7 @@
                     var n = name;
                     <button class="qb-chip" @onclick="() => QuickAdd(n)">@n</button>
                 }
+                <button class="qb-chip" style="border-color:#3b82f6;color:#3b82f6" @onclick="SeedTestData" title="Create and seed a test torrent">Seed Test</button>
             </div>
         </div>
         <div class="qb-toolbar-actions">
@@ -342,6 +343,33 @@
     private async Task OnMagnetKeyDown(KeyboardEventArgs e) { if (e.Key == "Enter" && !string.IsNullOrWhiteSpace(_magnetInput)) await AddMagnet(); }
     private async Task QuickAdd(string name) { if (CCMagnets.TryGetValue(name, out var m)) { var h = m.Split("btih:")[1].Split("&")[0]; if (!_torrents.Any(t => t.InfoHashFull == h)) await AddMagnetInternal(m, name); } }
     private async Task AddMagnet() { var i = _magnetInput.Trim(); _magnetInput = ""; if (!string.IsNullOrWhiteSpace(i)) await AddMagnetInternal(i, null); }
+    private async Task SeedTestData()
+    {
+        if (_client == null) return;
+        var data = new byte[65536]; // 64KB test data
+        Random.Shared.NextBytes(data);
+        var name = $"SpawnDev-Test-{DateTime.Now:HHmmss}.bin";
+
+        var swarm = await _client.SeedAsync(data, name,
+            new TorrentCreatorOptions
+            {
+                PieceLength = 16384,
+                Trackers = _defaultTrackers,
+                Comment = "Test torrent created by SpawnDev.WebTorrent demo",
+            });
+
+        var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
+        var entry = new TorrentEntry { Swarm = swarm, Name = name, InfoHashFull = hash, InfoHashShort = hash[..8] + "..." };
+        _torrents.Add(entry); _selectedTorrent = entry;
+        WireSwarmEvents(entry);
+
+        // Connect to trackers for peer discovery
+        _ = ConnectTrackers(entry, swarm.MagnetURI);
+
+        Log($"Seeding: {name} ({FormatBytes(data.Length)}), magnet: {swarm.MagnetURI[..60]}...");
+        StateHasChanged();
+    }
+
     private void PauseAll() { foreach (var t in _torrents) t.Swarm.Pause(); }
     private void ResumeAll() { foreach (var t in _torrents) t.Swarm.Resume(); }
     private void ToggleSettings() => _settingsOpen = !_settingsOpen;
@@ -416,18 +444,44 @@
 
     private async Task ConnectTrackers(TorrentEntry entry, string magnetUri)
     {
-        var trackers = new List<string>();
+        var wsTrackers = new List<string>();
+        var httpTrackers = new List<string>();
         foreach (var part in magnetUri.Split('&'))
         {
             var p = part.Contains('?') ? part.Split('?').Last() : part;
-            if (p.StartsWith("tr=")) { var url = Uri.UnescapeDataString(p[3..].Replace('+', ' ')); if (url.StartsWith("wss://")) trackers.Add(url); }
+            if (p.StartsWith("tr="))
+            {
+                var url = Uri.UnescapeDataString(p[3..].Replace('+', ' '));
+                if (url.StartsWith("wss://") || url.StartsWith("ws://")) wsTrackers.Add(url);
+                else if (url.StartsWith("http://") || url.StartsWith("https://")) httpTrackers.Add(url);
+            }
         }
-        if (trackers.Count == 0) trackers.AddRange(_defaultTrackers);
+        if (wsTrackers.Count == 0) wsTrackers.AddRange(_defaultTrackers);
+
+        // WebSocket trackers via PeerCoordinator (for WebRTC signaling)
         var webRtc = new WebRtcTransport(); entry.WebRtcTransport = webRtc;
         var coordinator = new PeerCoordinator(_client!, entry.Swarm.InfoHash, webRtc); entry.PeerCoordinator = coordinator;
         coordinator.OnPeerConnected += (peer) => { Log($"[{entry.DisplayName}] P2P: {peer.PeerId[..Math.Min(12, peer.PeerId.Length)]}"); _ = entry.Swarm.AddConnectedPeerAsync(peer.Wire, new PeerInfo { Address = peer.PeerId, Source = "webrtc" }); InvokeAsync(StateHasChanged); };
         coordinator.OnPeerDisconnected += (_) => InvokeAsync(StateHasChanged);
-        foreach (var url in trackers) { _ = ConnectSingleTracker(entry, coordinator, url); }
+        foreach (var url in wsTrackers) { _ = ConnectSingleTracker(entry, coordinator, url); }
+
+        // HTTP trackers (peer discovery only — no WebRTC signaling)
+        foreach (var url in httpTrackers) { _ = ConnectHttpTracker(entry, url); }
+    }
+
+    private async Task ConnectHttpTracker(TorrentEntry entry, string url)
+    {
+        var te = new TrackerEntry { Url = url, Status = "Connecting..." }; entry.Trackers.Add(te);
+        try
+        {
+            var tracker = new HttpTrackerClient(url, _client!.PeerId);
+            tracker.OnAnnounceResponse += (s, l) => { te.Status = $"{s}S / {l}L"; InvokeAsync(StateHasChanged); };
+            tracker.OnPeer += (peer) => entry.Swarm.AddPeer(peer);
+            await tracker.StartAsync(entry.Swarm.InfoHash, 0);
+            te.Status = "Connected";
+        }
+        catch { te.Status = "Failed"; }
+        await InvokeAsync(StateHasChanged);
     }
 
     private async Task ConnectSingleTracker(TorrentEntry entry, PeerCoordinator coordinator, string url)

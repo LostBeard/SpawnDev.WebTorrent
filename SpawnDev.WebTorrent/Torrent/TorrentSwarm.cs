@@ -53,7 +53,7 @@ public class TorrentSwarm : IAsyncDisposable
     public long Received { get; private set; }
 
     /// <summary>Number of web seed URLs configured.</summary>
-    public int WebSeedCount => _coordinator != null ? 0 : 0; // TODO: expose from coordinator
+    public int WebSeedCount => _coordinator?.WebSeedCount ?? 0;
 
     /// <summary>Connected peer count.</summary>
     public int PeerCount => _peers.Count;

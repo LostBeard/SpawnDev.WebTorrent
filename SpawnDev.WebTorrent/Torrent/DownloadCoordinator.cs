@@ -38,6 +38,12 @@ public class DownloadCoordinator
     /// <summary>Piece selection strategy: "rarest" or "sequential".</summary>
     public string Strategy { get; set; } = "rarest";
 
+    /// <summary>Number of configured web seeds.</summary>
+    public int WebSeedCount => _webSeeds.Count;
+
+    /// <summary>Number of active peers.</summary>
+    public int PeerCount => _activePeers.Count;
+
     // Events
     public event Action<int>? OnPieceComplete;
     public event Action? OnDownloadComplete;

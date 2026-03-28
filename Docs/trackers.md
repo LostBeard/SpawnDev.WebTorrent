@@ -9,7 +9,6 @@ SpawnDev.WebTorrent ships with these default WebSocket trackers, tried in order:
 | 1 | `wss://hub.spawndev.com:44365/announce` | Our own tracker (SpawnDev.WebTorrent.Server) |
 | 2 | `wss://tracker.openwebtorrent.com` | OpenWebTorrent project |
 | 3 | `wss://tracker.files.fm:7073/announce` | Files.fm public tracker |
-| 4 | `wss://tracker.ghostchu-services.top:443/announce` | GhostChu community tracker |
 
 Our tracker (`hub.spawndev.com`) is listed first so SpawnDev clients always find each other. Public trackers provide broader swarm access.
 
@@ -71,6 +70,7 @@ These were previously in the default list but are no longer operational:
 |---------|-------|---------|
 | `wss://tracker.webtorrent.dev` | SSL certificate expired | 2026-03-27 |
 | `wss://tracker.btorrent.xyz` | Connection timeout | 2026-03-27 |
+| `wss://tracker.ghostchu-services.top` | WebSocket handshake 400 | 2026-03-28 |
 
 ## Health Checking
 

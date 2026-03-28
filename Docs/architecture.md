@@ -4,118 +4,118 @@
 
 ```
 SpawnDev.WebTorrent/
-├── SpawnDev.WebTorrent/              # Client library (NuGet package)
+├── SpawnDev.WebTorrent/              # Client library (NuGet 1.1.0)
 │   ├── Bencode/                      # Bencode encoder/decoder
-│   ├── Discovery/                    # Peer discovery (trackers, DHT)
+│   ├── Discovery/                    # Peer discovery (4 sources)
+│   │   ├── WebSocketTrackerClient    # WebSocket JSON tracker + WebRTC relay
+│   │   ├── HttpTrackerClient         # HTTP/HTTPS announce
+│   │   ├── UdpTrackerClient          # BEP 15 binary UDP
+│   │   └── DhtDiscovery              # BEP 5 Kademlia + KRPC
 │   ├── ModelDelivery/                # ML model streaming integration
-│   ├── Storage/                      # Chunk storage (memory, file)
-│   ├── Torrent/                      # Torrent management, piece verification
-│   ├── Transports/                   # Network transports (TCP, WebRTC, WebSeed)
-│   ├── Wire/                         # BitTorrent wire protocol + extensions
-│   ├── PeerCoordinator.cs            # Glue: tracker -> WebRTC -> wire protocol
-│   └── WebTorrentClient.cs           # Main client API
+│   ├── Storage/                      # Chunk storage (3 backends)
+│   │   ├── MemoryChunkStore          # In-memory (default fallback)
+│   │   ├── FileChunkStore            # Filesystem (desktop)
+│   │   └── AsyncFSChunkStore         # OPFS persistent (browser)
+│   ├── Torrent/                      # Torrent management
+│   │   ├── TorrentSwarm              # Full peer lifecycle, choke rotation, endgame
+│   │   ├── PieceManager              # Block tracking, SHA-1 verify, rarest-first
+│   │   ├── DownloadCoordinator       # Peer requests + web seed fallback
+│   │   ├── TorrentFileStream         # Random-access reads, MIME detection, streaming
+│   │   ├── TorrentParser             # .torrent + magnet URI parsing
+│   │   └── TorrentCreator            # .torrent file creation
+│   ├── Transports/                   # Network transports (4 types)
+│   │   ├── IWebRtcTransport          # Shared interface for browser + desktop
+│   │   ├── WebRtcTransport           # Browser (SpawnDev.BlazorJS RTCPeerConnection)
+│   │   ├── SipSorceryWebRtcTransport # Desktop (SIPSorcery 10.0.3)
+│   │   ├── TcpTransport              # Desktop TCP
+│   │   └── WebSeedConnection         # HTTP range requests (multi-file assembly)
+│   ├── Wire/                         # BitTorrent wire protocol
+│   │   ├── WireProtocol              # BEP 3 + BEP 6 messages, read loop
+│   │   ├── ExtensionManager          # BEP 10 handshake + routing
+│   │   ├── UtMetadataExtension       # BEP 9 metadata exchange
+│   │   └── UtPexExtension            # BEP 11 peer exchange
+│   ├── PeerCoordinator               # Tracker → WebRTC signaling → wire protocol
+│   ├── TorrentHttpServer             # HTTP server with range requests
+│   ├── RateLimiter                   # Token bucket throttling
+│   └── WebTorrentClient              # Main client API
 │
-├── SpawnDev.WebTorrent.Server/       # Server library (NuGet package)
-│   ├── TorrentTracker.cs             # WebSocket tracker with signaling relay
-│   ├── WebSeedServer.cs              # HTTP range request piece server
-│   └── WebTorrentServerExtensions.cs # ASP.NET endpoint registration
+├── SpawnDev.WebTorrent.Server/       # Server library (NuGet 1.0.0)
+│   ├── TorrentTracker                # WebSocket tracker with signaling relay
+│   ├── WebSeedServer                 # HTTP range request piece server
+│   └── WebTorrentServerExtensions    # ASP.NET endpoint registration
 │
-├── SpawnDev.WebTorrent.Server.HuggingFace/  # HF proxy extension
-│   └── HuggingFaceProxy.cs           # CDN proxy, caching, torrent generation
+├── SpawnDev.WebTorrent.Server.HuggingFace/
+│   └── HuggingFaceProxy              # CDN proxy, caching, torrent generation
 │
 ├── SpawnDev.WebTorrent.ServerApp/    # Production deployment (hub.spawndev.com)
-├── SpawnDev.WebTorrent.Demo/         # Blazor WASM demo + GitHub Pages
-├── SpawnDev.WebTorrent.Demo.Shared/  # Shared unit tests (67 tests)
+├── SpawnDev.WebTorrent.Demo/         # Blazor WASM — qBittorrent v5 UI
+├── SpawnDev.WebTorrent.Demo.Shared/  # 161 test methods (188 Playwright tests)
+├── SpawnDev.WebTorrent.WpfDemo/      # WPF Desktop — qBittorrent v5 UI
 └── PlaywrightMultiTest/              # Browser test runner
 ```
 
 ## Data Flow
 
-### Browser Client Joining a Swarm
+### Adding a Torrent (Magnet URI)
 
 ```
-1. Client connects to tracker via WebSocket
-   WebSocketTrackerClient -> wss://hub.spawndev.com:44365/announce
+1. client.AddAsync("magnet:?xt=urn:btih:...")
+   → Parse info hash from magnet URI
+   → Create TorrentSwarm (no metadata yet)
+   → Create chunk store (OPFS/FileSystem/Memory)
 
-2. Client announces with info_hash + peer_id
-   Tracker responds with peer list (seeders/leechers)
+2. Fetch .torrent from xs= URL (if present)
+   → HTTP GET → parse bencode → SetMetadata()
+   → Create PieceManager + DownloadCoordinator
+   → Create TorrentFileStream per file
 
-3. For each discovered peer:
-   a. Create RTCPeerConnection with STUN servers
-   b. Create data channel + SDP offer
-   c. Send offer through tracker (signaling relay)
-   d. Receive answer through tracker
-   e. ICE connectivity establishes direct P2P path
+3. Connect trackers (parallel)
+   → WebSocket: JSON announce + WebRTC signaling
+   → HTTP: URL-encoded announce + compact peers
+   → UDP: binary connect + announce
+   → DHT: Kademlia lookup + announce
 
-4. Data channel opens -> BitTorrent wire protocol handshake (68 bytes)
-   - Protocol string: "BitTorrent protocol"
-   - Reserved bytes with BEP 10 extension flag
-   - Info hash (20 bytes) + Peer ID (20 bytes)
+4. Peer connection (via PeerCoordinator)
+   → Tracker discovers peer → create RTCPeerConnection
+   → Exchange SDP offer/answer through tracker relay
+   → ICE gathers candidates → data channel opens
+   → BitTorrent handshake (68 bytes)
+   → BEP 10 extension handshake
+   → Bitfield exchange
 
-5. Piece exchange begins
-   - Request/Piece messages over the data channel
-   - SHA-1 verification per piece
-   - Rarest-first piece selection
+5. Piece download
+   → DownloadCoordinator selects pieces (rarest-first/sequential)
+   → Request blocks from peers (16KB each)
+   → Web seed fallback when no peers available
+   → SHA-1 verify each piece → store in ChunkStore
+   → Endgame mode: last 5 pieces from ALL peers
+
+6. Seeding
+   → Respond to Request messages with stored piece data
+   → Upload rate limiting via token bucket
+   → Choke/unchoke rotation (10s/30s optimistic)
 ```
 
-### Web Seed Fallback
-
-When no peers are available or for initial seeding:
-
-```
-1. Parse web seed URLs from magnet URI (&ws=) or .torrent (url-list)
-2. HTTP GET with Range header for specific byte ranges
-3. Map byte ranges to torrent pieces
-4. SHA-1 verify received data
-5. Store verified pieces in chunk store
-```
-
-## Transport Layer
-
-All transports implement `ITransport` / `IConnection`:
+### Transport Matrix
 
 | Transport | Platform | Protocol | Use Case |
 |-----------|----------|----------|----------|
-| `WebRtcTransport` | Browser | RTCDataChannel | Browser-to-browser P2P |
-| `TcpTransport` | Desktop | TCP sockets | Desktop-to-desktop P2P |
-| `WebSeedConnection` | Both | HTTP Range | Server-to-client fallback |
+| WebRtcTransport | Browser | RTCDataChannel | Browser-to-browser P2P |
+| SipSorceryWebRtcTransport | Desktop | RTCDataChannel | Desktop-to-browser P2P |
+| TcpTransport | Desktop | TCP sockets | Desktop-to-desktop P2P |
+| WebSeedConnection | Both | HTTP Range | CDN fallback |
 
-### WebRTC Transport (Browser)
+### Storage Matrix
 
-Uses SpawnDev.BlazorJS wrappers for the browser WebRTC API:
-- `RTCPeerConnection` — Peer connection with ICE/STUN
-- `RTCDataChannel` — Binary data channel (binaryType = "arraybuffer")
-- ICE gathering completes before offer/answer exchange (bundled candidates)
-- Data arrives as `ArrayBuffer` -> `Uint8Array` -> `byte[]`
+| Store | Platform | Persistence | Use Case |
+|-------|----------|-------------|----------|
+| AsyncFSChunkStore | Browser | OPFS (permanent) | Downloaded pieces survive page reload |
+| FileChunkStore | Desktop | Filesystem | Downloaded pieces in temp directory |
+| MemoryChunkStore | Both | None | Testing, fallback |
 
-## Wire Protocol (BEP 3 + BEP 10)
+## BEP Implementation (13)
 
-Standard BitTorrent wire protocol over any transport:
-
-| Message | ID | Payload |
-|---------|----|---------|
-| Choke | 0 | — |
-| Unchoke | 1 | — |
-| Interested | 2 | — |
-| NotInterested | 3 | — |
-| Have | 4 | piece index (4 bytes) |
-| Bitfield | 5 | bitfield |
-| Request | 6 | index + offset + length (12 bytes) |
-| Piece | 7 | index + offset + data |
-| Cancel | 8 | index + offset + length (12 bytes) |
-| Extended | 20 | BEP 10 extension messages |
-
-Extensions supported:
-- **ut_metadata** (BEP 9) — Metadata exchange for magnet URIs
-- **ut_pex** (BEP 11) — Peer exchange
-
-## Storage
-
-| Store | Platform | Persistence |
-|-------|----------|-------------|
-| `MemoryChunkStore` | Both | None (lost on page reload) |
-| `FileChunkStore` | Desktop | Disk |
-| OPFS (planned) | Browser | Persistent via Origin Private File System |
+BEP 3, 5, 6, 9, 10, 11, 15, 17, 19, 20, 23, 27, 53
 
 ## Port Assignments
 
@@ -124,3 +124,36 @@ Extensions supported:
 | 5560 | ServerApp HTTPS |
 | 5561 | ServerApp HTTP |
 | 5562 | PlaywrightMultiTest |
+| 18770 | WPF TorrentHttpServer |
+
+## Dependencies
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| SpawnDev.BlazorJS | 3.5.0 | Browser WebRTC + OPFS wrappers |
+| SpawnDev.AsyncFileSystem | 1.0.0 | Cross-platform persistent storage |
+| SIPSorcery | 10.0.3 | Desktop WebRTC data channels |
+
+## Test Coverage
+
+188 Playwright tests (185 pass, 3 skip for desktop-only):
+- Bencode encoding/decoding (including edge cases)
+- Torrent creation and parsing (single + multi-file)
+- Magnet URI parsing (including BEP 53)
+- Wire protocol message framing (all message types)
+- BEP 6 Fast Extension (HaveAll/None/Suggest/Reject/AllowedFast)
+- Extension handshake + ut_metadata + ut_pex
+- PieceManager (selection, verification, block tracking, edge cases)
+- ChunkStore (put/get/remove/clear, partial reads, edge cases)
+- WebRTC transport construction
+- Tracker connections (WebSocket, HTTP, UDP, DHT)
+- Full download pipeline (web seed → pieces → verify)
+- P2P integration (seed → connect → transfer → verify byte-for-byte)
+- Controlled swarm (two clients, mock loopback)
+- Pause/resume during download
+- Browse files before download (paused + select)
+- Client lifecycle (dispose, rapid add/remove)
+- File streaming (IAsyncEnumerable, blob, range)
+- Media playback (blob URL creation)
+- Settings (rate limits, tracker list)
+- 25 MIME types verified

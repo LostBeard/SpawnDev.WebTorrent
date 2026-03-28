@@ -4,146 +4,335 @@
 @using SpawnDev.WebTorrent.Transports
 @using SpawnDev.WebTorrent.Discovery
 @using SpawnDev.WebTorrent.Storage
+@using SpawnDev.WebTorrent.Wire
+@using SpawnDev.BlazorJS
+@using SpawnDev.BlazorJS.JSObjects
+@inject BlazorJSRuntime JS
 @implements IAsyncDisposable
 
-<PageTitle>Torrents</PageTitle>
+<PageTitle>SpawnDev.WebTorrent Client</PageTitle>
 
-<h3>Torrent Client</h3>
-<hr />
-
-<div class="client-container">
-    @* ── Add Torrent ── *@
-    <div class="add-section">
-        <div class="input-row">
-            <input type="text" class="magnet-input" placeholder="Paste magnet URI or info hash..."
-                   @bind="_magnetInput" @bind:event="oninput"
-                   @onkeydown="OnMagnetKeyDown" />
-            <button class="btn btn-primary" @onclick="AddMagnet" disabled="@(string.IsNullOrWhiteSpace(_magnetInput))">
-                Add
-            </button>
+<div class="tc-app">
+    @* ═══ Top Toolbar ═══ *@
+    <div class="tc-toolbar">
+        <div class="tc-toolbar-left">
+            <div class="tc-add-row">
+                <input type="text" class="tc-input" placeholder="magnet:?xt=urn:btih:... or info hash"
+                       @bind="_magnetInput" @bind:event="oninput" @onkeydown="OnMagnetKeyDown" />
+                <button class="tc-btn tc-btn-accent" @onclick="AddMagnet" disabled="@(string.IsNullOrWhiteSpace(_magnetInput))">
+                    + Add
+                </button>
+                <button class="tc-btn tc-btn-secondary" @onclick="ToggleSettings" title="Settings">
+                    <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492zM5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0z"/><path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.892 3.434-.901 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52l-.094-.319zm-2.633.283c.246-.835 1.428-.835 1.674 0l.094.319a1.873 1.873 0 0 0 2.693 1.115l.291-.16c.764-.415 1.6.42 1.184 1.185l-.159.292a1.873 1.873 0 0 0 1.116 2.692l.318.094c.835.246.835 1.428 0 1.674l-.319.094a1.873 1.873 0 0 0-1.115 2.693l.16.291c.415.764-.42 1.6-1.185 1.184l-.291-.159a1.873 1.873 0 0 0-2.693 1.116l-.094.318c-.246.835-1.428.835-1.674 0l-.094-.319a1.873 1.873 0 0 0-2.692-1.115l-.292.16c-.764.415-1.6-.42-1.184-1.185l.159-.291A1.873 1.873 0 0 0 1.945 8.93l-.319-.094c-.835-.246-.835-1.428 0-1.674l.319-.094A1.873 1.873 0 0 0 3.06 4.377l-.16-.292c-.415-.764.42-1.6 1.185-1.184l.292.159a1.873 1.873 0 0 0 2.692-1.115l.094-.319z"/></svg>
+                </button>
+            </div>
+            <div class="tc-quick-row">
+                @foreach (var (name, _) in CCMagnets)
+                {
+                    var n = name;
+                    <button class="tc-chip" @onclick="() => QuickAdd(n)">@n</button>
+                }
+            </div>
         </div>
-        <div class="quick-add">
-            <span class="quick-label">Quick add:</span>
-            @foreach (var (name, magnet) in CCMagnets)
+        <div class="tc-toolbar-right">
+            <div class="tc-speed-display">
+                <span class="tc-speed-down" title="Download speed">@FormatSpeed(_globalDownSpeed)</span>
+                <span class="tc-speed-up" title="Upload speed">@FormatSpeed(_globalUpSpeed)</span>
+            </div>
+            <div class="tc-global-stats">
+                <span>@_torrents.Count torrents</span>
+                <span>@_torrents.Sum(t => t.Swarm.PeerCount) peers</span>
+                <span class="tc-peerid">@PeerIdString</span>
+            </div>
+        </div>
+    </div>
+
+    @* ═══ Main Content ═══ *@
+    <div class="tc-main">
+        @* ── Torrent List ── *@
+        <div class="tc-list-panel">
+            @if (_torrents.Count == 0)
             {
-                var n = name;
-                var m = magnet;
-                <button class="btn btn-sm btn-tag" @onclick="() => QuickAdd(n, m)">@n</button>
+                <div class="tc-empty">
+                    <div class="tc-empty-icon">
+                        <svg width="48" height="48" fill="#334155" viewBox="0 0 16 16"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/></svg>
+                    </div>
+                    <p>Add a torrent to get started</p>
+                    <p class="tc-empty-sub">Paste a magnet URI above or use the quick-add buttons</p>
+                </div>
+            }
+            else
+            {
+                <table class="tc-table">
+                    <thead>
+                        <tr>
+                            <th class="col-name">Name</th>
+                            <th class="col-size">Size</th>
+                            <th class="col-progress">Progress</th>
+                            <th class="col-speed">Down</th>
+                            <th class="col-speed">Up</th>
+                            <th class="col-peers">Peers</th>
+                            <th class="col-status">Status</th>
+                            <th class="col-actions"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var entry in _torrents)
+                        {
+                            var e = entry;
+                            var progress = e.PieceManager?.Progress ?? e.Swarm.Progress;
+                            var isSelected = _selectedTorrent == e;
+                            <tr class="@(isSelected ? "selected" : "")" @onclick="() => SelectTorrent(e)">
+                                <td class="col-name">
+                                    <span class="tc-torrent-name">@(e.Swarm.Metadata?.Name ?? e.Name ?? "Loading...")</span>
+                                </td>
+                                <td class="col-size">@(e.Swarm.HasMetadata ? FormatBytes(e.Swarm.Metadata!.TotalLength) : "—")</td>
+                                <td class="col-progress">
+                                    <div class="tc-progress-cell">
+                                        <div class="tc-progress-bar-mini">
+                                            <div class="tc-progress-fill" style="width: @((progress * 100).ToString("F1"))%"></div>
+                                        </div>
+                                        <span class="tc-progress-text">@((progress * 100).ToString("F1"))%</span>
+                                    </div>
+                                </td>
+                                <td class="col-speed tc-speed-val">—</td>
+                                <td class="col-speed tc-speed-val">—</td>
+                                <td class="col-peers">@e.Swarm.PeerCount</td>
+                                <td class="col-status">
+                                    @if (e.PieceManager?.IsComplete == true)
+                                    {
+                                        <span class="tc-status tc-status-seeding">Seeding</span>
+                                    }
+                                    else if (e.PieceManager != null && e.PieceManager.CompletedCount > 0)
+                                    {
+                                        <span class="tc-status tc-status-downloading">Downloading</span>
+                                    }
+                                    else if (e.Swarm.HasMetadata)
+                                    {
+                                        <span class="tc-status tc-status-waiting">Waiting</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="tc-status tc-status-meta">Metadata</span>
+                                    }
+                                </td>
+                                <td class="col-actions">
+                                    <button class="tc-btn-icon" @onclick="() => RemoveTorrent(e)" @onclick:stopPropagation="true" title="Remove">
+                                        <svg width="14" height="14" fill="currentColor" viewBox="0 0 16 16"><path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/><path fill-rule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H5.5l1-1h3l1 1H14.5a1 1 0 0 1 1 1v1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118zM2.5 3V2h11v1h-11z"/></svg>
+                                    </button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
             }
         </div>
-    </div>
 
-    @* ── Client Stats Bar ── *@
-    <div class="stats-bar">
-        <span>Torrents: <strong>@_torrents.Count</strong></span>
-        <span>Peers: <strong>@_torrents.Sum(t => t.Swarm.PeerCount)</strong></span>
-        <span>Peer ID: <code>@PeerIdString</code></span>
-    </div>
+        @* ── Detail Panel ── *@
+        @if (_selectedTorrent != null)
+        {
+            <div class="tc-detail-panel">
+                <div class="tc-tabs">
+                    <button class="tc-tab @(_detailTab == "general" ? "active" : "")" @onclick='() => _detailTab = "general"'>General</button>
+                    <button class="tc-tab @(_detailTab == "files" ? "active" : "")" @onclick='() => _detailTab = "files"'>Files</button>
+                    <button class="tc-tab @(_detailTab == "peers" ? "active" : "")" @onclick='() => _detailTab = "peers"'>Peers</button>
+                    <button class="tc-tab @(_detailTab == "trackers" ? "active" : "")" @onclick='() => _detailTab = "trackers"'>Trackers</button>
+                    <button class="tc-tab @(_detailTab == "log" ? "active" : "")" @onclick='() => _detailTab = "log"'>Log</button>
+                </div>
 
-    @* ── Torrent List ── *@
-    @if (_torrents.Count == 0)
-    {
-        <div class="empty-state">
-            <p>No torrents. Add a magnet URI above or use a quick-add button.</p>
-        </div>
-    }
-    else
-    {
-        <div class="torrent-list">
-            @foreach (var entry in _torrents)
-            {
-                <div class="torrent-card @(entry.Expanded ? "expanded" : "")">
-                    <div class="torrent-header" @onclick="() => entry.Expanded = !entry.Expanded">
-                        <div class="torrent-name">
-                            @(entry.Swarm.Metadata?.Name ?? entry.Name ?? "Loading metadata...")
-                        </div>
-                        <div class="torrent-meta">
-                            @if (entry.Swarm.HasMetadata)
-                            {
-                                <span class="tag tag-size">@FormatBytes(entry.Swarm.Metadata!.TotalLength)</span>
-                                <span class="tag tag-pieces">@entry.Swarm.Metadata!.PieceCount pcs</span>
-                            }
-                            <span class="tag tag-peers">@entry.Swarm.PeerCount peers</span>
-                            <span class="tag tag-hash">@entry.InfoHashShort</span>
-                        </div>
-                    </div>
-
-                    @if (entry.Swarm.HasMetadata)
+                <div class="tc-tab-content">
+                    @switch (_detailTab)
                     {
-                        var progress = entry.PieceManager?.Progress ?? entry.Swarm.Progress;
-                        var isComplete = entry.PieceManager?.IsComplete ?? entry.Swarm.Done;
-                        <div class="progress-bar-container">
-                            <div class="progress-bar" style="width: @((progress * 100).ToString("F1"))%"></div>
-                        </div>
-                        <div class="progress-text">
-                            @((progress * 100).ToString("F1"))%
-                            — @(entry.PieceManager?.CompletedCount ?? 0)/@(entry.Swarm.Metadata!.PieceCount) pieces
-                            @if (isComplete)
-                            {
-                                <span class="done-badge">Complete</span>
-                            }
-                        </div>
-                    }
+                        case "general":
+                            <div class="tc-detail-grid">
+                                <div class="tc-detail-item"><span class="tc-label">Name</span><span>@(_selectedTorrent.Swarm.Metadata?.Name ?? "—")</span></div>
+                                <div class="tc-detail-item"><span class="tc-label">Info Hash</span><span class="tc-mono">@_selectedTorrent.InfoHashFull</span></div>
+                                <div class="tc-detail-item"><span class="tc-label">Size</span><span>@(_selectedTorrent.Swarm.HasMetadata ? FormatBytes(_selectedTorrent.Swarm.Metadata!.TotalLength) : "—")</span></div>
+                                <div class="tc-detail-item"><span class="tc-label">Pieces</span><span>@(_selectedTorrent.PieceManager != null ? $"{_selectedTorrent.PieceManager.CompletedCount} / {_selectedTorrent.PieceManager.PieceCount}" : "—")</span></div>
+                                <div class="tc-detail-item"><span class="tc-label">Piece Length</span><span>@(_selectedTorrent.Swarm.HasMetadata ? FormatBytes(_selectedTorrent.Swarm.Metadata!.PieceLength) : "—")</span></div>
+                                <div class="tc-detail-item"><span class="tc-label">Downloaded</span><span>@FormatBytes(_selectedTorrent.Swarm.Downloaded)</span></div>
+                                <div class="tc-detail-item"><span class="tc-label">Uploaded</span><span>@FormatBytes(_selectedTorrent.Swarm.Uploaded)</span></div>
+                                <div class="tc-detail-item"><span class="tc-label">Peers</span><span>@_selectedTorrent.Swarm.PeerCount</span></div>
+                                <div class="tc-detail-item"><span class="tc-label">Status</span><span>@_selectedTorrent.TrackerStatus</span></div>
+                            </div>
 
-                    @if (entry.Expanded && entry.Swarm.HasMetadata)
-                    {
-                        <div class="torrent-details">
-                            <table class="file-table">
-                                <thead>
-                                    <tr>
-                                        <th>File</th>
-                                        <th class="col-size">Size</th>
-                                        <th class="col-progress">Progress</th>
-                                    </tr>
-                                </thead>
+                            @* ── Piece Map ── *@
+                            @if (_selectedTorrent.PieceManager?.Bitfield != null)
+                            {
+                                <div class="tc-piece-map-label">Pieces</div>
+                                <div class="tc-piece-map">
+                                    @{
+                                        var bf = _selectedTorrent.PieceManager.Bitfield;
+                                        var totalPieces = bf.Length;
+                                        var cols = Math.Min(totalPieces, 100);
+                                        var step = Math.Max(1, totalPieces / cols);
+                                    }
+                                    @for (int i = 0; i < cols; i++)
+                                    {
+                                        var startIdx = i * step;
+                                        var endIdx = Math.Min((i + 1) * step, totalPieces);
+                                        bool anyComplete = false;
+                                        for (int j = startIdx; j < endIdx; j++)
+                                            if (bf[j]) { anyComplete = true; break; }
+                                        <div class="tc-piece @(anyComplete ? "tc-piece-done" : "")"></div>
+                                    }
+                                </div>
+                            }
+                            break;
+
+                        case "files":
+                            @if (_selectedTorrent.Swarm.HasMetadata)
+                            {
+                                <table class="tc-file-table">
+                                    <thead><tr><th>File</th><th class="col-fsize">Size</th><th class="col-ftype">Type</th><th class="col-faction"></th></tr></thead>
+                                    <tbody>
+                                        @foreach (var file in _selectedTorrent.Swarm.Files)
+                                        {
+                                            var f = file;
+                                            var ext = System.IO.Path.GetExtension(f.Path).ToLowerInvariant();
+                                            var isMedia = IsMediaFile(ext);
+                                            var isImage = IsImageFile(ext);
+                                            <tr>
+                                                <td class="tc-file-name">@f.Path</td>
+                                                <td class="col-fsize">@FormatBytes(f.Length)</td>
+                                                <td class="col-ftype"><span class="tc-ext-badge">@ext</span></td>
+                                                <td class="col-faction">
+                                                    @if (isMedia || isImage)
+                                                    {
+                                                        <button class="tc-btn-sm tc-btn-play" @onclick="() => OpenMedia(f, ext)" title="@(isImage ? "View" : "Play")">
+                                                            @(isImage ? "View" : "Play")
+                                                        </button>
+                                                    }
+                                                </td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            }
+                            else
+                            {
+                                <p class="tc-muted">Waiting for metadata...</p>
+                            }
+                            break;
+
+                        case "peers":
+                            <p class="tc-muted">@_selectedTorrent.Swarm.PeerCount connected peer(s)</p>
+                            @if (_selectedTorrent.Swarm.PeerCount == 0)
+                            {
+                                <p class="tc-muted-sm">Peers connect via WebSocket tracker signaling and WebRTC data channels.</p>
+                            }
+                            break;
+
+                        case "trackers":
+                            <table class="tc-tracker-table">
+                                <thead><tr><th>Tracker</th><th>Status</th></tr></thead>
                                 <tbody>
-                                    @foreach (var file in entry.Swarm.Files)
+                                    @foreach (var tracker in _selectedTorrent.Trackers)
                                     {
                                         <tr>
-                                            <td class="file-name">@file.Path</td>
-                                            <td class="col-size">@FormatBytes(file.Length)</td>
-                                            <td class="col-progress">@((file.Progress * 100).ToString("F0"))%</td>
+                                            <td class="tc-mono">@tracker.Url</td>
+                                            <td>@tracker.Status</td>
                                         </tr>
+                                    }
+                                    @if (_selectedTorrent.Trackers.Count == 0)
+                                    {
+                                        <tr><td colspan="2" class="tc-muted">No trackers connected</td></tr>
                                     }
                                 </tbody>
                             </table>
+                            break;
 
-                            <div class="detail-row">
-                                <span>Info Hash: <code>@entry.InfoHashFull</code></span>
+                        case "log":
+                            <div class="tc-log">
+                                @foreach (var msg in _logMessages.TakeLast(100))
+                                {
+                                    <div class="tc-log-line">@msg</div>
+                                }
                             </div>
-                            <div class="detail-row">
-                                <span>Piece Length: @FormatBytes(entry.Swarm.Metadata!.PieceLength)</span>
-                                <span>Downloaded: @FormatBytes(entry.Swarm.Downloaded)</span>
-                                <span>Uploaded: @FormatBytes(entry.Swarm.Uploaded)</span>
-                            </div>
-
-                            @if (entry.TrackerStatus != null)
-                            {
-                                <div class="detail-row">
-                                    <span>Tracker: @entry.TrackerStatus</span>
-                                </div>
-                            }
-
-                            <div class="detail-actions">
-                                <button class="btn btn-sm btn-danger" @onclick="() => RemoveTorrent(entry)">Remove</button>
-                            </div>
-                        </div>
+                            break;
                     }
                 </div>
-            }
+            </div>
+        }
+    </div>
+
+    @* ═══ Media Viewer Modal ═══ *@
+    @if (_mediaOpen)
+    {
+        <div class="tc-modal-overlay" @onclick="CloseMedia">
+            <div class="tc-modal" @onclick:stopPropagation="true">
+                <div class="tc-modal-header">
+                    <span class="tc-modal-title">@_mediaFileName</span>
+                    <button class="tc-btn-icon tc-modal-close" @onclick="CloseMedia">
+                        <svg width="20" height="20" fill="currentColor" viewBox="0 0 16 16"><path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/></svg>
+                    </button>
+                </div>
+                <div class="tc-modal-body">
+                    @if (_mediaLoading)
+                    {
+                        <div class="tc-media-loading">Downloading file...</div>
+                    }
+                    else if (_mediaType == "video")
+                    {
+                        <video src="@_mediaBlobUrl" controls autoplay class="tc-media-video"></video>
+                    }
+                    else if (_mediaType == "audio")
+                    {
+                        <audio src="@_mediaBlobUrl" controls autoplay class="tc-media-audio"></audio>
+                    }
+                    else if (_mediaType == "image")
+                    {
+                        <img src="@_mediaBlobUrl" class="tc-media-image" alt="@_mediaFileName" />
+                    }
+                </div>
+            </div>
         </div>
     }
 
-    @* ── Log ── *@
-    @if (_logMessages.Count > 0)
+    @* ═══ Settings Modal ═══ *@
+    @if (_settingsOpen)
     {
-        <div class="log-section">
-            <h4>Activity Log</h4>
-            <div class="log-container">
-                @foreach (var msg in _logMessages.TakeLast(50))
-                {
-                    <div class="log-line">@msg</div>
-                }
+        <div class="tc-modal-overlay" @onclick="() => _settingsOpen = false">
+            <div class="tc-modal tc-settings-modal" @onclick:stopPropagation="true">
+                <div class="tc-modal-header">
+                    <span class="tc-modal-title">Settings</span>
+                    <button class="tc-btn-icon tc-modal-close" @onclick="() => _settingsOpen = false">
+                        <svg width="20" height="20" fill="currentColor" viewBox="0 0 16 16"><path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/></svg>
+                    </button>
+                </div>
+                <div class="tc-modal-body">
+                    <div class="tc-settings-group">
+                        <h4>Transfer</h4>
+                        <div class="tc-setting-row">
+                            <label>Download Limit (KB/s)</label>
+                            <input type="number" class="tc-input tc-input-sm" value="@_downloadLimitKBs"
+                                   @onchange="e => SetDownloadLimit(e)" placeholder="0 = unlimited" />
+                        </div>
+                        <div class="tc-setting-row">
+                            <label>Upload Limit (KB/s)</label>
+                            <input type="number" class="tc-input tc-input-sm" value="@_uploadLimitKBs"
+                                   @onchange="e => SetUploadLimit(e)" placeholder="0 = unlimited" />
+                        </div>
+                        <div class="tc-setting-row">
+                            <label>Max Connections per Torrent</label>
+                            <input type="number" class="tc-input tc-input-sm" value="55" disabled />
+                        </div>
+                    </div>
+                    <div class="tc-settings-group">
+                        <h4>Trackers</h4>
+                        <div class="tc-setting-info">Default trackers for new torrents:</div>
+                        @foreach (var t in _defaultTrackers)
+                        {
+                            <div class="tc-tracker-item">@t</div>
+                        }
+                    </div>
+                    <div class="tc-settings-group">
+                        <h4>Client Info</h4>
+                        <div class="tc-setting-row"><label>Peer ID</label><span class="tc-mono">@PeerIdString</span></div>
+                        <div class="tc-setting-row"><label>Version</label><span>1.1.0</span></div>
+                        <div class="tc-setting-row"><label>Platform</label><span>@(OperatingSystem.IsBrowser() ? "Browser (Blazor WASM)" : "Desktop (.NET)")</span></div>
+                    </div>
+                </div>
             </div>
         </div>
     }
@@ -155,6 +344,31 @@
     private readonly List<string> _logMessages = new();
     private WebTorrentClient? _client;
     private System.Threading.Timer? _refreshTimer;
+    private TorrentEntry? _selectedTorrent;
+    private string _detailTab = "general";
+
+    // Settings
+    private bool _settingsOpen;
+    private int _downloadLimitKBs;
+    private int _uploadLimitKBs;
+    private readonly string[] _defaultTrackers = new[]
+    {
+        "wss://hub.spawndev.com:44365/announce",
+        "wss://tracker.openwebtorrent.com",
+        "wss://tracker.files.fm:7073/announce",
+        "wss://tracker.ghostchu-services.top:443/announce",
+    };
+
+    // Media viewer
+    private bool _mediaOpen;
+    private bool _mediaLoading;
+    private string _mediaType = "";
+    private string _mediaFileName = "";
+    private string _mediaBlobUrl = "";
+
+    // Global speeds
+    private double _globalDownSpeed;
+    private double _globalUpSpeed;
 
     private static readonly Dictionary<string, string> CCMagnets = new()
     {
@@ -171,13 +385,9 @@
     protected override void OnInitialized()
     {
         _client = new WebTorrentClient();
-        Log($"Client initialized. Peer ID: {PeerIdString}");
+        Log("Client initialized");
 
-        // Refresh UI every 2 seconds for live stats
-        _refreshTimer = new System.Threading.Timer(_ =>
-        {
-            InvokeAsync(StateHasChanged);
-        }, null, 2000, 2000);
+        _refreshTimer = new System.Threading.Timer(_ => InvokeAsync(StateHasChanged), null, 1000, 1000);
     }
 
     private async Task OnMagnetKeyDown(KeyboardEventArgs e)
@@ -186,17 +396,11 @@
             await AddMagnet();
     }
 
-    private async Task QuickAdd(string name, string magnet)
+    private async Task QuickAdd(string name)
     {
-        // Check if already added
+        if (!CCMagnets.TryGetValue(name, out var magnet)) return;
         var hash = magnet.Split("btih:")[1].Split("&")[0].ToLowerInvariant();
-        if (_torrents.Any(t => t.InfoHashFull == hash))
-        {
-            Log($"{name} already added");
-            return;
-        }
-
-        Log($"Adding {name}...");
+        if (_torrents.Any(t => t.InfoHashFull == hash)) { Log($"{name} already added"); return; }
         await AddMagnetInternal(magnet, name);
     }
 
@@ -205,240 +409,247 @@
         var input = _magnetInput.Trim();
         _magnetInput = "";
         if (string.IsNullOrWhiteSpace(input)) return;
-        Log($"Adding: {input[..Math.Min(60, input.Length)]}...");
         await AddMagnetInternal(input, null);
     }
 
     private async Task AddMagnetInternal(string magnetUri, string? displayName)
     {
         if (_client == null) return;
-
         try
         {
             var swarm = await _client.AddAsync(magnetUri);
+            var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
+
             var entry = new TorrentEntry
             {
                 Swarm = swarm,
                 Name = displayName,
-                InfoHashFull = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant(),
-                InfoHashShort = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant()[..8] + "...",
+                InfoHashFull = hash,
+                InfoHashShort = hash[..8] + "...",
             };
 
             _torrents.Add(entry);
-            Log($"Added: {entry.Name ?? entry.InfoHashShort}");
+            _selectedTorrent ??= entry;
+            Log($"Added: {entry.Name ?? hash[..8]}");
 
-            // Connect to trackers
             _ = ConnectTrackers(entry, magnetUri);
-
-            // Try to fetch .torrent metadata from xs= URL
-            _ = FetchMetadataAndStartDownload(entry, magnetUri);
-
+            _ = FetchMetadataAndDownload(entry, magnetUri);
             StateHasChanged();
         }
-        catch (Exception ex)
-        {
-            Log($"Error: {ex.Message}");
-        }
+        catch (Exception ex) { Log($"Error: {ex.Message}"); }
     }
 
-    private async Task FetchMetadataAndStartDownload(TorrentEntry entry, string magnetUri)
+    private async Task FetchMetadataAndDownload(TorrentEntry entry, string magnetUri)
     {
-        // Extract xs= (exact source / .torrent URL) and ws= (web seeds) from magnet
         string? torrentUrl = null;
         var webSeedUrls = new List<string>();
-
         foreach (var part in magnetUri.Split('&'))
         {
             var p = part.Contains('?') ? part.Split('?').Last() : part;
-            var eqIdx = p.IndexOf('=');
-            if (eqIdx < 0) continue;
-            var key = p[..eqIdx];
-            var val = Uri.UnescapeDataString(p[(eqIdx + 1)..].Replace('+', ' '));
-
-            if (key == "xs") torrentUrl = val;
-            if (key == "ws") webSeedUrls.Add(val);
+            var eq = p.IndexOf('=');
+            if (eq < 0) continue;
+            var k = p[..eq];
+            var v = Uri.UnescapeDataString(p[(eq + 1)..].Replace('+', ' '));
+            if (k == "xs") torrentUrl = v;
+            if (k == "ws") webSeedUrls.Add(v);
         }
 
-        // Fetch .torrent file if xs= URL is available
-        if (torrentUrl != null)
+        if (torrentUrl == null) { Log($"[{entry.Name ?? entry.InfoHashShort}] No xs= URL"); return; }
+
+        try
         {
-            try
-            {
-                Log($"[{entry.Name ?? entry.InfoHashShort}] Fetching .torrent from {torrentUrl.Split('/').Last()}...");
-                using var http = new HttpClient();
-                http.Timeout = TimeSpan.FromSeconds(15);
-                var torrentBytes = await http.GetByteArrayAsync(torrentUrl);
-                var metadata = TorrentParser.Parse(torrentBytes);
+            Log($"[{entry.Name ?? entry.InfoHashShort}] Fetching .torrent...");
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            var torrentBytes = await http.GetByteArrayAsync(torrentUrl);
+            var metadata = TorrentParser.Parse(torrentBytes);
+            if (!metadata.InfoHash.SequenceEqual(entry.Swarm.InfoHash)) return;
 
-                // Verify info hash matches
-                if (!metadata.InfoHash.SequenceEqual(entry.Swarm.InfoHash))
-                {
-                    Log($"[{entry.Name ?? entry.InfoHashShort}] .torrent info hash mismatch — ignoring");
-                    return;
-                }
+            foreach (var ws in metadata.UrlList)
+                if (!webSeedUrls.Contains(ws)) webSeedUrls.Add(ws);
 
-                // Add web seeds from .torrent metadata
-                foreach (var ws in metadata.UrlList)
-                    if (!webSeedUrls.Contains(ws)) webSeedUrls.Add(ws);
+            entry.Swarm.SetMetadata(metadata);
+            entry.Name ??= metadata.Name;
 
-                // Set metadata on swarm (creates chunk store and file streams)
-                entry.Swarm.SetMetadata(metadata);
-                entry.Name ??= metadata.Name;
-                Log($"[{entry.Name}] Metadata loaded: {metadata.Files.Length} file(s), {FormatBytes(metadata.TotalLength)}, {metadata.PieceCount} pieces");
+            foreach (var ws in webSeedUrls) entry.Swarm.AddWebSeed(ws);
+            entry.Swarm.StartDownload();
 
-                // Create download coordinator and start downloading via web seeds
-                var store = new MemoryChunkStore(metadata.PieceLength);
-                var pm = new PieceManager(metadata, store);
-                var coordinator = new DownloadCoordinator(pm, metadata);
-                entry.Coordinator = coordinator;
-                entry.PieceManager = pm;
+            entry.Swarm.OnPieceVerified += (_) => InvokeAsync(StateHasChanged);
+            entry.Swarm.OnDone += () => { Log($"[{entry.Name}] Download complete!"); InvokeAsync(StateHasChanged); };
 
-                // Add web seeds
-                foreach (var wsUrl in webSeedUrls)
-                {
-                    coordinator.AddWebSeed(new HttpClient { Timeout = TimeSpan.FromSeconds(30) }, wsUrl);
-                    Log($"[{entry.Name}] Web seed: {wsUrl}");
-                }
-
-                // Wire up progress events
-                coordinator.OnPieceComplete += (idx) =>
-                {
-                    InvokeAsync(StateHasChanged);
-                };
-                coordinator.OnProgressChanged += (p) =>
-                {
-                    InvokeAsync(StateHasChanged);
-                };
-                coordinator.OnDownloadComplete += () =>
-                {
-                    Log($"[{entry.Name}] Download complete!");
-                    InvokeAsync(StateHasChanged);
-                };
-
-                // Start downloading
-                coordinator.Start();
-                Log($"[{entry.Name}] Download started ({webSeedUrls.Count} web seed(s))");
-
-                await InvokeAsync(StateHasChanged);
-            }
-            catch (Exception ex)
-            {
-                Log($"[{entry.Name ?? entry.InfoHashShort}] Metadata fetch failed: {ex.Message}");
-            }
+            Log($"[{entry.Name}] {FormatBytes(metadata.TotalLength)}, {metadata.PieceCount} pieces, {webSeedUrls.Count} web seed(s)");
+            await InvokeAsync(StateHasChanged);
         }
-        else
-        {
-            Log($"[{entry.Name ?? entry.InfoHashShort}] No .torrent URL (xs=) — waiting for metadata from peers");
-        }
+        catch (Exception ex) { Log($"[{entry.Name ?? entry.InfoHashShort}] {ex.Message}"); }
     }
 
     private async Task ConnectTrackers(TorrentEntry entry, string magnetUri)
     {
-        // Extract tracker URLs from magnet URI
         var trackers = new List<string>();
-        if (magnetUri.Contains("&tr="))
+        foreach (var part in magnetUri.Split('&'))
         {
-            foreach (var part in magnetUri.Split('&'))
+            var p = part.Contains('?') ? part.Split('?').Last() : part;
+            if (p.StartsWith("tr="))
             {
-                if (part.StartsWith("tr=") || part.StartsWith("&tr="))
-                {
-                    var url = Uri.UnescapeDataString(part.Replace("tr=", "").Replace("&", ""));
-                    if (url.StartsWith("wss://"))
-                        trackers.Add(url);
-                }
+                var url = Uri.UnescapeDataString(p[3..].Replace('+', ' '));
+                if (url.StartsWith("wss://")) trackers.Add(url);
             }
         }
+        if (trackers.Count == 0) trackers.AddRange(_defaultTrackers);
 
-        // Add default trackers if none found
-        if (trackers.Count == 0)
-        {
-            trackers.AddRange(new[]
-            {
-                "wss://hub.spawndev.com:44365/announce",
-                "wss://tracker.openwebtorrent.com",
-                "wss://tracker.files.fm:7073/announce",
-            });
-        }
-
-        foreach (var trackerUrl in trackers)
+        foreach (var url in trackers)
         {
             try
             {
-                var peerId = _client!.PeerId;
-                var tracker = new WebSocketTrackerClient(trackerUrl, peerId);
-                int seeders = 0, leechers = 0;
+                var tracker = new WebSocketTrackerClient(url, _client!.PeerId);
+                var shortUrl = new Uri(url).Host;
+                var te = new TrackerEntry { Url = url, Status = "Connecting..." };
+                entry.Trackers.Add(te);
 
                 tracker.OnAnnounceResponse += (s, l) =>
                 {
-                    seeders = s;
-                    leechers = l;
-                    entry.TrackerStatus = $"{trackerUrl.Split('/')[2]}: {s}S/{l}L";
-                    Log($"[{entry.Name ?? entry.InfoHashShort}] Tracker: {s} seeders, {l} leechers");
+                    te.Status = $"{s}S / {l}L";
                     InvokeAsync(StateHasChanged);
                 };
-
-                tracker.OnPeer += (peer) =>
-                {
-                    Log($"[{entry.Name ?? entry.InfoHashShort}] Peer: {peer.Address[..Math.Min(16, peer.Address.Length)]}...");
-                };
-
-                tracker.OnError += (err) =>
-                {
-                    Log($"[{entry.Name ?? entry.InfoHashShort}] Tracker error: {err}");
-                };
+                tracker.OnPeer += (peer) => Log($"[{entry.Name ?? entry.InfoHashShort}] Peer: {peer.Address[..Math.Min(16, peer.Address.Length)]}");
+                tracker.OnError += (err) => { te.Status = $"Error: {err}"; };
 
                 await tracker.StartAsync(entry.Swarm.InfoHash, 0);
-                entry.Trackers.Add(tracker);
-                Log($"[{entry.Name ?? entry.InfoHashShort}] Connected to {trackerUrl.Split('/')[2]}");
-                break; // Connected to one tracker successfully
+                te.Status = "Connected";
+                break;
             }
-            catch (Exception ex)
-            {
-                Log($"Tracker {trackerUrl.Split('/')[2]} failed: {ex.Message}");
-            }
+            catch { }
         }
     }
 
     private async Task RemoveTorrent(TorrentEntry entry)
     {
-        foreach (var tracker in entry.Trackers)
-            await tracker.DisposeAsync();
-        entry.Trackers.Clear();
-
-        if (_client != null)
-            await _client.RemoveAsync(entry.Swarm);
-
+        if (_selectedTorrent == entry) _selectedTorrent = null;
         _torrents.Remove(entry);
+        if (_client != null) await _client.RemoveAsync(entry.Swarm);
         Log($"Removed: {entry.Name ?? entry.InfoHashShort}");
+    }
+
+    private void SelectTorrent(TorrentEntry entry)
+    {
+        _selectedTorrent = entry;
+        _detailTab = "general";
+    }
+
+    private void ToggleSettings() => _settingsOpen = !_settingsOpen;
+
+    private void SetDownloadLimit(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out var val))
+        {
+            _downloadLimitKBs = val;
+            if (_client != null) _client.DownloadLimit = val <= 0 ? -1 : val * 1024;
+        }
+    }
+
+    private void SetUploadLimit(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out var val))
+        {
+            _uploadLimitKBs = val;
+            if (_client != null) _client.UploadLimit = val <= 0 ? -1 : val * 1024;
+        }
+    }
+
+    // ── Media Viewer ──
+
+    private async Task OpenMedia(TorrentFileStream file, string ext)
+    {
+        _mediaFileName = file.Name;
+        _mediaType = IsVideoFile(ext) ? "video" : IsAudioFile(ext) ? "audio" : IsImageFile(ext) ? "image" : "";
+        _mediaOpen = true;
+        _mediaLoading = true;
+        _mediaBlobUrl = "";
         StateHasChanged();
+
+        try
+        {
+            // Download the file via web seed
+            var metadata = _selectedTorrent!.Swarm.Metadata!;
+            var wsUrls = metadata.UrlList;
+            byte[]? fileData = null;
+
+            if (wsUrls.Length > 0)
+            {
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+                var url = wsUrls[0].TrimEnd('/') + "/" + (metadata.Files.Length == 1 ? metadata.Files[0].Path : file.Path);
+                var request = new HttpRequestMessage(HttpMethod.Get, url);
+                request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(file.Offset, file.Offset + file.Length - 1);
+                var response = await http.SendAsync(request);
+                fileData = await response.Content.ReadAsByteArrayAsync();
+            }
+
+            if (fileData == null || fileData.Length == 0)
+            {
+                _mediaLoading = false;
+                Log($"Could not download {file.Name}");
+                return;
+            }
+
+            // Create blob URL for playback
+            var mimeType = GetMimeType(ext);
+            using var blob = new Blob(new[] { fileData }, new BlobOptions { Type = mimeType });
+            _mediaBlobUrl = URL.CreateObjectURL(blob);
+            _mediaLoading = false;
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            _mediaLoading = false;
+            Log($"Media error: {ex.Message}");
+        }
     }
 
-    private void Log(string message)
+    private void CloseMedia()
     {
-        var timestamp = DateTime.Now.ToString("HH:mm:ss");
-        _logMessages.Add($"[{timestamp}] {message}");
-        if (_logMessages.Count > 200)
-            _logMessages.RemoveRange(0, _logMessages.Count - 200);
+        if (!string.IsNullOrEmpty(_mediaBlobUrl))
+        {
+            try { URL.RevokeObjectURL(_mediaBlobUrl); } catch { }
+        }
+        _mediaOpen = false;
+        _mediaBlobUrl = "";
     }
 
-    private static string FormatBytes(long bytes)
+    private static bool IsVideoFile(string ext) => ext is ".mp4" or ".webm" or ".mkv" or ".ogv" or ".mov" or ".m4v" or ".3gp";
+    private static bool IsAudioFile(string ext) => ext is ".mp3" or ".ogg" or ".flac" or ".wav" or ".aac" or ".opus" or ".m4a";
+    private static bool IsImageFile(string ext) => ext is ".jpg" or ".jpeg" or ".png" or ".gif" or ".webp" or ".svg" or ".bmp";
+    private static bool IsMediaFile(string ext) => IsVideoFile(ext) || IsAudioFile(ext);
+
+    private static string GetMimeType(string ext) => ext switch
     {
-        if (bytes < 1024) return $"{bytes} B";
-        if (bytes < 1048576) return $"{bytes / 1024.0:F1} KB";
-        if (bytes < 1073741824) return $"{bytes / 1048576.0:F1} MB";
-        return $"{bytes / 1073741824.0:F2} GB";
-    }
+        ".mp4" or ".m4v" => "video/mp4",
+        ".webm" => "video/webm",
+        ".mkv" => "video/x-matroska",
+        ".ogv" => "video/ogg",
+        ".mov" => "video/quicktime",
+        ".mp3" => "audio/mpeg",
+        ".ogg" or ".opus" => "audio/ogg",
+        ".flac" => "audio/flac",
+        ".wav" => "audio/wav",
+        ".aac" or ".m4a" => "audio/aac",
+        ".jpg" or ".jpeg" => "image/jpeg",
+        ".png" => "image/png",
+        ".gif" => "image/gif",
+        ".webp" => "image/webp",
+        ".svg" => "image/svg+xml",
+        _ => "application/octet-stream",
+    };
+
+    // ── Helpers ──
+
+    private void Log(string msg) { _logMessages.Add($"[{DateTime.Now:HH:mm:ss}] {msg}"); }
+    private static string FormatBytes(long b) => b < 1024 ? $"{b} B" : b < 1048576 ? $"{b / 1024.0:F1} KB" : b < 1073741824 ? $"{b / 1048576.0:F1} MB" : $"{b / 1073741824.0:F2} GB";
+    private static string FormatSpeed(double bps) => bps < 1024 ? $"{bps:F0} B/s" : bps < 1048576 ? $"{bps / 1024.0:F1} KB/s" : $"{bps / 1048576.0:F1} MB/s";
 
     public async ValueTask DisposeAsync()
     {
         _refreshTimer?.Dispose();
-        foreach (var entry in _torrents)
-        {
-            foreach (var tracker in entry.Trackers)
-                await tracker.DisposeAsync();
-        }
-        if (_client != null)
-            await _client.DisposeAsync();
+        CloseMedia();
+        if (_client != null) await _client.DisposeAsync();
     }
 
     private class TorrentEntry
@@ -448,352 +659,171 @@
         public string InfoHashFull { get; init; } = "";
         public string InfoHashShort { get; init; } = "";
         public string? TrackerStatus { get; set; }
-        public bool Expanded { get; set; }
-        public List<WebSocketTrackerClient> Trackers { get; } = new();
-        public DownloadCoordinator? Coordinator { get; set; }
-        public PieceManager? PieceManager { get; set; }
+        public PieceManager? PieceManager => Swarm.PieceManager;
+        public List<TrackerEntry> Trackers { get; } = new();
+    }
+
+    private class TrackerEntry
+    {
+        public string Url { get; set; } = "";
+        public string Status { get; set; } = "";
     }
 }
 
 <style>
-    .client-container {
-        max-width: 900px;
-        margin: 0 auto;
-    }
+    /* ═══════════════════════════════════════════════════════════ */
+    /*  SpawnDev.WebTorrent Client — Full UI                     */
+    /* ═══════════════════════════════════════════════════════════ */
 
-    .add-section {
-        margin-bottom: 1.5rem;
-    }
+    .tc-app { display: flex; flex-direction: column; height: calc(100vh - 4rem); min-height: 500px; }
 
-    .input-row {
-        display: flex;
-        gap: 0.5rem;
-        margin-bottom: 0.75rem;
-    }
+    /* ── Toolbar ── */
+    .tc-toolbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; padding: 0.75rem 0; border-bottom: 1px solid rgba(255,255,255,0.08); flex-wrap: wrap; }
+    .tc-toolbar-left { flex: 1; min-width: 300px; }
+    .tc-toolbar-right { display: flex; flex-direction: column; align-items: flex-end; gap: 0.25rem; }
+    .tc-add-row { display: flex; gap: 0.5rem; }
+    .tc-quick-row { display: flex; gap: 0.4rem; margin-top: 0.5rem; flex-wrap: wrap; }
 
-    .magnet-input {
-        flex: 1;
-        background: rgba(255, 255, 255, 0.05);
-        border: 1px solid rgba(255, 255, 255, 0.15);
-        border-radius: 8px;
-        padding: 0.6rem 1rem;
-        color: #e2e8f0;
-        font-size: 0.9rem;
-        font-family: 'JetBrains Mono', 'Consolas', monospace;
-        outline: none;
-        transition: border-color 0.2s;
-    }
+    .tc-input { flex: 1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; padding: 0.5rem 0.75rem; color: #f1f5f9; font-family: 'Consolas', monospace; font-size: 0.85rem; outline: none; min-width: 200px; }
+    .tc-input:focus { border-color: #10b981; }
+    .tc-input::placeholder { color: #475569; }
+    .tc-input-sm { width: 120px; min-width: auto; flex: none; }
 
-    .magnet-input:focus {
-        border-color: #10b981;
-    }
+    .tc-btn { padding: 0.5rem 1rem; border: none; border-radius: 6px; font-weight: 600; font-size: 0.85rem; cursor: pointer; transition: all 0.15s; display: inline-flex; align-items: center; gap: 0.4rem; }
+    .tc-btn-accent { background: linear-gradient(135deg, #10b981, #3b82f6); color: white; }
+    .tc-btn-accent:hover { box-shadow: 0 4px 12px rgba(16,185,129,0.3); }
+    .tc-btn-accent:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
+    .tc-btn-secondary { background: rgba(255,255,255,0.08); color: #94a3b8; border: 1px solid rgba(255,255,255,0.12); }
+    .tc-btn-secondary:hover { background: rgba(255,255,255,0.12); color: #f1f5f9; }
+    .tc-btn-icon { background: none; border: none; color: #64748b; cursor: pointer; padding: 0.25rem; border-radius: 4px; display: flex; align-items: center; }
+    .tc-btn-icon:hover { color: #f87171; background: rgba(239,68,68,0.1); }
+    .tc-btn-sm { padding: 0.2rem 0.6rem; font-size: 0.75rem; border-radius: 4px; border: none; cursor: pointer; font-weight: 600; }
+    .tc-btn-play { background: rgba(16,185,129,0.15); color: #10b981; }
+    .tc-btn-play:hover { background: rgba(16,185,129,0.25); }
 
-    .magnet-input::placeholder {
-        color: #475569;
-    }
+    .tc-chip { background: rgba(16,185,129,0.08); border: 1px solid rgba(16,185,129,0.2); color: #10b981; border-radius: 12px; padding: 0.15rem 0.6rem; font-size: 0.75rem; cursor: pointer; transition: all 0.15s; }
+    .tc-chip:hover { background: rgba(16,185,129,0.18); border-color: rgba(16,185,129,0.4); }
 
-    .quick-add {
-        display: flex;
-        gap: 0.5rem;
-        align-items: center;
-        flex-wrap: wrap;
-    }
+    .tc-speed-display { display: flex; gap: 1rem; font-size: 0.8rem; font-weight: 600; }
+    .tc-speed-down::before { content: "\\25BC "; color: #10b981; }
+    .tc-speed-up::before { content: "\\25B2 "; color: #3b82f6; }
+    .tc-speed-down { color: #10b981; }
+    .tc-speed-up { color: #3b82f6; }
+    .tc-global-stats { display: flex; gap: 1rem; font-size: 0.7rem; color: #64748b; }
+    .tc-peerid { font-family: 'Consolas', monospace; color: #475569; }
 
-    .quick-label {
-        color: #64748b;
-        font-size: 0.85rem;
-    }
+    /* ── Main Layout ── */
+    .tc-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    .tc-list-panel { flex: 1; overflow-y: auto; min-height: 150px; }
+    .tc-detail-panel { border-top: 1px solid rgba(255,255,255,0.08); max-height: 45%; overflow: hidden; display: flex; flex-direction: column; }
 
-    .btn-tag {
-        background: rgba(16, 185, 129, 0.1);
-        border: 1px solid rgba(16, 185, 129, 0.25);
-        color: #10b981;
-        border-radius: 6px;
-        padding: 0.25rem 0.75rem;
-        font-size: 0.8rem;
-        cursor: pointer;
-        transition: all 0.15s;
-    }
+    /* ── Empty State ── */
+    .tc-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 4rem; color: #475569; }
+    .tc-empty-icon { margin-bottom: 1rem; opacity: 0.5; }
+    .tc-empty p { margin: 0; font-size: 1rem; }
+    .tc-empty-sub { font-size: 0.85rem; margin-top: 0.25rem !important; color: #334155; }
 
-    .btn-tag:hover {
-        background: rgba(16, 185, 129, 0.2);
-        border-color: rgba(16, 185, 129, 0.5);
-    }
+    /* ── Torrent Table ── */
+    .tc-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    .tc-table thead { position: sticky; top: 0; z-index: 1; }
+    .tc-table th { background: #1a2332; color: #64748b; padding: 0.5rem 0.75rem; text-align: left; font-weight: 600; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid rgba(255,255,255,0.06); }
+    .tc-table td { padding: 0.5rem 0.75rem; border-bottom: 1px solid rgba(255,255,255,0.03); color: #94a3b8; }
+    .tc-table tr { cursor: pointer; transition: background 0.1s; }
+    .tc-table tr:hover { background: rgba(255,255,255,0.03); }
+    .tc-table tr.selected { background: rgba(16,185,129,0.08); }
+    .tc-table tr.selected td { color: #e2e8f0; }
 
-    .stats-bar {
-        display: flex;
-        gap: 2rem;
-        padding: 0.75rem 1rem;
-        background: rgba(255, 255, 255, 0.03);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 8px;
-        margin-bottom: 1.5rem;
-        color: #94a3b8;
-        font-size: 0.85rem;
-    }
+    .col-name { min-width: 200px; }
+    .col-size { width: 80px; text-align: right; }
+    .col-progress { width: 140px; }
+    .col-speed { width: 70px; text-align: right; }
+    .col-peers { width: 50px; text-align: center; }
+    .col-status { width: 90px; }
+    .col-actions { width: 36px; text-align: center; }
 
-    .stats-bar strong {
-        color: #e2e8f0;
-    }
+    .tc-torrent-name { color: #f1f5f9; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; max-width: 300px; }
+    .tc-speed-val { font-family: 'Consolas', monospace; font-size: 0.8rem; }
 
-    .stats-bar code {
-        color: #10b981;
-        font-size: 0.8rem;
-    }
+    /* Progress cell */
+    .tc-progress-cell { display: flex; align-items: center; gap: 0.5rem; }
+    .tc-progress-bar-mini { flex: 1; height: 6px; background: rgba(255,255,255,0.06); border-radius: 3px; overflow: hidden; }
+    .tc-progress-fill { height: 100%; background: linear-gradient(90deg, #10b981, #3b82f6); border-radius: 3px; transition: width 0.5s; }
+    .tc-progress-text { font-size: 0.75rem; font-family: 'Consolas', monospace; min-width: 38px; text-align: right; }
 
-    .empty-state {
-        text-align: center;
-        padding: 3rem;
-        color: #475569;
-        border: 1px dashed rgba(255, 255, 255, 0.1);
-        border-radius: 12px;
-    }
+    /* Status badges */
+    .tc-status { font-size: 0.7rem; font-weight: 600; padding: 0.15rem 0.5rem; border-radius: 4px; }
+    .tc-status-seeding { background: rgba(16,185,129,0.15); color: #10b981; }
+    .tc-status-downloading { background: rgba(59,130,246,0.15); color: #60a5fa; }
+    .tc-status-waiting { background: rgba(255,255,255,0.06); color: #64748b; }
+    .tc-status-meta { background: rgba(139,92,246,0.15); color: #a78bfa; }
 
-    .torrent-list {
-        display: flex;
-        flex-direction: column;
-        gap: 1rem;
-    }
+    /* ── Detail Panel ── */
+    .tc-tabs { display: flex; gap: 0; border-bottom: 1px solid rgba(255,255,255,0.06); background: #111827; }
+    .tc-tab { padding: 0.5rem 1rem; background: none; border: none; color: #64748b; font-size: 0.8rem; font-weight: 500; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.15s; }
+    .tc-tab:hover { color: #94a3b8; }
+    .tc-tab.active { color: #10b981; border-bottom-color: #10b981; }
+    .tc-tab-content { flex: 1; overflow-y: auto; padding: 0.75rem; font-size: 0.85rem; }
 
-    .torrent-card {
-        background: rgba(255, 255, 255, 0.04);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 12px;
-        overflow: hidden;
-        transition: border-color 0.2s;
-    }
+    .tc-detail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 0.25rem 2rem; }
+    .tc-detail-item { display: flex; justify-content: space-between; padding: 0.25rem 0; color: #94a3b8; }
+    .tc-label { color: #64748b; font-weight: 500; }
+    .tc-mono { font-family: 'Consolas', monospace; font-size: 0.8rem; word-break: break-all; }
+    .tc-muted { color: #475569; text-align: center; padding: 1rem; }
+    .tc-muted-sm { color: #334155; font-size: 0.8rem; text-align: center; }
 
-    .torrent-card:hover, .torrent-card.expanded {
-        border-color: rgba(16, 185, 129, 0.3);
-    }
+    /* Piece map */
+    .tc-piece-map-label { color: #64748b; font-size: 0.75rem; margin-top: 0.75rem; margin-bottom: 0.25rem; }
+    .tc-piece-map { display: flex; flex-wrap: wrap; gap: 1px; }
+    .tc-piece { width: 6px; height: 6px; background: #1e293b; border-radius: 1px; }
+    .tc-piece-done { background: #10b981; }
 
-    .torrent-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 1rem 1.25rem;
-        cursor: pointer;
-        gap: 1rem;
-    }
+    /* File table */
+    .tc-file-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    .tc-file-table th { color: #64748b; padding: 0.4rem 0.5rem; text-align: left; font-size: 0.7rem; text-transform: uppercase; border-bottom: 1px solid rgba(255,255,255,0.06); }
+    .tc-file-table td { padding: 0.4rem 0.5rem; color: #94a3b8; border-bottom: 1px solid rgba(255,255,255,0.03); }
+    .tc-file-name { word-break: break-all; }
+    .col-fsize { width: 80px; text-align: right; }
+    .col-ftype { width: 60px; text-align: center; }
+    .col-faction { width: 50px; text-align: center; }
+    .tc-ext-badge { background: rgba(255,255,255,0.06); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.7rem; font-family: 'Consolas', monospace; }
 
-    .torrent-name {
-        font-weight: 600;
-        color: #f1f5f9;
-        font-size: 1rem;
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
+    /* Tracker table */
+    .tc-tracker-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    .tc-tracker-table th { color: #64748b; padding: 0.4rem 0.5rem; text-align: left; font-size: 0.7rem; text-transform: uppercase; border-bottom: 1px solid rgba(255,255,255,0.06); }
+    .tc-tracker-table td { padding: 0.4rem 0.5rem; color: #94a3b8; border-bottom: 1px solid rgba(255,255,255,0.03); }
 
-    .torrent-meta {
-        display: flex;
-        gap: 0.5rem;
-        flex-shrink: 0;
-        flex-wrap: wrap;
-    }
+    /* Log */
+    .tc-log { font-family: 'Consolas', monospace; font-size: 0.75rem; display: flex; flex-direction: column-reverse; max-height: 200px; overflow-y: auto; }
+    .tc-log-line { color: #475569; padding: 0.1rem 0; }
 
-    .tag {
-        font-size: 0.7rem;
-        padding: 0.15rem 0.5rem;
-        border-radius: 4px;
-        white-space: nowrap;
-    }
+    /* ── Modal ── */
+    .tc-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.75); display: flex; align-items: center; justify-content: center; z-index: 1000; backdrop-filter: blur(4px); }
+    .tc-modal { background: #0f172a; border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; max-width: 900px; width: 90vw; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+    .tc-modal-header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 1.25rem; border-bottom: 1px solid rgba(255,255,255,0.08); }
+    .tc-modal-title { font-weight: 600; color: #f1f5f9; font-size: 1rem; }
+    .tc-modal-close { color: #64748b; }
+    .tc-modal-close:hover { color: #f1f5f9; background: rgba(255,255,255,0.08); }
+    .tc-modal-body { padding: 1.25rem; overflow-y: auto; flex: 1; }
 
-    .tag-size {
-        background: rgba(59, 130, 246, 0.15);
-        color: #60a5fa;
-    }
+    /* Media viewer */
+    .tc-media-video { width: 100%; max-height: 60vh; border-radius: 8px; background: black; }
+    .tc-media-audio { width: 100%; }
+    .tc-media-image { width: 100%; max-height: 70vh; object-fit: contain; border-radius: 8px; }
+    .tc-media-loading { text-align: center; padding: 3rem; color: #64748b; font-style: italic; }
 
-    .tag-pieces {
-        background: rgba(139, 92, 246, 0.15);
-        color: #a78bfa;
-    }
+    /* Settings */
+    .tc-settings-modal { max-width: 500px; }
+    .tc-settings-group { margin-bottom: 1.5rem; }
+    .tc-settings-group h4 { color: #f1f5f9; font-size: 0.9rem; margin-bottom: 0.75rem; padding-bottom: 0.5rem; border-bottom: 1px solid rgba(255,255,255,0.06); }
+    .tc-setting-row { display: flex; justify-content: space-between; align-items: center; padding: 0.35rem 0; color: #94a3b8; font-size: 0.85rem; }
+    .tc-setting-row label { color: #64748b; }
+    .tc-setting-info { color: #475569; font-size: 0.8rem; margin-bottom: 0.5rem; }
+    .tc-tracker-item { font-family: 'Consolas', monospace; font-size: 0.75rem; color: #64748b; padding: 0.2rem 0; }
 
-    .tag-peers {
-        background: rgba(16, 185, 129, 0.15);
-        color: #34d399;
-    }
-
-    .tag-hash {
-        background: rgba(255, 255, 255, 0.08);
-        color: #94a3b8;
-        font-family: 'JetBrains Mono', 'Consolas', monospace;
-    }
-
-    .progress-bar-container {
-        height: 4px;
-        background: rgba(255, 255, 255, 0.05);
-    }
-
-    .progress-bar {
-        height: 100%;
-        background: linear-gradient(90deg, #10b981, #3b82f6);
-        transition: width 0.5s ease;
-        min-width: 0;
-    }
-
-    .progress-text {
-        padding: 0.25rem 1.25rem 0.5rem;
-        font-size: 0.8rem;
-        color: #64748b;
-    }
-
-    .done-badge {
-        background: rgba(16, 185, 129, 0.2);
-        color: #10b981;
-        padding: 0.1rem 0.5rem;
-        border-radius: 4px;
-        font-size: 0.75rem;
-        margin-left: 0.5rem;
-    }
-
-    .torrent-details {
-        padding: 0 1.25rem 1.25rem;
-        border-top: 1px solid rgba(255, 255, 255, 0.06);
-    }
-
-    .file-table {
-        width: 100%;
-        border-collapse: collapse;
-        margin: 0.75rem 0;
-        font-size: 0.85rem;
-    }
-
-    .file-table th {
-        text-align: left;
-        color: #64748b;
-        font-weight: 600;
-        padding: 0.4rem 0.5rem;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-    }
-
-    .file-table td {
-        padding: 0.4rem 0.5rem;
-        color: #cbd5e1;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.03);
-    }
-
-    .file-name {
-        word-break: break-all;
-    }
-
-    .col-size, .col-progress {
-        width: 80px;
-        text-align: right;
-    }
-
-    .detail-row {
-        display: flex;
-        gap: 2rem;
-        font-size: 0.8rem;
-        color: #64748b;
-        padding: 0.25rem 0;
-        flex-wrap: wrap;
-    }
-
-    .detail-row code {
-        color: #94a3b8;
-        font-size: 0.75rem;
-        word-break: break-all;
-    }
-
-    .detail-actions {
-        margin-top: 0.75rem;
-    }
-
-    .btn-danger {
-        background: rgba(239, 68, 68, 0.15);
-        border: 1px solid rgba(239, 68, 68, 0.3);
-        color: #f87171;
-        cursor: pointer;
-    }
-
-    .btn-danger:hover {
-        background: rgba(239, 68, 68, 0.25);
-    }
-
-    .log-section {
-        margin-top: 2rem;
-    }
-
-    .log-section h4 {
-        color: #94a3b8;
-        font-size: 0.9rem;
-        margin-bottom: 0.5rem;
-    }
-
-    .log-container {
-        background: #0f172a;
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 8px;
-        padding: 0.75rem 1rem;
-        max-height: 200px;
-        overflow-y: auto;
-        font-family: 'JetBrains Mono', 'Consolas', monospace;
-        font-size: 0.75rem;
-        display: flex;
-        flex-direction: column-reverse;
-    }
-
-    .log-line {
-        color: #64748b;
-        padding: 0.1rem 0;
-        white-space: pre-wrap;
-        word-break: break-all;
-    }
-
-    .btn {
-        display: inline-flex;
-        align-items: center;
-        gap: 0.5rem;
-        padding: 0.5rem 1rem;
-        border-radius: 8px;
-        font-weight: 600;
-        text-decoration: none;
-        transition: all 0.15s;
-        border: none;
-        cursor: pointer;
-        font-size: 0.9rem;
-    }
-
-    .btn-primary {
-        background: linear-gradient(135deg, #10b981 0%, #3b82f6 100%);
-        color: white;
-    }
-
-    .btn-primary:hover {
-        box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
-    }
-
-    .btn-primary:disabled {
-        opacity: 0.4;
-        cursor: not-allowed;
-        box-shadow: none;
-    }
-
-    .btn-sm {
-        padding: 0.3rem 0.6rem;
-        font-size: 0.8rem;
-    }
-
-    .btn-secondary {
-        background: rgba(255, 255, 255, 0.1);
-        color: #e2e8f0;
-        border: 1px solid rgba(255, 255, 255, 0.2);
-    }
-
-    @@media (max-width: 640px) {
-        .torrent-header {
-            flex-direction: column;
-            align-items: flex-start;
-        }
-        .stats-bar {
-            flex-direction: column;
-            gap: 0.5rem;
-        }
+    @@media (max-width: 768px) {
+        .tc-toolbar { flex-direction: column; }
+        .tc-toolbar-right { align-items: flex-start; }
+        .tc-detail-grid { grid-template-columns: 1fr; }
+        .col-speed { display: none; }
     }
 </style>

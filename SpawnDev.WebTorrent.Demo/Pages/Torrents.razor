@@ -206,7 +206,13 @@
                                 break;
 
                             case "peers":
-                                <div class="qb-muted" style="padding:1rem">@(sel.Swarm.PeerCount + (sel.PeerCoordinator?.PeerCount ?? 0)) connected peer(s)</div>
+                                <div style="padding:0.5rem">
+                                    <div style="margin-bottom:0.5rem;color:#64748b;font-size:12px">@(sel.Swarm.PeerCount + (sel.PeerCoordinator?.PeerCount ?? 0)) connected peer(s) — Web seeds: @sel.Swarm.WebSeedCount</div>
+                                    @if (sel.Swarm.PeerCount + (sel.PeerCoordinator?.PeerCount ?? 0) == 0)
+                                    {
+                                        <div class="qb-muted">Peers connect via WebSocket tracker signaling and WebRTC data channels.<br/>Desktop peers use SIPSorcery, browser peers use SpawnDev.BlazorJS.</div>
+                                    }
+                                </div>
                                 break;
 
                             case "content":

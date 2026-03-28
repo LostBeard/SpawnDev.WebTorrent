@@ -13,6 +13,7 @@ public class WebSeedConnection
     public int FailureCount { get; private set; }
     public int MaxConcurrent { get; set; } = 4;
     private int _activeRequests;
+    private DateTime _backoffUntil = DateTime.MinValue;
 
     /// <summary>Diagnostic log event.</summary>
     public event Action<string>? OnLog;
@@ -26,6 +27,14 @@ public class WebSeedConnection
 
     public async Task<byte[]?> DownloadPieceAsync(int pieceIndex, CancellationToken ct = default)
     {
+        // Auto-recover after backoff period
+        if (!IsAvailable && DateTime.UtcNow > _backoffUntil)
+        {
+            IsAvailable = true;
+            FailureCount = 0;
+            OnLog?.Invoke("Web seed recovered from backoff");
+        }
+
         if (!IsAvailable || _activeRequests >= MaxConcurrent) return null;
 
         try
@@ -86,7 +95,11 @@ public class WebSeedConnection
                 {
                     FailureCount++;
                     OnLog?.Invoke($"HTTP error {(int)response.StatusCode} (failure #{FailureCount})");
-                    if (FailureCount >= 10) IsAvailable = false;
+                    if (FailureCount >= 10)
+                    {
+                        IsAvailable = false;
+                        _backoffUntil = DateTime.UtcNow.AddSeconds(30);
+                    }
                     return null;
                 }
 
@@ -126,7 +139,12 @@ public class WebSeedConnection
         {
             FailureCount++;
             OnLog?.Invoke($"Exception: {ex.GetType().Name}: {ex.Message} (failure #{FailureCount})");
-            if (FailureCount >= 10) IsAvailable = false;
+            if (FailureCount >= 10)
+            {
+                IsAvailable = false;
+                _backoffUntil = DateTime.UtcNow.AddSeconds(30);
+                OnLog?.Invoke("Web seed backing off for 30 seconds");
+            }
             return null;
         }
         finally

@@ -58,6 +58,9 @@ public class WebSocketTrackerClient : IDiscovery
             OnConnected?.Invoke();
             _readLoop = ReadLoopAsync(_readCts.Token);
             await AnnounceAsync(infoHash, port, 0, 0, 0, ct);
+
+            // Start periodic re-announce loop
+            _ = ReannounceLoopAsync(_readCts.Token);
         }
         catch (Exception ex)
         {
@@ -120,6 +123,23 @@ public class WebSocketTrackerClient : IDiscovery
         };
 
         await SendJsonAsync(msg, ct);
+    }
+
+    private async Task ReannounceLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                await Task.Delay(_announceIntervalMs, ct);
+                if (_currentInfoHash != null && _ws?.State == WebSocketState.Open)
+                {
+                    await AnnounceAsync(_currentInfoHash, 0, 0, 0, 0, ct);
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch { }
     }
 
     public async Task StopAsync()

@@ -23,7 +23,7 @@ SpawnDev.WebTorrent uses the [Azureus-style peer ID](http://bittorrent.org/beps/
 | Version | Peer ID | Release |
 |---------|---------|---------|
 | 1.0.0 | `-SD0100-` | 2026-03-27 — Initial NuGet release |
-| 1.1.0 | `-SD0110-` | In progress — Real WebRTC P2P |
+| 1.1.0 | `-SD0110-` | 2026-03-28 — Real WebRTC P2P, 12 BEPs, 150 tests |
 
 ## Version Encoding
 

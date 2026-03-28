@@ -32,7 +32,6 @@ public abstract partial class WebTorrentTestBase
         "wss://hub.spawndev.com:44365/announce",
         "wss://tracker.openwebtorrent.com",
         "wss://tracker.files.fm:7073/announce",
-        "wss://tracker.ghostchu-services.top:443/announce",
     };
 
     // ═══════════════════════════════════════════════════════════

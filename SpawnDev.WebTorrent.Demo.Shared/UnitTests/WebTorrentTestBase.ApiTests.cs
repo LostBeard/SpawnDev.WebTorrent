@@ -823,6 +823,111 @@ public abstract partial class WebTorrentTestBase
     //  Events
     // ═══════════════════════════════════════════════════════════
 
+    // ═══════════════════════════════════════════════════════════
+    //  Remove During Download
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Api_RemoveDuringDownload()
+    {
+        await using var client = new WebTorrentClient();
+        var data = new byte[65536];
+        Random.Shared.NextBytes(data);
+        var (_, metadata) = TorrentCreator.CreateFromBytes("remove-active.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        var swarm = await client.AddAsync(metadata);
+        swarm.StartDownload();
+
+        // Remove immediately while coordinator is running
+        await client.RemoveAsync(swarm);
+
+        if (client.Torrents.Count != 0)
+            throw new Exception("Torrent should be removed");
+
+        // No crash — coordinator and swarm cleaned up properly
+        Console.WriteLine("[API] Remove during download: no crash");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  Torrent.destroy with destroyStore
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Api_DestroyTorrent()
+    {
+        await using var client = new WebTorrentClient();
+        var data = new byte[16384];
+        var swarm = await client.SeedAsync(data, "destroy.bin",
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        if (client.Torrents.Count != 1) throw new Exception("Should have 1 torrent");
+
+        await client.RemoveAsync(swarm, destroyStore: true);
+        if (client.Torrents.Count != 0) throw new Exception("Should have 0 after destroy");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  Wire Protocol — Keep-Alive
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Api_Wire_KeepAlive()
+    {
+        var captured = new List<byte>();
+        var mock = new MockConnection(captured);
+        var wire = new Wire.WireProtocol(mock);
+
+        await wire.SendKeepAliveAsync();
+
+        // Keep-alive is 4 zero bytes
+        if (captured.Count != 4) throw new Exception($"Expected 4 bytes, got {captured.Count}");
+        if (captured.Any(b => b != 0)) throw new Exception("Keep-alive bytes should all be zero");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  Sequential vs Rarest Strategy
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Api_PieceManager_SequentialStrategy()
+    {
+        var data = new byte[65536]; // 4 pieces
+        var (_, metadata) = TorrentCreator.CreateFromBytes("seq.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        await using var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+
+        // Peer has all pieces
+        var peerBf = new bool[] { true, true, true, true };
+
+        // Sequential should return piece 0 first
+        var piece = pm.SelectPiece(peerBf, "sequential");
+        if (piece != 0) throw new Exception($"Sequential should select piece 0, got {piece}");
+    }
+
+    [TestMethod]
+    public async Task Api_PieceManager_RarestStrategy()
+    {
+        var data = new byte[65536]; // 4 pieces
+        var (_, metadata) = TorrentCreator.CreateFromBytes("rare.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        await using var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+
+        var peerBf = new bool[] { true, true, true, true };
+        var piece = pm.SelectPiece(peerBf, "rarest");
+
+        // Rarest picks randomly from candidates — should be 0-3
+        if (piece < 0 || piece > 3) throw new Exception($"Rarest should select 0-3, got {piece}");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  Events
+    // ═══════════════════════════════════════════════════════════
+
     [TestMethod]
     public async Task Api_Events_OnPieceVerified()
     {

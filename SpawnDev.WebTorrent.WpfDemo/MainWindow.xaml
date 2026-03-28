@@ -4,7 +4,8 @@
         Title="SpawnDev.WebTorrent — Desktop Client"
         Width="1100" Height="750"
         Background="{StaticResource BgPrimary}"
-        WindowStartupLocation="CenterScreen">
+        WindowStartupLocation="CenterScreen"
+        AllowDrop="True" Drop="Window_Drop" DragOver="Window_DragOver">
 
     <Window.Resources>
         <!-- Common button style -->
@@ -181,9 +182,10 @@
                     </StackPanel>
                 </ScrollViewer>
 
-                <!-- Files tab -->
+                <!-- Files tab (double-click to play media) -->
                 <ListView x:Name="PanelFiles" Visibility="Collapsed" Background="Transparent" BorderThickness="0"
-                          Foreground="{StaticResource TextSecondary}" FontSize="12">
+                          Foreground="{StaticResource TextSecondary}" FontSize="12"
+                          MouseDoubleClick="PanelFiles_DoubleClick">
                     <ListView.View>
                         <GridView>
                             <GridViewColumn Header="File" Width="400" DisplayMemberBinding="{Binding Path}"/>

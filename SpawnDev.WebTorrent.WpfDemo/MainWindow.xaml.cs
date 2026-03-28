@@ -32,10 +32,21 @@ public partial class MainWindow : Window
         ["TearsOfSteel"] = "magnet:?xt=urn:btih:209c8226b299b308beaf2b9cd3fb49212dbd13ec&dn=Tears+of+Steel&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&tr=wss%3A%2F%2Ftracker.files.fm%3A7073%2Fannounce&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Ftears-of-steel.torrent",
     };
 
+    private TorrentHttpServer? _httpServer;
+
     public MainWindow()
     {
         InitializeComponent();
         _client = new WebTorrentClient();
+
+        // Start HTTP server for media streaming
+        try
+        {
+            _httpServer = _client.CreateServer(18770);
+            Log($"HTTP server started: {_httpServer.BaseUrl}");
+        }
+        catch (Exception ex) { Log($"HTTP server failed: {ex.Message}"); }
+
         TorrentListView.ItemsSource = _torrents;
         StatusPeerId.Text = System.Text.Encoding.ASCII.GetString(_client.PeerId, 0, 8);
 
@@ -316,6 +327,87 @@ public partial class MainWindow : Window
     {
         var line = $"[{DateTime.Now:HH:mm:ss}] {msg}\n";
         LogText.Text += line;
+    }
+
+    // ── Drag & Drop ──
+
+    private void Window_DragOver(object sender, DragEventArgs e)
+    {
+        if (e.Data.GetDataPresent(DataFormats.FileDrop))
+        {
+            var files = (string[])e.Data.GetData(DataFormats.FileDrop)!;
+            e.Effects = files.Any(f => f.EndsWith(".torrent", StringComparison.OrdinalIgnoreCase))
+                ? DragDropEffects.Copy : DragDropEffects.None;
+        }
+        e.Handled = true;
+    }
+
+    private async void Window_Drop(object sender, DragEventArgs e)
+    {
+        if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
+        var files = (string[])e.Data.GetData(DataFormats.FileDrop)!;
+
+        foreach (var file in files.Where(f => f.EndsWith(".torrent", StringComparison.OrdinalIgnoreCase)))
+        {
+            try
+            {
+                var torrentBytes = await System.IO.File.ReadAllBytesAsync(file);
+                var metadata = Torrent.TorrentParser.Parse(torrentBytes);
+                var hash = Convert.ToHexString(metadata.InfoHash).ToLowerInvariant();
+
+                if (_torrents.Any(t => t.HashFull == hash))
+                {
+                    Log($"Already added: {metadata.Name}");
+                    continue;
+                }
+
+                var swarm = await _client.AddAsync(metadata);
+                var vm = new TorrentViewModel
+                {
+                    Swarm = swarm,
+                    Name = metadata.Name,
+                    HashFull = hash,
+                    HashShort = hash[..8] + "...",
+                    SizeText = FormatBytes(metadata.TotalLength),
+                };
+                foreach (var f in metadata.Files)
+                    vm.Files.Add(new FileViewModel { Path = f.Path, SizeText = FormatBytes(f.Length), Ext = System.IO.Path.GetExtension(f.Path) });
+
+                _torrents.Add(vm);
+                TorrentListView.SelectedItem = vm;
+
+                // Add web seeds and start
+                foreach (var ws in metadata.UrlList) swarm.AddWebSeed(ws.TrimEnd('/'));
+                swarm.StartDownload();
+
+                Log($"Added via drag-drop: {metadata.Name}");
+            }
+            catch (Exception ex) { Log($"Drop error: {ex.Message}"); }
+        }
+    }
+
+    private void PanelFiles_DoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (_selectedVm != null && PanelFiles.SelectedItem is FileViewModel file)
+            PlayFile(_selectedVm, file);
+    }
+
+    public void PlayFile(TorrentViewModel vm, FileViewModel file)
+    {
+        if (_httpServer == null) { Log("HTTP server not running"); return; }
+        var ext = file.Ext.ToLowerInvariant();
+        if (ext is not ".mp4" and not ".webm" and not ".avi" and not ".mkv" and not ".mp3" and not ".wav" and not ".ogg")
+        {
+            Log($"Unsupported media format: {ext}");
+            return;
+        }
+
+        var hash = vm.HashFull;
+        var url = $"{_httpServer.BaseUrl}{hash}/{Uri.EscapeDataString(file.Path)}";
+        Log($"Playing: {url}");
+
+        var player = new MediaPlayerWindow(url, file.Path) { Owner = this };
+        player.Show();
     }
 
     private static string FormatBytes(long b) => b < 1024 ? $"{b} B" : b < 1048576 ? $"{b / 1024.0:F1} KB" : b < 1073741824 ? $"{b / 1048576.0:F1} MB" : $"{b / 1073741824.0:F2} GB";

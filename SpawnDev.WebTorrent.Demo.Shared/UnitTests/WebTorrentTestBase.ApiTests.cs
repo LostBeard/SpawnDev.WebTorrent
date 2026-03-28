@@ -33,6 +33,31 @@ public abstract partial class WebTorrentTestBase
         if (swarm.Progress < 0.99) throw new Exception($"Progress should be ~1.0, got {swarm.Progress}");
     }
 
+    [TestMethod(Timeout = 30000)]
+    public async Task Api_Client_AddFromUrl()
+    {
+        await using var client = new WebTorrentClient();
+
+        TorrentSwarm swarm;
+        try
+        {
+            swarm = await client.AddAsync("https://webtorrent.io/torrents/big-buck-bunny.torrent");
+        }
+        catch (Exception ex)
+        {
+            throw new UnsupportedTestException($"Could not fetch .torrent: {ex.Message}");
+        }
+
+        if (!swarm.HasMetadata) throw new Exception("Should have metadata from .torrent URL");
+        if (swarm.Metadata!.Name == null || swarm.Metadata.Name.Length == 0) throw new Exception("Name empty");
+
+        var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
+        if (hash != "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c")
+            throw new Exception($"Hash mismatch: {hash}");
+
+        Console.WriteLine($"[API] Added from URL: {swarm.Metadata.Name}, {swarm.Metadata.TotalLength:N0} bytes");
+    }
+
     [TestMethod]
     public async Task Api_Client_Get_ByHex()
     {

@@ -107,10 +107,17 @@ public class WebTorrentClient : IAsyncDisposable
     }
 
     /// <summary>
-    /// Add a torrent by magnet URI, info hash, or parsed metadata.
+    /// Add a torrent by magnet URI, info hash, HTTP URL to .torrent file, or parsed metadata.
     /// </summary>
     public async Task<TorrentSwarm> AddAsync(string magnetOrInfoHash, AddTorrentOptions? options = null)
     {
+        // HTTP/HTTPS URL to .torrent file
+        if (magnetOrInfoHash.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            magnetOrInfoHash.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            return await AddFromUrlAsync(magnetOrInfoHash, options);
+        }
+
         options ??= new AddTorrentOptions();
 
         var swarm = new TorrentSwarm(this, options);
@@ -219,6 +226,17 @@ public class WebTorrentClient : IAsyncDisposable
         _torrents.Remove(torrent);
         OnTorrentRemove?.Invoke(torrent);
         await torrent.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Add a torrent from a URL pointing to a .torrent file.
+    /// Downloads the .torrent, parses it, and starts the torrent.
+    /// </summary>
+    public async Task<TorrentSwarm> AddFromUrlAsync(string url, AddTorrentOptions? options = null)
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        var torrentBytes = await http.GetByteArrayAsync(url);
+        return await AddFromTorrentFileAsync(torrentBytes, options);
     }
 
     /// <summary>

@@ -49,7 +49,7 @@ SpawnDev.WebTorrent/
 │
 ├── SpawnDev.WebTorrent.ServerApp/    # Production deployment (hub.spawndev.com)
 ├── SpawnDev.WebTorrent.Demo/         # Blazor WASM — qBittorrent v5 UI
-├── SpawnDev.WebTorrent.Demo.Shared/  # 161 test methods (188 Playwright tests)
+├── SpawnDev.WebTorrent.Demo.Shared/  # 211 test methods (244 Playwright tests)
 ├── SpawnDev.WebTorrent.WpfDemo/      # WPF Desktop — qBittorrent v5 UI
 └── PlaywrightMultiTest/              # Browser test runner
 ```

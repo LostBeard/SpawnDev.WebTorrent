@@ -304,10 +304,13 @@
     <div class="qb-statusbar">
         <span>@_torrents.Count torrents</span>
         <span>@_torrents.Sum(t => t.Swarm.PeerCount) peers</span>
-        <span>DL: @FormatSpeed(_globalDownSpeed)</span>
-        <span>UL: @FormatSpeed(_globalUpSpeed)</span>
+        <span class="qb-speed-down">&#x25BC; @FormatSpeed(_globalDownSpeed)</span>
+        <span class="qb-speed-up">&#x25B2; @FormatSpeed(_globalUpSpeed)</span>
+        <span>@FormatBytes(_torrents.Sum(t => t.Swarm.Downloaded)) downloaded</span>
+        <span>@FormatBytes(_torrents.Sum(t => t.Swarm.Uploaded)) uploaded</span>
         <span class="qb-mono">@PeerIdString</span>
         <span>v1.1.0</span>
+        <span>@(_asyncFs != null ? "OPFS" : "MEM")</span>
     </div>
 
     @* ═══ Context Menu ═══ *@

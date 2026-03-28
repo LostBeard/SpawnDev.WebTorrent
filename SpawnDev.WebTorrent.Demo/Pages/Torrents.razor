@@ -373,6 +373,7 @@
                 {
                     <div class="qb-ctx-item" @onclick="() => { ExportTorrent(ce); _contextMenuOpen = false; }">&#128190; Export .torrent</div>
                 }
+                <div class="qb-ctx-item" @onclick="() => { _detailTab = &quot;general&quot;; SelectTorrent(ce); _contextMenuOpen = false; }">&#9432; Properties</div>
                 <div class="qb-ctx-sep"></div>
                 <div class="qb-ctx-item qb-ctx-danger" @onclick="() => { RemoveTorrent(ce); _contextMenuOpen = false; }">&#10005; Remove</div>
             }

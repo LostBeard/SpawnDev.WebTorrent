@@ -14,7 +14,7 @@
 
 <PageTitle>SpawnDev.WebTorrent Client</PageTitle>
 
-<div class="qb">
+<div class="qb" tabindex="0" @onkeydown="OnKeyDown">
     @* ═══ Toolbar ═══ *@
     <div class="qb-toolbar">
         <div class="qb-toolbar-group">
@@ -629,6 +629,24 @@
         if (entry.WebRtcTransport != null) await entry.WebRtcTransport.DisposeAsync();
         if (_client != null) await _client.RemoveAsync(entry.Swarm);
         Log($"Removed: {entry.DisplayName}");
+    }
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (_selectedTorrent == null) return;
+        switch (e.Key)
+        {
+            case "Delete":
+                await RemoveTorrent(_selectedTorrent);
+                break;
+            case " ": // Space
+                if (_selectedTorrent.Swarm.Paused) _selectedTorrent.Swarm.Resume();
+                else _selectedTorrent.Swarm.Pause();
+                break;
+            case "c" when e.CtrlKey: // Ctrl+C
+                await CopyMagnet(_selectedTorrent);
+                break;
+        }
     }
 
     private void ShowContextMenu(TorrentEntry entry, MouseEventArgs e)

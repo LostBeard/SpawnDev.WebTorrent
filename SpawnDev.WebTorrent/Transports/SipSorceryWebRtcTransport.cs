@@ -12,7 +12,7 @@ namespace SpawnDev.WebTorrent.Transports;
 /// Uses SIPSorcery's RTCPeerConnection + RTCDataChannel for data exchange.
 /// Inspired by SpawnDev.RTLink's RPCWebRTCSIPConnection pattern.
 /// </summary>
-public class SipSorceryWebRtcTransport : ITransport
+public class SipSorceryWebRtcTransport : IWebRtcTransport
 {
     private readonly WebRtcTransportOptions _options;
     private readonly List<SipSorceryWebRtcConnection> _connections = new();

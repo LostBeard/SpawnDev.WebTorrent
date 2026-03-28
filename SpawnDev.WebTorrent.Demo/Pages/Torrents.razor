@@ -217,8 +217,8 @@
                             break;
 
                         case "peers":
-                            <p class="tc-muted">@_selectedTorrent.Swarm.PeerCount connected peer(s)</p>
-                            @if (_selectedTorrent.Swarm.PeerCount == 0)
+                            <p class="tc-muted">@(_selectedTorrent.Swarm.PeerCount + (_selectedTorrent.PeerCoordinator?.PeerCount ?? 0)) connected peer(s)</p>
+                            @if (_selectedTorrent.Swarm.PeerCount + (_selectedTorrent.PeerCoordinator?.PeerCount ?? 0) == 0)
                             {
                                 <p class="tc-muted-sm">Peers connect via WebSocket tracker signaling and WebRTC data channels.</p>
                             }
@@ -519,38 +519,46 @@
         }
         if (trackers.Count == 0) trackers.AddRange(_defaultTrackers);
 
-        // Connect to ALL trackers — not just the first one.
-        // Our tracker finds our own peers, public trackers find real seeders.
+        // Create WebRTC transport for browser P2P
+        var webRtc = new WebRtcTransport();
+        entry.WebRtcTransport = webRtc;
+
+        // Create PeerCoordinator — handles full WebRTC signaling:
+        // tracker discovers peers → create offer → relay via tracker →
+        // receive answer → ICE connects → data channel opens → wire protocol
+        var coordinator = new PeerCoordinator(_client!, entry.Swarm.InfoHash, webRtc);
+        entry.PeerCoordinator = coordinator;
+
+        coordinator.OnPeerConnected += (peer) =>
+        {
+            Log($"[{entry.Name ?? entry.InfoHashShort}] P2P connected: {peer.PeerId[..Math.Min(12, peer.PeerId.Length)]}");
+            // Add the peer's wire protocol to the swarm
+            _ = entry.Swarm.AddConnectedPeerAsync(peer.Wire, new Discovery.PeerInfo { Address = peer.PeerId, Source = "webrtc" });
+            InvokeAsync(StateHasChanged);
+        };
+        coordinator.OnPeerDisconnected += (peer) =>
+        {
+            Log($"[{entry.Name ?? entry.InfoHashShort}] P2P disconnected: {peer.PeerId[..Math.Min(12, peer.PeerId.Length)]}");
+            InvokeAsync(StateHasChanged);
+        };
+        coordinator.OnSwarmUpdate += (s, l) => InvokeAsync(StateHasChanged);
+
+        // Connect to ALL trackers via PeerCoordinator
         foreach (var url in trackers)
         {
-            _ = ConnectSingleTracker(entry, url);
+            _ = ConnectSingleTracker(entry, coordinator, url);
         }
     }
 
-    private async Task ConnectSingleTracker(TorrentEntry entry, string url)
+    private async Task ConnectSingleTracker(TorrentEntry entry, PeerCoordinator coordinator, string url)
     {
         var te = new TrackerEntry { Url = url, Status = "Connecting..." };
         entry.Trackers.Add(te);
         try
         {
-            var tracker = new WebSocketTrackerClient(url, _client!.PeerId);
-
-            tracker.OnAnnounceResponse += (s, l) =>
-            {
-                te.Status = $"{s}S / {l}L";
-                Log($"[{entry.Name ?? entry.InfoHashShort}] {new Uri(url).Host}: {s} seeders, {l} leechers");
-                InvokeAsync(StateHasChanged);
-            };
-            tracker.OnPeer += (peer) =>
-            {
-                Log($"[{entry.Name ?? entry.InfoHashShort}] Peer via {new Uri(url).Host}: {peer.Address[..Math.Min(16, peer.Address.Length)]}");
-                entry.Swarm.AddPeer(peer);
-            };
-            tracker.OnError += (err) => { te.Status = $"Error"; };
-
-            await tracker.StartAsync(entry.Swarm.InfoHash, 0);
+            await coordinator.AddTrackerAsync(url);
             te.Status = "Connected";
-            Log($"[{entry.Name ?? entry.InfoHashShort}] Tracker connected: {new Uri(url).Host}");
+            Log($"[{entry.Name ?? entry.InfoHashShort}] Tracker + signaling: {new Uri(url).Host}");
         }
         catch (Exception ex)
         {
@@ -564,6 +572,8 @@
     {
         if (_selectedTorrent == entry) _selectedTorrent = null;
         _torrents.Remove(entry);
+        if (entry.PeerCoordinator != null) await entry.PeerCoordinator.DisposeAsync();
+        if (entry.WebRtcTransport != null) await entry.WebRtcTransport.DisposeAsync();
         if (_client != null) await _client.RemoveAsync(entry.Swarm);
         Log($"Removed: {entry.Name ?? entry.InfoHashShort}");
     }
@@ -700,6 +710,8 @@
         public string? TrackerStatus { get; set; }
         public PieceManager? PieceManager => Swarm.PieceManager;
         public List<TrackerEntry> Trackers { get; } = new();
+        public PeerCoordinator? PeerCoordinator { get; set; }
+        public WebRtcTransport? WebRtcTransport { get; set; }
     }
 
     private class TrackerEntry

@@ -18,7 +18,7 @@ namespace SpawnDev.WebTorrent;
 public class PeerCoordinator : IAsyncDisposable
 {
     private readonly WebTorrentClient _client;
-    private readonly WebRtcTransport _webRtc;
+    private readonly IWebRtcTransport _webRtc;
     private readonly List<WebSocketTrackerClient> _trackers = new();
     private readonly Dictionary<string, ConnectedPeer> _peers = new();
     private readonly byte[] _infoHash;
@@ -30,7 +30,7 @@ public class PeerCoordinator : IAsyncDisposable
     public event Action<int, int>? OnSwarmUpdate; // seeders, leechers
 
     public PeerCoordinator(WebTorrentClient client, byte[] infoHash,
-        WebRtcTransport webRtc)
+        IWebRtcTransport webRtc)
     {
         _client = client;
         _infoHash = infoHash;

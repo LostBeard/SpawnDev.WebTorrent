@@ -17,7 +17,7 @@ namespace SpawnDev.WebTorrent.Transports;
 ///   6. Original peer calls HandleAnswerAsync, sets remote description
 ///   7. Data channel opens on both sides -> BitTorrent wire protocol begins
 /// </summary>
-public class WebRtcTransport : ITransport
+public class WebRtcTransport : IWebRtcTransport
 {
     private readonly WebRtcTransportOptions _options;
     private readonly List<WebRtcConnection> _connections = new();

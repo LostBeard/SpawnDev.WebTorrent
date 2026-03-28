@@ -12,6 +12,7 @@ using System.Windows.Threading;
 using SpawnDev.WebTorrent.Discovery;
 using SpawnDev.WebTorrent.Storage;
 using SpawnDev.WebTorrent.Torrent;
+using SpawnDev.WebTorrent.Transports;
 
 namespace SpawnDev.WebTorrent.WpfDemo;
 
@@ -181,39 +182,43 @@ public partial class MainWindow : Window
         }
         if (trackers.Count == 0) trackers.AddRange(new[] { "wss://hub.spawndev.com:44365/announce", "wss://tracker.openwebtorrent.com" });
 
-        // Connect to ALL trackers — not just the first one
+        // Create SIPSorcery WebRTC transport for desktop P2P
+        IWebRtcTransport webRtc = new SipSorceryWebRtcTransport();
+
+        // PeerCoordinator handles WebRTC signaling via trackers
+        var coordinator = new PeerCoordinator(_client, vm.Swarm.InfoHash, webRtc);
+        vm.Coordinator = coordinator;
+
+        coordinator.OnPeerConnected += (peer) => Dispatcher.Invoke(() =>
+        {
+            Log($"[{vm.Name}] P2P connected: {peer.PeerId[..Math.Min(12, peer.PeerId.Length)]}");
+            _ = vm.Swarm.AddConnectedPeerAsync(peer.Wire, new PeerInfo { Address = peer.PeerId, Source = "webrtc" });
+        });
+        coordinator.OnPeerDisconnected += (peer) => Dispatcher.Invoke(() =>
+        {
+            Log($"[{vm.Name}] P2P disconnected: {peer.PeerId[..Math.Min(12, peer.PeerId.Length)]}");
+        });
+
         foreach (var url in trackers)
         {
-            _ = ConnectSingleTrackerAsync(vm, url);
+            _ = ConnectSingleTrackerAsync(vm, coordinator, url);
         }
     }
 
-    private async Task ConnectSingleTrackerAsync(TorrentViewModel vm, string url)
+    private async Task ConnectSingleTrackerAsync(TorrentViewModel vm, PeerCoordinator coordinator, string url)
     {
         var te = new TrackerViewModel { Url = url, Status = "Connecting..." };
         Dispatcher.Invoke(() => vm.TrackerEntries.Add(te));
         try
         {
-            var tracker = new WebSocketTrackerClient(url, _client.PeerId);
-            tracker.OnAnnounceResponse += (s, l) => Dispatcher.Invoke(() =>
-            {
-                te.Status = $"{s}S / {l}L";
-                Log($"[{vm.Name}] {new Uri(url).Host}: {s}S/{l}L");
-            });
-            tracker.OnPeer += (peer) => Dispatcher.Invoke(() =>
-            {
-                Log($"[{vm.Name}] Peer via {new Uri(url).Host}: {peer.Address[..Math.Min(16, peer.Address.Length)]}");
-                vm.Swarm.AddPeer(peer);
-            });
-            tracker.OnError += (err) => Dispatcher.Invoke(() => { te.Status = "Error"; });
-            await tracker.StartAsync(vm.Swarm.InfoHash, 0);
+            await coordinator.AddTrackerAsync(url);
             te.Status = "Connected";
-            Log($"[{vm.Name}] Tracker: {new Uri(url).Host}");
+            Dispatcher.Invoke(() => Log($"[{vm.Name}] Tracker + signaling: {new Uri(url).Host}"));
         }
         catch (Exception ex)
         {
             te.Status = "Failed";
-            Log($"[{vm.Name}] Tracker {new Uri(url).Host} failed: {ex.Message}");
+            Dispatcher.Invoke(() => Log($"[{vm.Name}] Tracker {new Uri(url).Host} failed: {ex.Message}"));
         }
     }
 
@@ -334,6 +339,7 @@ public class TorrentViewModel : INotifyPropertyChanged
     public string UpSpeedText { get; set; } = "";
     public ObservableCollection<FileViewModel> Files { get; } = new();
     public ObservableCollection<TrackerViewModel> TrackerEntries { get; } = new();
+    public PeerCoordinator? Coordinator { get; set; }
 
     public event PropertyChangedEventHandler? PropertyChanged;
     public void Notify()

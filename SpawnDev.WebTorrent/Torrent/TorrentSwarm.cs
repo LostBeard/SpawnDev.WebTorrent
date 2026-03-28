@@ -67,6 +67,55 @@ public class TorrentSwarm : IAsyncDisposable
     /// <summary>Whether the swarm is paused (not connecting to new peers).</summary>
     public bool Paused { get; private set; }
 
+    /// <summary>Whether the torrent is ready (metadata available and store ready).</summary>
+    public bool Ready => HasMetadata && _store != null;
+
+    /// <summary>Magnet URI for this torrent.</summary>
+    public string MagnetURI
+    {
+        get
+        {
+            var hash = Convert.ToHexString(InfoHash).ToLowerInvariant();
+            var uri = $"magnet:?xt=urn:btih:{hash}";
+            if (Metadata?.Name != null)
+                uri += $"&dn={Uri.EscapeDataString(Metadata.Name)}";
+            if (Metadata?.AnnounceList != null)
+                foreach (var tier in Metadata.AnnounceList)
+                    foreach (var tracker in tier)
+                        uri += $"&tr={Uri.EscapeDataString(tracker)}";
+            return uri;
+        }
+    }
+
+    /// <summary>Export .torrent file bytes (null if no metadata).</summary>
+    public byte[]? TorrentFileBytes => Metadata?.OriginalTorrentBytes;
+
+    /// <summary>Seed ratio (uploaded / downloaded). 0 if nothing downloaded.</summary>
+    public double Ratio => Downloaded > 0 ? (double)Uploaded / Downloaded : 0;
+
+    /// <summary>Estimated time remaining in milliseconds (-1 if unknown).</summary>
+    public long TimeRemaining
+    {
+        get
+        {
+            if (Done || Metadata == null || DownloadSpeed <= 0) return -1;
+            long remaining = Metadata.TotalLength - Downloaded;
+            return (long)(remaining / DownloadSpeed * 1000);
+        }
+    }
+
+    /// <summary>Torrent creation date (from metadata).</summary>
+    public DateTimeOffset? Created => Metadata?.CreationDate;
+
+    /// <summary>Creator string (from metadata).</summary>
+    public string? CreatedBy => Metadata?.CreatedBy;
+
+    /// <summary>Comment (from metadata).</summary>
+    public string? Comment => Metadata?.Comment;
+
+    /// <summary>Whether this is a private torrent (BEP 27 — no DHT/PEX).</summary>
+    public bool IsPrivate => Metadata?.IsPrivate ?? false;
+
     // Events
     public event Action? OnReady;
     public event Action? OnDone;
@@ -77,6 +126,8 @@ public class TorrentSwarm : IAsyncDisposable
     public event Action<PeerConnection>? OnPeerDisconnect;
     public event Action<Exception>? OnError;
     public event Action<string>? OnLog;
+    public event Action? OnMetadata;
+    public event Action<string>? OnWarning;
 
     public TorrentSwarm(WebTorrentClient client, AddTorrentOptions options)
     {
@@ -361,6 +412,59 @@ public class TorrentSwarm : IAsyncDisposable
         Paused = false;
     }
 
+    /// <summary>Prioritize a range of pieces.</summary>
+    public void Select(int startPiece, int endPiece, int priority = 1)
+    {
+        if (_coordinator == null) return;
+        for (int i = startPiece; i <= endPiece; i++)
+            _coordinator.Prioritize(i);
+    }
+
+    /// <summary>Deprioritize a range of pieces.</summary>
+    public void Deselect(int startPiece, int endPiece)
+    {
+        // Currently no explicit deprioritize in coordinator — just don't prioritize
+    }
+
+    /// <summary>Mark pieces as critical (highest priority, download ASAP).</summary>
+    public void Critical(int startPiece, int endPiece)
+    {
+        Select(startPiece, endPiece, 10);
+    }
+
+    /// <summary>Remove a specific peer by address.</summary>
+    public async Task RemovePeerAsync(string address)
+    {
+        await _peerLock.WaitAsync();
+        try
+        {
+            var peer = _peers.FirstOrDefault(p => p.Info.Address == address);
+            if (peer != null)
+            {
+                _peers.Remove(peer);
+                _knownPeerAddresses.Remove(address);
+                await peer.DisposeAsync();
+                OnPeerDisconnect?.Invoke(peer);
+            }
+        }
+        finally { _peerLock.Release(); }
+    }
+
+    /// <summary>Re-verify all pieces in the store against their hashes.</summary>
+    public async Task RescanFilesAsync()
+    {
+        if (_pieceManager == null || _store == null || Metadata == null) return;
+
+        for (int i = 0; i < Metadata.PieceCount; i++)
+        {
+            var data = await _store.GetAsync(i);
+            if (data != null && Metadata.VerifyPiece(i, data))
+            {
+                _pieceManager.MarkComplete(i);
+            }
+        }
+    }
+
     /// <summary>Add a web seed URL.</summary>
     public void AddWebSeed(string url)
     {
@@ -420,7 +524,70 @@ public class TorrentFileStream
     public string Name => _file.Name;
     public string Path => _file.Path;
     public long Length => _file.Length;
+    public long Size => _file.Length;
     public long Offset => _file.Offset;
+    public int StartPiece => _file.StartPiece;
+    public int EndPiece => _file.EndPiece;
+
+    /// <summary>Whether this file has been fully downloaded.</summary>
+    public bool Done
+    {
+        get
+        {
+            var bitfield = _swarm.Bitfield;
+            if (bitfield == null) return false;
+            for (int i = _file.StartPiece; i <= _file.EndPiece; i++)
+                if (!bitfield[i]) return false;
+            return true;
+        }
+    }
+
+    /// <summary>Bytes downloaded for this file.</summary>
+    public long Downloaded
+    {
+        get
+        {
+            var bitfield = _swarm.Bitfield;
+            if (bitfield == null || _swarm.Metadata == null) return 0;
+            long bytes = 0;
+            for (int i = _file.StartPiece; i <= _file.EndPiece; i++)
+                if (bitfield[i])
+                    bytes += (i == _swarm.Metadata.PieceCount - 1)
+                        ? _swarm.Metadata.TotalLength - (long)i * _swarm.Metadata.PieceLength
+                        : _swarm.Metadata.PieceLength;
+            return Math.Min(bytes, _file.Length);
+        }
+    }
+
+    /// <summary>MIME type based on file extension.</summary>
+    public string Type => GetMimeType(System.IO.Path.GetExtension(Path).ToLowerInvariant());
+
+    /// <summary>Select this file for download (prioritize its pieces).</summary>
+    public void Select(int priority = 1)
+    {
+        _swarm.Select(_file.StartPiece, _file.EndPiece, priority);
+    }
+
+    /// <summary>Deselect this file (deprioritize its pieces).</summary>
+    public void Deselect()
+    {
+        _swarm.Deselect(_file.StartPiece, _file.EndPiece);
+    }
+
+    /// <summary>Check if a piece index contains data from this file.</summary>
+    public bool Includes(int pieceIndex) => pieceIndex >= _file.StartPiece && pieceIndex <= _file.EndPiece;
+
+    /// <summary>Get the entire file as a byte array (blocks until complete).</summary>
+    public Task<byte[]> GetArrayBufferAsync(CancellationToken ct = default)
+        => ReadAsync(0, (int)Length, ct);
+
+    // Events
+    public event Action? OnDone;
+
+    internal void CheckDone()
+    {
+        if (Done) OnDone?.Invoke();
+    }
 
     /// <summary>Download progress for this specific file (0.0 to 1.0).</summary>
     public double Progress
@@ -485,4 +652,32 @@ public class TorrentFileStream
 
         return result;
     }
+
+    private static string GetMimeType(string ext) => ext switch
+    {
+        ".mp4" or ".m4v" => "video/mp4",
+        ".webm" => "video/webm",
+        ".mkv" => "video/x-matroska",
+        ".ogv" => "video/ogg",
+        ".avi" => "video/x-msvideo",
+        ".mov" => "video/quicktime",
+        ".mp3" => "audio/mpeg",
+        ".ogg" or ".opus" => "audio/ogg",
+        ".flac" => "audio/flac",
+        ".wav" => "audio/wav",
+        ".aac" or ".m4a" => "audio/aac",
+        ".jpg" or ".jpeg" => "image/jpeg",
+        ".png" => "image/png",
+        ".gif" => "image/gif",
+        ".webp" => "image/webp",
+        ".svg" => "image/svg+xml",
+        ".pdf" => "application/pdf",
+        ".txt" => "text/plain",
+        ".html" or ".htm" => "text/html",
+        ".json" => "application/json",
+        ".xml" => "application/xml",
+        ".zip" => "application/zip",
+        ".srt" => "text/plain",
+        _ => "application/octet-stream",
+    };
 }

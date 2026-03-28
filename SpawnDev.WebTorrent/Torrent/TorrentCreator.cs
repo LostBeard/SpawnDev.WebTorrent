@@ -163,6 +163,7 @@ public static class TorrentCreator
             CreatedBy = options.CreatedBy,
             CreationDate = DateTimeOffset.UtcNow,
             IsPrivate = options.IsPrivate,
+            OriginalTorrentBytes = torrentBytes,
         };
 
         return (torrentBytes, metadata);

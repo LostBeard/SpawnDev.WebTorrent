@@ -169,6 +169,7 @@ public static class TorrentParser
             metadata.Files = parsedFiles.ToArray();
         }
 
+        metadata.OriginalTorrentBytes = torrentBytes;
         return metadata;
     }
 

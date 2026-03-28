@@ -34,6 +34,20 @@ public class WebTorrentClient : IAsyncDisposable
     /// <summary>Aggregate upload speed in bytes/sec.</summary>
     public double UploadSpeed => _torrents.Sum(t => t.UploadSpeed);
 
+    /// <summary>Overall progress across all active torrents (0.0 to 1.0).</summary>
+    public double Progress => _torrents.Count > 0 ? _torrents.Average(t => t.Progress) : 0;
+
+    /// <summary>Aggregate seed ratio (uploaded/downloaded).</summary>
+    public double Ratio
+    {
+        get
+        {
+            long down = _torrents.Sum(t => t.Downloaded);
+            long up = _torrents.Sum(t => t.Uploaded);
+            return down > 0 ? (double)up / down : 0;
+        }
+    }
+
     /// <summary>Maximum upload rate in bytes/sec (-1 = unlimited, 0 = disabled).</summary>
     public long UploadLimit { get; set; }
 
@@ -132,6 +146,43 @@ public class WebTorrentClient : IAsyncDisposable
         swarm.OnDone += () => OnTorrentDone?.Invoke(swarm);
         swarm.OnError += (ex) => OnError?.Invoke(ex);
     }
+
+    /// <summary>Seed data by creating a torrent and making it available.</summary>
+    public async Task<TorrentSwarm> SeedAsync(byte[] data, string name,
+        TorrentCreatorOptions? createOptions = null, AddTorrentOptions? addOptions = null)
+    {
+        var (torrentBytes, metadata) = Torrent.TorrentCreator.CreateFromBytes(name, data, createOptions);
+        var swarm = await AddAsync(metadata, addOptions);
+
+        // Store all pieces in the chunk store so we can serve them
+        if (swarm.Store != null && swarm.PieceManager != null)
+        {
+            for (int i = 0; i < metadata.PieceCount; i++)
+            {
+                int pieceStart = i * metadata.PieceLength;
+                int pieceLen = Math.Min(metadata.PieceLength, data.Length - pieceStart);
+                var pieceData = new byte[pieceLen];
+                Array.Copy(data, pieceStart, pieceData, 0, pieceLen);
+                await swarm.Store.PutAsync(i, pieceData);
+                swarm.PieceManager.MarkComplete(i);
+            }
+        }
+
+        return swarm;
+    }
+
+    /// <summary>Get a torrent by info hash (hex string or 20-byte array).</summary>
+    public TorrentSwarm? Get(string infoHashHex)
+    {
+        var hash = infoHashHex.Length == 40
+            ? Convert.FromHexString(infoHashHex)
+            : System.Text.Encoding.ASCII.GetBytes(infoHashHex);
+        return _torrents.FirstOrDefault(t => t.InfoHash.SequenceEqual(hash));
+    }
+
+    /// <summary>Get a torrent by info hash bytes.</summary>
+    public TorrentSwarm? Get(byte[] infoHash)
+        => _torrents.FirstOrDefault(t => t.InfoHash.SequenceEqual(infoHash));
 
     /// <summary>Remove a torrent and optionally destroy its data.</summary>
     public async Task RemoveAsync(TorrentSwarm torrent, bool destroyStore = false)

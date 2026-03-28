@@ -53,6 +53,9 @@ public class TorrentMetadata
     /// <summary>Raw info dictionary bytes (for computing info hash).</summary>
     public byte[]? InfoDictBytes { get; set; }
 
+    /// <summary>Original .torrent file bytes (saved on parse/create).</summary>
+    public byte[]? OriginalTorrentBytes { get; set; }
+
     /// <summary>Verify a downloaded piece against its hash.</summary>
     public bool VerifyPiece(int index, byte[] data)
     {

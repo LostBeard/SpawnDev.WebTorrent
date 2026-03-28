@@ -92,6 +92,16 @@ Browser Client                    Server (spawndev.com)
 └─────────────┘                  └──────────────────────┘
 ```
 
+## Documentation
+
+| Doc | Description |
+|-----|-------------|
+| [Architecture](Docs/architecture.md) | Project structure, data flow, transport layer, wire protocol |
+| [Peer ID](Docs/peer-id.md) | Azureus-style peer ID convention (`-SD0110-`) and version history |
+| [Trackers](Docs/trackers.md) | Default tracker list, running your own tracker, protocol details |
+| [BEP Support](Docs/bep-support.md) | BitTorrent Enhancement Proposal implementation status |
+| [Deployment](Docs/deployment.md) | Production server setup, GitHub Pages demo, local development |
+
 ## Credits
 
 Built by Todd Tanner ([@LostBeard](https://github.com/LostBeard)) and the SpawnDev team.

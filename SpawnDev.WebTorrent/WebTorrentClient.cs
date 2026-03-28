@@ -53,9 +53,10 @@ public class WebTorrentClient : IAsyncDisposable
         UploadLimit = _options.UploadLimit;
         DownloadLimit = _options.DownloadLimit;
 
-        // Generate peer ID: -SD0100- + 12 random bytes (Azureus-style)
+        // Generate peer ID: -SD0110- + 12 random bytes (Azureus-style)
+        // SD = SpawnDev, 0110 = v1.1.0
         _peerId = new byte[20];
-        "-SD0100-"u8.CopyTo(_peerId);
+        "-SD0110-"u8.CopyTo(_peerId);
         Random.Shared.NextBytes(_peerId.AsSpan(8));
     }
 

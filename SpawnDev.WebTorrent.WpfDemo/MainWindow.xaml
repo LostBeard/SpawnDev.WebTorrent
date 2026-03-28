@@ -135,6 +135,20 @@
                       Background="Transparent" BorderThickness="0"
                       SelectionChanged="TorrentList_SelectionChanged"
                       Foreground="{StaticResource TextSecondary}" FontSize="12">
+                <ListView.ItemContainerStyle>
+                    <Style TargetType="ListViewItem">
+                        <Setter Property="Foreground" Value="#94a3b8"/>
+                        <Style.Triggers>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter Property="Background" Value="#0f2e24"/>
+                                <Setter Property="Foreground" Value="#f1f5f9"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="#111827"/>
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </ListView.ItemContainerStyle>
                 <ListView.View>
                     <GridView>
                         <GridViewColumn Header="Name" Width="260" DisplayMemberBinding="{Binding Name}"/>

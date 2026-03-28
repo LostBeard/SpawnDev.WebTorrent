@@ -6,6 +6,7 @@
 @using SpawnDev.WebTorrent.Storage
 @using SpawnDev.WebTorrent.Wire
 @using SpawnDev.AsyncFileSystem
+@using Microsoft.AspNetCore.Components.Forms
 @using SpawnDev.BlazorJS
 @using SpawnDev.BlazorJS.JSObjects
 @inject BlazorJSRuntime JS
@@ -29,6 +30,10 @@
                     <button class="qb-chip" @onclick="() => QuickAdd(n)">@n</button>
                 }
                 <button class="qb-chip" style="border-color:#3b82f6;color:#3b82f6" @onclick="SeedTestData" title="Create and seed a test torrent">Seed Test</button>
+                <label class="qb-chip" style="border-color:#8b5cf6;color:#8b5cf6;cursor:pointer" title="Seed a file from your computer">
+                    Seed File
+                    <InputFile OnChange="SeedFromFile" style="display:none" />
+                </label>
             </div>
         </div>
         <div class="qb-toolbar-actions">
@@ -158,6 +163,17 @@
                                     <div class="qb-info-row"><span class="qb-label">Comment</span><span>@(sel.Swarm.Comment ?? "—")</span></div>
                                     <div class="qb-info-row"><span class="qb-label">Created</span><span>@(sel.Swarm.Created?.ToString("yyyy-MM-dd HH:mm") ?? "—")</span></div>
                                     <div class="qb-info-row"><span class="qb-label">Private</span><span>@(sel.Swarm.IsPrivate ? "Yes" : "No")</span></div>
+                                </div>
+                                <div class="qb-action-row">
+                                    <button class="qb-action-btn" @onclick="() => CopyMagnet(sel)" title="Copy magnet link">&#128279; Copy Magnet</button>
+                                    @if (sel.Swarm.TorrentFileBytes != null)
+                                    {
+                                        <button class="qb-action-btn" @onclick="() => ExportTorrent(sel)" title="Download .torrent file">&#128190; Export .torrent</button>
+                                    }
+                                    <label class="qb-toggle">
+                                        <input type="checkbox" checked="@sel.Sequential" @onchange="(e) => { sel.Sequential = (bool)(e.Value ?? false); }" />
+                                        <span>Sequential Download</span>
+                                    </label>
                                 </div>
                                 @if (sel.Swarm.PieceManager?.Bitfield != null)
                                 {
@@ -370,6 +386,35 @@
         StateHasChanged();
     }
 
+    private async Task SeedFromFile(InputFileChangeEventArgs e)
+    {
+        if (_client == null) return;
+        var file = e.File;
+        if (file == null) return;
+
+        Log($"Loading file: {file.Name} ({FormatBytes(file.Size)})...");
+        using var ms = new System.IO.MemoryStream();
+        await file.OpenReadStream(maxAllowedSize: 1073741824).CopyToAsync(ms); // 1GB max
+        var data = ms.ToArray();
+
+        var swarm = await _client.SeedAsync(data, file.Name,
+            new TorrentCreatorOptions
+            {
+                PieceLength = data.Length > 1048576 ? 262144 : 16384, // 256KB pieces for >1MB files
+                Trackers = _defaultTrackers,
+                Comment = $"Seeded from SpawnDev.WebTorrent demo",
+            });
+
+        var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
+        var entry = new TorrentEntry { Swarm = swarm, Name = file.Name, InfoHashFull = hash, InfoHashShort = hash[..8] + "..." };
+        _torrents.Add(entry); _selectedTorrent = entry;
+        WireSwarmEvents(entry);
+        _ = ConnectTrackers(entry, swarm.MagnetURI);
+
+        Log($"Seeding: {file.Name} ({FormatBytes(data.Length)}), {swarm.PieceManager!.PieceCount} pieces");
+        StateHasChanged();
+    }
+
     private void PauseAll() { foreach (var t in _torrents) t.Swarm.Pause(); }
     private void ResumeAll() { foreach (var t in _torrents) t.Swarm.Resume(); }
     private void ToggleSettings() => _settingsOpen = !_settingsOpen;
@@ -502,6 +547,33 @@
         Log($"Removed: {entry.DisplayName}");
     }
 
+    // ── Torrent Actions ──
+    private async Task CopyMagnet(TorrentEntry entry)
+    {
+        var magnet = entry.Swarm.MagnetURI;
+        try
+        {
+            await JS.CallVoidAsync("navigator.clipboard.writeText", magnet);
+            Log($"Copied magnet URI to clipboard");
+        }
+        catch
+        {
+            Log($"Magnet: {magnet}");
+        }
+    }
+
+    private async Task ExportTorrent(TorrentEntry entry)
+    {
+        var bytes = entry.Swarm.TorrentFileBytes;
+        if (bytes == null) return;
+        var fileName = $"{entry.DisplayName}.torrent";
+        using var blob = new Blob(new[] { bytes }, new BlobOptions { Type = "application/x-bittorrent" });
+        var url = URL.CreateObjectURL(blob);
+        // Trigger download via anchor click
+        await JS.CallVoidAsync("eval", $"var a=document.createElement('a');a.href='{url}';a.download='{fileName.Replace("'", "\\'")}';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL('{url}')");
+        Log($"Exported: {fileName}");
+    }
+
     // ── Media ──
     private async Task OpenMedia(TorrentFileStream file, string ext)
     {
@@ -553,6 +625,7 @@
         public double Progress => Swarm.PieceManager?.Progress ?? 0;
         public string SizeText => Swarm.HasMetadata ? FormatBytes(Swarm.Metadata!.TotalLength) : "—";
         public string EtaText { get { var t = Swarm.TimeRemaining; return t < 0 ? (IsDone ? "—" : "∞") : t < 60000 ? $"{t / 1000}s" : t < 3600000 ? $"{t / 60000}m" : $"{t / 3600000}h {(t % 3600000) / 60000}m"; } }
+        public bool Sequential { get; set; }
         public string StatusClass => IsDone ? "qb-dot-seed" : Swarm.Paused ? "qb-dot-paused" : HasMetadata ? "qb-dot-dl" : "qb-dot-meta";
     }
     private class TrackerEntry { public string Url { get; set; } = ""; public string Status { get; set; } = ""; }
@@ -637,6 +710,13 @@
     .qb-info-row { display: flex; justify-content: space-between; padding: 2px 0; color: #94a3b8; font-size: 12px; }
     .qb-label { color: #475569; } .qb-hash { font-size: 10px; word-break: break-all; }
     .qb-muted { color: #334155; text-align: center; font-size: 12px; }
+
+    /* Action row */
+    .qb-action-row { display: flex; gap: 8px; align-items: center; margin: 8px 0 4px; flex-wrap: wrap; }
+    .qb-action-btn { background: #1e293b; border: 1px solid #334155; color: #94a3b8; padding: 3px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; }
+    .qb-action-btn:hover { background: #334155; color: #f1f5f9; }
+    .qb-toggle { display: flex; align-items: center; gap: 4px; font-size: 11px; color: #64748b; cursor: pointer; }
+    .qb-toggle input { accent-color: #10b981; }
 
     /* Piece bar */
     .qb-piece-label { color: #475569; font-size: 10px; margin-top: 8px; }

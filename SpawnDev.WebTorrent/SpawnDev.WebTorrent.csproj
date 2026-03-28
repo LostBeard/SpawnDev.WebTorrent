@@ -35,6 +35,7 @@
 	<ItemGroup>
 		<PackageReference Include="SpawnDev.BlazorJS" Version="3.5.0" />
 		<PackageReference Include="SpawnDev.AsyncFileSystem" Version="1.0.0" />
+		<PackageReference Include="SpawnDev.BlazorJS.Cryptography" Version="3.0.1" />
 		<PackageReference Include="SIPSorcery" Version="10.0.3" />
 	</ItemGroup>
 

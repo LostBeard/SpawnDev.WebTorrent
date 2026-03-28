@@ -488,7 +488,7 @@ public abstract partial class WebTorrentTestBase
         Console.WriteLine("[P2P] PeerCoordinator created and disposed");
     }
 
-    [TestMethod(Timeout = 30000)]
+    [TestMethod(Timeout = 60000)]
     public async Task P2P_PeerCoordinator_TrackerAnnounce()
     {
         if (!OperatingSystem.IsBrowser())

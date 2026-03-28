@@ -39,7 +39,11 @@ public partial class MainWindow : Window
         StatusPeerId.Text = System.Text.Encoding.ASCII.GetString(_client.PeerId, 0, 8);
 
         _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-        _refreshTimer.Tick += (_, _) => RefreshUI();
+        _refreshTimer.Tick += (_, _) =>
+        {
+            foreach (var t in _torrents) t.Swarm.UpdateSpeed();
+            RefreshUI();
+        };
         _refreshTimer.Start();
 
         Log("SpawnDev.WebTorrent Desktop Client initialized");
@@ -219,6 +223,8 @@ public partial class MainWindow : Window
     {
         StatusTorrents.Text = $"{_torrents.Count} torrents";
         StatusPeers.Text = $"{_torrents.Sum(t => t.Swarm.PeerCount)} peers";
+        DownSpeedText.Text = FormatSpeed(_torrents.Sum(t => t.Swarm.DownloadSpeed));
+        UpSpeedText.Text = FormatSpeed(_torrents.Sum(t => t.Swarm.UploadSpeed));
 
         foreach (var vm in _torrents)
         {
@@ -226,6 +232,8 @@ public partial class MainWindow : Window
             vm.ProgressPercent = (pm?.Progress ?? 0) * 100;
             vm.ProgressText = $"{vm.ProgressPercent:F1}%";
             vm.PeerCount = vm.Swarm.PeerCount;
+            vm.DownSpeedText = vm.Swarm.DownloadSpeed > 0 ? FormatSpeed(vm.Swarm.DownloadSpeed) : "";
+            vm.UpSpeedText = vm.Swarm.UploadSpeed > 0 ? FormatSpeed(vm.Swarm.UploadSpeed) : "";
             vm.StatusText = pm?.IsComplete == true ? "Seeding" : pm != null && pm.CompletedCount > 0 ? "Downloading" : vm.Swarm.HasMetadata ? "Waiting" : "Metadata";
             vm.Notify();
         }
@@ -306,6 +314,7 @@ public partial class MainWindow : Window
     }
 
     private static string FormatBytes(long b) => b < 1024 ? $"{b} B" : b < 1048576 ? $"{b / 1024.0:F1} KB" : b < 1073741824 ? $"{b / 1048576.0:F1} MB" : $"{b / 1073741824.0:F2} GB";
+    private static string FormatSpeed(double bps) => bps < 1024 ? $"{bps:F0} B/s" : bps < 1048576 ? $"{bps / 1024.0:F1} KB/s" : $"{bps / 1048576.0:F1} MB/s";
 }
 
 // ── View Models ──
@@ -321,6 +330,8 @@ public class TorrentViewModel : INotifyPropertyChanged
     public double ProgressPercent { get; set; }
     public int PeerCount { get; set; }
     public string StatusText { get; set; } = "Metadata";
+    public string DownSpeedText { get; set; } = "";
+    public string UpSpeedText { get; set; } = "";
     public ObservableCollection<FileViewModel> Files { get; } = new();
     public ObservableCollection<TrackerViewModel> TrackerEntries { get; } = new();
 

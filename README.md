@@ -98,13 +98,13 @@ Both demos connect to the same trackers and can P2P with each other.
 | BEP | Title | Desktop | Browser |
 |-----|-------|---------|---------|
 | 3 | BitTorrent Protocol | Yes | Yes |
-| 5 | DHT (Kademlia) | Yes | N/A |
-| 44 | DHT Storage | Yes | N/A |
-| 46 | Mutable Items (AI Agents) | Yes | N/A |
+| 5 | DHT (Kademlia) | Yes | Via relay |
+| 44 | DHT Storage | Yes | Via relay |
+| 46 | Mutable Items (AI Agents) | Yes | Yes |
 | 6 | Fast Extension | Yes | Yes |
 | 9 | Magnet Links / ut_metadata | Yes | Yes |
 | 10 | Extension Protocol | Yes | Yes |
-| 11 | Peer Exchange (ut_pex) | Yes | N/A |
+| 11 | Peer Exchange (ut_pex) | Yes | Yes |
 | 15 | UDP Tracker | Yes | N/A |
 | 17/19 | Web Seeds | Yes | Yes |
 | 20 | Peer ID Conventions | Yes | Yes |

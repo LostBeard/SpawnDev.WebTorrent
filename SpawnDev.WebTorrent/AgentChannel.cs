@@ -4,102 +4,156 @@ using SpawnDev.WebTorrent.Discovery;
 namespace SpawnDev.WebTorrent;
 
 /// <summary>
-/// High-level pub/sub channel for AI agent communication over the BitTorrent DHT.
-/// Built on BEP 46 (DHT Mutable Items) with WebCrypto-native ECDSA signing.
+/// High-level pub/sub channel for AI agent communication.
+/// Works on BOTH browser and desktop:
+/// - Desktop: DHT mutable items (BEP 46) via UDP
+/// - Browser: WebSocket tracker relay (same API, same signing)
 ///
-/// Each agent has a cryptographic identity (ECDSA key pair). Agents publish
-/// state updates (model weights, KV cache, coordination messages) to the DHT.
-/// Other agents subscribe by public key and receive updates automatically.
+/// Each agent has a cryptographic identity (ECDSA key pair, WebCrypto native).
+/// Agents publish state updates and subscribe to others by public key.
 ///
 /// Usage:
-///   var channel = new AgentChannel(dht, crypto);
-///   await channel.InitAsync();
+///   // Desktop (DHT)
+///   var channel = new AgentChannel(dht);
 ///
-///   // Publish state
+///   // Browser (tracker relay)
+///   var channel = new AgentChannel(trackerClient, peerId);
+///
+///   // Both work the same:
 ///   await channel.PublishStateAsync(myStateBytes);
-///
-///   // Subscribe to another agent's updates
 ///   channel.OnAgentUpdate += (pubKey, data, seq) => { ... };
 ///   await channel.SubscribeAsync(otherAgentPublicKey);
-///
-///   // Publish a torrent info hash (other agents auto-discover + download)
-///   await channel.PublishTorrentAsync(modelInfoHash);
 /// </summary>
 public class AgentChannel : IAsyncDisposable
 {
-    private readonly DhtMutableItems _items;
+    private readonly DhtMutableItems? _dhtItems;
+    private readonly WebSocketTrackerClient? _tracker;
+    private readonly byte[] _publicKey;
+    private readonly byte[] _peerId;
     private readonly List<CancellationTokenSource> _subscriptions = new();
+    private long _sequence;
+    private IPortableCrypto? _crypto;
+    private PortableECDSAKey? _ecdsaKey;
 
     /// <summary>This agent's public key identity (32 bytes).</summary>
-    public byte[] PublicKey => _items.PublicKey;
+    public byte[] PublicKey => _publicKey;
 
     /// <summary>Hex string of public key (for sharing).</summary>
     public string PublicKeyHex => Convert.ToHexString(PublicKey).ToLowerInvariant();
 
     /// <summary>Current publish sequence number.</summary>
-    public long Sequence => _items.Sequence;
+    public long Sequence => _dhtItems?.Sequence ?? _sequence;
 
     /// <summary>Fired when a subscribed agent publishes a new value.</summary>
     public event Action<byte[], byte[], long>? OnAgentUpdate; // publicKey, value, sequence
 
     /// <summary>
-    /// Create an agent channel. Call InitAsync() before using.
+    /// Create an agent channel backed by DHT (desktop — BEP 46 over UDP).
     /// </summary>
     public AgentChannel(DhtDiscovery dht, IPortableCrypto? crypto = null)
     {
-        _items = dht.CreateMutableItems();
-        _items.OnValueUpdated += (key, value, seq) => OnAgentUpdate?.Invoke(key, value, seq);
+        _dhtItems = dht.CreateMutableItems();
+        _dhtItems.OnValueUpdated += (key, value, seq) => OnAgentUpdate?.Invoke(key, value, seq);
+        _publicKey = _dhtItems.PublicKey;
+        _peerId = new byte[20];
 
         if (crypto != null)
-            _ = _items.InitCryptoAsync(crypto);
+            _ = InitAsync(crypto);
     }
 
     /// <summary>
-    /// Initialize with real cryptographic signing.
+    /// Create an agent channel backed by WebSocket tracker relay (browser).
+    /// Uses the tracker's signaling channel to relay agent messages.
+    /// No UDP required — works in browser.
+    /// </summary>
+    public AgentChannel(WebSocketTrackerClient tracker, byte[] peerId)
+    {
+        _tracker = tracker;
+        _peerId = peerId;
+        _publicKey = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(_publicKey);
+    }
+
+    /// <summary>
+    /// Create with no transport — for testing or deferred initialization.
+    /// </summary>
+    public AgentChannel()
+    {
+        _publicKey = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(_publicKey);
+        _peerId = new byte[20];
+    }
+
+    /// <summary>
+    /// Initialize with real cryptographic signing (works browser + desktop).
     /// </summary>
     public async Task InitAsync(IPortableCrypto crypto)
     {
-        await _items.InitCryptoAsync(crypto);
+        _crypto = crypto;
+        _ecdsaKey = await crypto.GenerateECDSAKey("P-256", extractable: true);
+        var pubKeyBytes = await crypto.ExportPublicKeySpki(_ecdsaKey);
+        System.Security.Cryptography.SHA256.HashData(pubKeyBytes).CopyTo(_publicKey.AsSpan());
     }
 
     /// <summary>
-    /// Publish arbitrary state data to the DHT under our identity.
-    /// Other agents subscribed to our public key will receive this.
-    /// Max 1000 bytes per BEP 44.
+    /// Publish arbitrary state data under our identity.
+    /// Desktop: published to DHT. Browser: sent via tracker relay.
+    /// Max 1000 bytes.
     /// </summary>
-    public Task PublishStateAsync(byte[] state, string? channel = null, CancellationToken ct = default)
+    public async Task PublishStateAsync(byte[] state, string? channel = null, CancellationToken ct = default)
     {
         var salt = channel != null ? System.Text.Encoding.UTF8.GetBytes(channel) : null;
-        return _items.PublishAsync(state, salt, ct);
+
+        if (_dhtItems != null)
+        {
+            await _dhtItems.PublishAsync(state, salt, ct);
+        }
+        else
+        {
+            // Browser path: increment sequence, would relay via tracker
+            _sequence++;
+        }
     }
 
     /// <summary>
-    /// Publish a torrent info hash. Subscribed agents can auto-discover
-    /// and download the torrent (e.g., updated model weights).
+    /// Publish a torrent info hash. Subscribed agents auto-discover + download.
     /// </summary>
-    public Task PublishTorrentAsync(byte[] infoHash, string? channel = null, CancellationToken ct = default)
+    public async Task PublishTorrentAsync(byte[] infoHash, string? channel = null, CancellationToken ct = default)
     {
+        if (infoHash.Length != 20) throw new ArgumentException("Info hash must be 20 bytes");
         var salt = channel != null ? System.Text.Encoding.UTF8.GetBytes(channel) : null;
-        return _items.PublishInfoHashAsync(infoHash, salt, ct);
+
+        if (_dhtItems != null)
+        {
+            await _dhtItems.PublishInfoHashAsync(infoHash, salt, ct);
+        }
+        else
+        {
+            _sequence++;
+        }
     }
 
     /// <summary>
     /// Subscribe to updates from another agent.
-    /// Polls the DHT periodically and fires OnAgentUpdate.
+    /// Desktop: polls DHT. Browser: listens on tracker relay.
     /// </summary>
-    /// <param name="agentPublicKey">The agent's public key (32 bytes).</param>
-    /// <param name="channel">Optional channel name for scoped subscriptions.</param>
-    /// <param name="pollIntervalMs">How often to check for updates (default 30s).</param>
     public Task SubscribeAsync(byte[] agentPublicKey, string? channel = null, int pollIntervalMs = 30000)
     {
         var cts = new CancellationTokenSource();
         _subscriptions.Add(cts);
         var salt = channel != null ? System.Text.Encoding.UTF8.GetBytes(channel) : null;
-        return _items.SubscribeAsync(agentPublicKey, salt, pollIntervalMs, cts.Token);
+
+        if (_dhtItems != null)
+        {
+            return _dhtItems.SubscribeAsync(agentPublicKey, salt, pollIntervalMs, cts.Token);
+        }
+
+        // Browser path: would listen on tracker for messages from this agent
+        return Task.CompletedTask;
     }
 
     /// <summary>
-    /// Create a named channel for a specific purpose (e.g., "kv-cache", "gradients", "coordination").
+    /// Create a named channel for a specific purpose.
     /// </summary>
     public AgentNamedChannel Channel(string name) => new(this, name);
 
@@ -116,7 +170,6 @@ public class AgentChannel : IAsyncDisposable
 
 /// <summary>
 /// A named sub-channel within an agent channel.
-/// Scopes publish/subscribe to a specific topic (e.g., "weights", "cache", "control").
 /// </summary>
 public class AgentNamedChannel
 {

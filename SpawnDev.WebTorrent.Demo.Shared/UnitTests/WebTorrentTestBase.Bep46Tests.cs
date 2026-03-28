@@ -268,6 +268,89 @@ public abstract partial class WebTorrentTestBase
     }
 
     // ═══════════════════════════════════════════════════════════
+    //  SwarmCompute — Distributed GPU Foundation
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task SwarmCompute_Create()
+    {
+        await using var client = new WebTorrentClient();
+        var dht = new DhtDiscovery();
+        await using var swarm = new SwarmCompute(client, dht);
+
+        if (swarm.PublicKey == null || swarm.PublicKey.Length != 32)
+            throw new Exception("PublicKey should be 32 bytes");
+        if (swarm.WorkerCount != 0)
+            throw new Exception("Should have 0 workers initially");
+        await dht.DisposeAsync();
+    }
+
+    [TestMethod]
+    public async Task SwarmCompute_PublishTask()
+    {
+        await using var client = new WebTorrentClient();
+        var dht = new DhtDiscovery();
+        await using var swarm = new SwarmCompute(client, dht);
+
+        var taskData = System.Text.Encoding.UTF8.GetBytes("kernel:matmul;size:1024");
+        var inputData = new byte[16384];
+        Random.Shared.NextBytes(inputData);
+
+        var task = await swarm.PublishTaskAsync(taskData, inputData);
+
+        if (string.IsNullOrEmpty(task.Id)) throw new Exception("Task ID empty");
+        if (task.InputInfoHash == null) throw new Exception("Should have input info hash");
+        if (string.IsNullOrEmpty(task.InputMagnetUri)) throw new Exception("Should have magnet URI");
+        if (task.IsComplete) throw new Exception("Should not be complete yet");
+        await dht.DisposeAsync();
+    }
+
+    [TestMethod]
+    public async Task SwarmCompute_PublishTaskNoInput()
+    {
+        await using var client = new WebTorrentClient();
+        var dht = new DhtDiscovery();
+        await using var swarm = new SwarmCompute(client, dht);
+
+        var task = await swarm.PublishTaskAsync(System.Text.Encoding.UTF8.GetBytes("reduce:sum"));
+        if (task.InputInfoHash != null) throw new Exception("No input = no hash");
+        await dht.DisposeAsync();
+    }
+
+    [TestMethod]
+    public async Task SwarmCompute_Events()
+    {
+        await using var client = new WebTorrentClient();
+        var dht = new DhtDiscovery();
+        await using var swarm = new SwarmCompute(client, dht);
+
+        SwarmWorker? joined = null;
+        swarm.OnWorkerJoined += (w) => joined = w;
+        if (joined != null) throw new Exception("Should not fire before join");
+        await dht.DisposeAsync();
+    }
+
+    [TestMethod]
+    public async Task SwarmTask_Properties()
+    {
+        var task = new SwarmTask { Id = "test", CreatedAt = DateTime.UtcNow };
+        if (task.CompletedWorkers != 0 || task.IsComplete) throw new Exception("Initial state wrong");
+    }
+
+    [TestMethod]
+    public async Task SwarmWorker_Properties()
+    {
+        var w = new SwarmWorker
+        {
+            PublicKey = new byte[32],
+            Capabilities = System.Text.Encoding.UTF8.GetBytes("WebGPU,8GB"),
+            JoinedAt = DateTime.UtcNow,
+        };
+        if (System.Text.Encoding.UTF8.GetString(w.Capabilities) != "WebGPU,8GB")
+            throw new Exception("Capabilities mismatch");
+    }
+
+    // ═══════════════════════════════════════════════════════════
     //  RateLimiter — Additional Tests
     // ═══════════════════════════════════════════════════════════
 

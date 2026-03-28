@@ -36,48 +36,95 @@ public class WebSeedConnection
             int pieceLength = (pieceIndex == _metadata.PieceCount - 1)
                 ? (int)(_metadata.TotalLength - pieceStart)
                 : _metadata.PieceLength;
-            long pieceEnd = pieceStart + pieceLength - 1;
 
-            var url = BuildUrl(pieceIndex, pieceStart, pieceEnd);
-            OnLog?.Invoke($"GET {url} Range: bytes={pieceStart}-{pieceEnd}");
+            // For multi-file torrents, a piece may span multiple files.
+            // We need to download from each file that overlaps this piece range
+            // and assemble the complete piece.
+            var pieceData = new byte[pieceLength];
+            int filled = 0;
+            long currentOffset = pieceStart;
 
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(pieceStart, pieceEnd);
-
-            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-            OnLog?.Invoke($"Response: {(int)response.StatusCode} {response.StatusCode}, Content-Length: {response.Content.Headers.ContentLength}");
-
-            if (!response.IsSuccessStatusCode && response.StatusCode != System.Net.HttpStatusCode.PartialContent)
+            while (filled < pieceLength)
             {
-                FailureCount++;
-                OnLog?.Invoke($"HTTP error {(int)response.StatusCode} (failure #{FailureCount})");
-                if (FailureCount >= 10) IsAvailable = false;
-                return null;
-            }
-
-            var data = await response.Content.ReadAsByteArrayAsync(ct);
-            OnLog?.Invoke($"Received {data.Length} bytes (expected {pieceLength})");
-
-            // For 200 OK (full file), extract just the piece we need
-            if (response.StatusCode == System.Net.HttpStatusCode.OK && data.Length > pieceLength)
-            {
-                OnLog?.Invoke($"Server returned full file ({data.Length} bytes), extracting piece range");
-                var pieceData = new byte[pieceLength];
-                Array.Copy(data, pieceStart, pieceData, 0, pieceLength);
-                data = pieceData;
-            }
-
-            if (data.Length != pieceLength)
-            {
-                if (data.Length < pieceLength && pieceIndex != _metadata.PieceCount - 1)
+                // Find which file contains currentOffset
+                Torrent.TorrentFile? targetFile = null;
+                foreach (var file in _metadata.Files)
                 {
-                    OnLog?.Invoke($"Size mismatch: got {data.Length}, expected {pieceLength}");
+                    if (currentOffset >= file.Offset && currentOffset < file.Offset + file.Length)
+                    {
+                        targetFile = file;
+                        break;
+                    }
+                }
+
+                if (targetFile == null)
+                {
+                    OnLog?.Invoke($"No file found for offset {currentOffset}");
                     return null;
                 }
+
+                // Calculate byte range within this file
+                long fileOffset = currentOffset - targetFile.Offset;
+                long bytesAvailInFile = targetFile.Length - fileOffset;
+                int bytesToRead = (int)Math.Min(bytesAvailInFile, pieceLength - filled);
+                long rangeStart = fileOffset;
+                long rangeEnd = fileOffset + bytesToRead - 1;
+
+                // Build URL for this file
+                string url;
+                if (_metadata.Files.Length == 1 && !_metadata.Files[0].Path.Contains('/'))
+                    url = $"{_baseUrl}/{EscapePath(_metadata.Name)}";
+                else
+                    url = $"{_baseUrl}/{EscapePath(targetFile.Path)}";
+
+                OnLog?.Invoke($"GET {url} Range: bytes={rangeStart}-{rangeEnd} ({bytesToRead} bytes)");
+
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(rangeStart, rangeEnd);
+
+                using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+                OnLog?.Invoke($"Response: {(int)response.StatusCode} {response.StatusCode}");
+
+                if (!response.IsSuccessStatusCode && response.StatusCode != System.Net.HttpStatusCode.PartialContent)
+                {
+                    FailureCount++;
+                    OnLog?.Invoke($"HTTP error {(int)response.StatusCode} (failure #{FailureCount})");
+                    if (FailureCount >= 10) IsAvailable = false;
+                    return null;
+                }
+
+                var data = await response.Content.ReadAsByteArrayAsync(ct);
+
+                // Handle 200 OK (full file) — extract the range we need
+                if (response.StatusCode == System.Net.HttpStatusCode.OK && data.Length > bytesToRead)
+                {
+                    if (rangeStart + bytesToRead <= data.Length)
+                    {
+                        Array.Copy(data, rangeStart, pieceData, filled, bytesToRead);
+                    }
+                    else
+                    {
+                        OnLog?.Invoke($"Full file too small: {data.Length} < {rangeStart + bytesToRead}");
+                        return null;
+                    }
+                }
+                else
+                {
+                    if (data.Length < bytesToRead)
+                    {
+                        OnLog?.Invoke($"Short read: got {data.Length}, expected {bytesToRead}");
+                        return null;
+                    }
+                    Array.Copy(data, 0, pieceData, filled, bytesToRead);
+                }
+
+                filled += bytesToRead;
+                currentOffset += bytesToRead;
             }
 
+            OnLog?.Invoke($"Piece {pieceIndex}: assembled {filled} bytes");
             FailureCount = 0;
-            return data;
+            return pieceData;
         }
         catch (Exception ex)
         {
@@ -115,15 +162,28 @@ public class WebSeedConnection
 
     private string BuildUrl(int pieceIndex, long start, long end)
     {
-        if (_metadata.Files.Length == 1)
-            return $"{_baseUrl}/{Uri.EscapeDataString(_metadata.Files[0].Path)}";
+        // BEP 19 (GetRight-style): baseUrl/torrentName (single file) or baseUrl/torrentName/filePath (multi-file)
+        // Path segments must be individually escaped (preserve / separators)
+        if (_metadata.Files.Length == 1 && !_metadata.Files[0].Path.Contains('/'))
+        {
+            // Single file torrent — URL is baseUrl/name
+            return $"{_baseUrl}/{EscapePath(_metadata.Name)}";
+        }
 
+        // Multi-file torrent — find which file this piece range falls in
+        // The URL is baseUrl/filePath (the path already includes the torrent name as a directory)
         foreach (var file in _metadata.Files)
         {
             if (start >= file.Offset && start < file.Offset + file.Length)
-                return $"{_baseUrl}/{Uri.EscapeDataString(file.Path)}";
+                return $"{_baseUrl}/{EscapePath(file.Path)}";
         }
 
-        return $"{_baseUrl}/{Uri.EscapeDataString(_metadata.Name)}";
+        return $"{_baseUrl}/{EscapePath(_metadata.Name)}";
+    }
+
+    /// <summary>Escape a file path for URL while preserving / separators.</summary>
+    private static string EscapePath(string path)
+    {
+        return string.Join("/", path.Split('/').Select(Uri.EscapeDataString));
     }
 }

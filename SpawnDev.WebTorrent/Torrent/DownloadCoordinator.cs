@@ -153,7 +153,6 @@ public class DownloadCoordinator
                         {
                             if (!_pieceManager.Bitfield[i])
                             {
-                                OnLog?.Invoke($"Web seed: downloading piece {i}...");
                                 await DownloadFromWebSeed(i, ct);
                                 break; // one piece per tick to stay responsive
                             }
@@ -226,14 +225,8 @@ public class DownloadCoordinator
                 var data = await seed.DownloadPieceAsync(pieceIndex, ct);
                 if (data != null)
                 {
-                    OnLog?.Invoke($"Web seed: piece {pieceIndex} got {data.Length} bytes, verifying...");
                     var ok = await _pieceManager.ReceiveCompletePieceAsync(pieceIndex, data);
-                    OnLog?.Invoke($"Web seed: piece {pieceIndex} verify={ok}");
                     if (ok) return;
-                }
-                else
-                {
-                    OnLog?.Invoke($"Web seed: piece {pieceIndex} returned null (failed)");
                 }
             }
             catch (Exception ex)

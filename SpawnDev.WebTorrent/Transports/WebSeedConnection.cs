@@ -77,13 +77,10 @@ public class WebSeedConnection
                 else
                     url = $"{_baseUrl}/{EscapePath(targetFile.Path)}";
 
-                OnLog?.Invoke($"GET {url} Range: bytes={rangeStart}-{rangeEnd} ({bytesToRead} bytes)");
-
                 using var request = new HttpRequestMessage(HttpMethod.Get, url);
                 request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(rangeStart, rangeEnd);
 
                 using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-                OnLog?.Invoke($"Response: {(int)response.StatusCode} {response.StatusCode}");
 
                 if (!response.IsSuccessStatusCode && response.StatusCode != System.Net.HttpStatusCode.PartialContent)
                 {
@@ -122,7 +119,6 @@ public class WebSeedConnection
                 currentOffset += bytesToRead;
             }
 
-            OnLog?.Invoke($"Piece {pieceIndex}: assembled {filled} bytes");
             FailureCount = 0;
             return pieceData;
         }

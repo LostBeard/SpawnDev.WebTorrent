@@ -223,7 +223,16 @@ public partial class MainWindow : Window
             foreach (var ws in webSeedUrls) vm.Swarm.AddWebSeed(ws);
             vm.Swarm.StartDownload();
 
-            vm.Swarm.OnDone += () => Dispatcher.Invoke(() => { Log($"[{vm.Name}] Download complete!"); });
+            vm.Swarm.OnDone += () => Dispatcher.Invoke(() =>
+            {
+                Log($"[{vm.Name}] Download complete!");
+                Title = $"SpawnDev.WebTorrent — {vm.Name} complete!";
+                // Flash taskbar
+                System.Media.SystemSounds.Asterisk.Play();
+                // Reset title after 5 seconds
+                _ = Task.Delay(5000).ContinueWith(_ => Dispatcher.Invoke(() =>
+                    Title = "SpawnDev.WebTorrent — Desktop Client"));
+            });
 
             Log($"[{vm.Name}] {FormatBytes(metadata.TotalLength)}, {metadata.PieceCount} pieces, {webSeedUrls.Count} web seed(s)");
         }

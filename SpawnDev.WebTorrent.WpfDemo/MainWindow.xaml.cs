@@ -478,6 +478,57 @@ public partial class MainWindow : Window
         }
     }
 
+    private void CopyMagnet_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedVm == null) return;
+        var magnet = _selectedVm.Swarm.MagnetURI;
+        Clipboard.SetText(magnet);
+        Log("Magnet URI copied to clipboard");
+    }
+
+    private void ExportTorrent_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedVm?.Swarm.TorrentFileBytes == null) return;
+        var dlg = new Microsoft.Win32.SaveFileDialog
+        {
+            FileName = $"{_selectedVm.Name}.torrent",
+            Filter = "Torrent files (*.torrent)|*.torrent",
+        };
+        if (dlg.ShowDialog() == true)
+        {
+            System.IO.File.WriteAllBytes(dlg.FileName, _selectedVm.Swarm.TorrentFileBytes);
+            Log($"Exported: {dlg.FileName}");
+        }
+    }
+
+    private async void OpenFile_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog { Filter = "All files (*.*)|*.*" };
+        if (dlg.ShowDialog() != true) return;
+
+        var data = await System.IO.File.ReadAllBytesAsync(dlg.FileName);
+        var name = System.IO.Path.GetFileName(dlg.FileName);
+        Log($"Loading: {name} ({FormatBytes(data.Length)})...");
+
+        var swarm = await _client.SeedAsync(data, name,
+            new TorrentCreatorOptions
+            {
+                PieceLength = data.Length > 1048576 ? 262144 : 16384,
+                Trackers = new[] { "wss://hub.spawndev.com:44365/announce", "wss://tracker.openwebtorrent.com" },
+            });
+
+        var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
+        var vm = new TorrentViewModel
+        {
+            Swarm = swarm, Name = name, HashFull = hash, HashShort = hash[..8] + "...",
+            SizeText = FormatBytes(data.Length),
+        };
+        _torrents.Add(vm);
+        TorrentListView.SelectedItem = vm;
+        await ConnectTrackersAsync(vm, swarm.MagnetURI);
+        Log($"Seeding: {name}, {swarm.PieceManager!.PieceCount} pieces");
+    }
+
     private void PanelFiles_DoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
         if (_selectedVm != null && PanelFiles.SelectedItem is FileViewModel file)

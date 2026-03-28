@@ -188,6 +188,11 @@
                                 <TextBlock Width="320" Margin="0,1" FontSize="12"><Run Text="Downloaded: " Foreground="#475569"/><Run x:Name="DetailDownloaded" Foreground="#94a3b8"/></TextBlock>
                             </WrapPanel>
                             <TextBlock Margin="0,1" FontSize="10" FontFamily="Consolas"><Run Text="Hash: " Foreground="#475569"/><Run x:Name="DetailHash" Foreground="#334155"/></TextBlock>
+                            <StackPanel Orientation="Horizontal" Margin="0,6,0,4">
+                                <Button Content="&#128279; Copy Magnet" Click="CopyMagnet_Click" Background="#1e293b" Foreground="#94a3b8" BorderBrush="#334155" BorderThickness="1" Padding="8,2" FontSize="11" Cursor="Hand" Margin="0,0,4,0"/>
+                                <Button Content="&#128190; Export .torrent" Click="ExportTorrent_Click" Background="#1e293b" Foreground="#94a3b8" BorderBrush="#334155" BorderThickness="1" Padding="8,2" FontSize="11" Cursor="Hand" Margin="0,0,4,0"/>
+                                <Button Content="&#128193; Open File" Click="OpenFile_Click" Background="#1e293b" Foreground="#94a3b8" BorderBrush="#334155" BorderThickness="1" Padding="8,2" FontSize="11" Cursor="Hand" Margin="0,0,4,0"/>
+                            </StackPanel>
                             <TextBlock Text="Pieces" Foreground="#475569" FontSize="10" Margin="0,6,0,2"/>
                             <WrapPanel x:Name="PieceMapPanel"/>
                         </StackPanel>

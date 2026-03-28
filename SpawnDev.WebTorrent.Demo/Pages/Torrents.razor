@@ -18,7 +18,7 @@
     <div class="tc-toolbar">
         <div class="tc-toolbar-left">
             <div class="tc-add-row">
-                <input type="text" class="tc-input" placeholder="magnet:?xt=urn:btih:... or info hash"
+                <input type="text" class="tc-input" placeholder="magnet URI, info hash, or URL to .torrent file"
                        @bind="_magnetInput" @bind:event="oninput" @onkeydown="OnMagnetKeyDown" />
                 <button class="tc-btn tc-btn-accent" @onclick="AddMagnet" disabled="@(string.IsNullOrWhiteSpace(_magnetInput))">
                     + Add
@@ -461,6 +461,22 @@
 
     private async Task FetchMetadataAndDownload(TorrentEntry entry, string magnetUri)
     {
+        // If metadata already loaded (from .torrent URL), just start web seeds + download
+        if (entry.Swarm.HasMetadata)
+        {
+            entry.Name ??= entry.Swarm.Metadata!.Name;
+            foreach (var ws in entry.Swarm.Metadata!.UrlList)
+                entry.Swarm.AddWebSeed(ws.TrimEnd('/'));
+            entry.Swarm.OnPieceVerified += (_) => InvokeAsync(StateHasChanged);
+            entry.Swarm.OnDone += () => { Log($"[{entry.Name}] Download complete!"); InvokeAsync(StateHasChanged); };
+            entry.Swarm.OnError += (ex) => { Log($"[{entry.Name}] Error: {ex.Message}"); };
+            entry.Swarm.OnLog += (msg) => { Log($"[{entry.Name}] {msg}"); };
+            entry.Swarm.StartDownload();
+            Log($"[{entry.Name}] {FormatBytes(entry.Swarm.Metadata!.TotalLength)}, {entry.Swarm.Metadata.PieceCount} pieces");
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+
         string? torrentUrl = null;
         var webSeedUrls = new List<string>();
         foreach (var part in magnetUri.Split('&'))

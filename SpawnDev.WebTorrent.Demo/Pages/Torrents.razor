@@ -194,15 +194,32 @@
 
                             case "trackers":
                                 <table class="qb-sub-table">
-                                    <thead><tr><th>Tracker</th><th>Status</th></tr></thead>
+                                    <thead><tr><th>Tracker</th><th>Type</th><th>Status</th></tr></thead>
                                     <tbody>
                                         @foreach (var tr in sel.Trackers)
                                         {
-                                            <tr><td class="qb-mono">@tr.Url</td><td>@tr.Status</td></tr>
+                                            var ttype = tr.Url.StartsWith("wss://") ? "WSS" : tr.Url.StartsWith("ws://") ? "WS" : tr.Url.StartsWith("http") ? "HTTP" : "UDP";
+                                            <tr>
+                                                <td class="qb-mono" style="font-size:11px">@tr.Url</td>
+                                                <td><span class="qb-ext">@ttype</span></td>
+                                                <td>
+                                                    @if (tr.Status == "Connected") { <span style="color:#10b981">@tr.Status</span> }
+                                                    else if (tr.Status == "Failed") { <span style="color:#ef4444">@tr.Status</span> }
+                                                    else if (tr.Status.Contains("S /")) { <span style="color:#10b981">@tr.Status</span> }
+                                                    else { <span style="color:#64748b">@tr.Status</span> }
+                                                </td>
+                                            </tr>
                                         }
-                                        @if (sel.Trackers.Count == 0) { <tr><td colspan="2" class="qb-muted">No trackers</td></tr> }
+                                        @if (sel.Trackers.Count == 0) { <tr><td colspan="3" class="qb-muted">No trackers connected</td></tr> }
                                     </tbody>
                                 </table>
+                                @if (sel.Swarm.HasMetadata && sel.Swarm.Metadata!.AnnounceList.Length > 0)
+                                {
+                                    <div style="margin-top:8px;color:#334155;font-size:10px">
+                                        Announce list from .torrent: @string.Join(", ", sel.Swarm.Announce.Take(5))
+                                        @if (sel.Swarm.Announce.Length > 5) { <span>... (+@(sel.Swarm.Announce.Length - 5) more)</span> }
+                                    </div>
+                                }
                                 break;
 
                             case "peers":

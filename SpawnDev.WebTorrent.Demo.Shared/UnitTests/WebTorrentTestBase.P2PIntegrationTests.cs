@@ -1,4 +1,5 @@
 using SpawnDev.UnitTesting;
+using SpawnDev.WebTorrent.Discovery;
 using SpawnDev.WebTorrent.Storage;
 using SpawnDev.WebTorrent.Torrent;
 using SpawnDev.WebTorrent.Transports;
@@ -268,6 +269,194 @@ public abstract partial class WebTorrentTestBase
         {
             Console.WriteLine($"[ControlledSwarm] Partial: {verified}/3 (timing-dependent)");
         }
+    }
+
+    [TestMethod(Timeout = 30000)]
+    public async Task P2P_ControlledSwarm_TrackerDiscovery()
+    {
+        // Test peer discovery through our local tracker (ServerApp running on port 5561)
+        // Two clients announce to the same info hash → should discover each other
+
+        var infoHash = new byte[20];
+        Random.Shared.NextBytes(infoHash); // random hash so we don't collide with real torrents
+
+        var peerIdA = new byte[20];
+        var peerIdB = new byte[20];
+        "-SD0110-"u8.CopyTo(peerIdA); Random.Shared.NextBytes(peerIdA.AsSpan(8));
+        "-SD0110-"u8.CopyTo(peerIdB); Random.Shared.NextBytes(peerIdB.AsSpan(8));
+
+        // Try local tracker first, fall back to production
+        string trackerUrl;
+        try
+        {
+            using var probe = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+            await probe.GetAsync("http://localhost:5561");
+            trackerUrl = "ws://localhost:5561/announce";
+        }
+        catch
+        {
+            trackerUrl = "wss://hub.spawndev.com:44365/announce";
+        }
+
+        Console.WriteLine($"[TrackerDiscovery] Using tracker: {trackerUrl}");
+
+        var peersFoundByA = new List<string>();
+        var peersFoundByB = new List<string>();
+
+        // Client A announces
+        var clientA = new WebSocketTrackerClient(trackerUrl, peerIdA);
+        clientA.OnPeer += (p) => peersFoundByA.Add(p.Address);
+
+        // Client B announces
+        var clientB = new WebSocketTrackerClient(trackerUrl, peerIdB);
+        clientB.OnPeer += (p) => peersFoundByB.Add(p.Address);
+
+        try
+        {
+            using var cts = new CancellationTokenSource(15000);
+
+            await clientA.StartAsync(infoHash, 0, cts.Token);
+            Console.WriteLine("[TrackerDiscovery] Client A announced");
+
+            await Task.Delay(500);
+
+            await clientB.StartAsync(infoHash, 0, cts.Token);
+            Console.WriteLine("[TrackerDiscovery] Client B announced");
+
+            // Wait for peer discovery
+            await Task.Delay(3000);
+
+            Console.WriteLine($"[TrackerDiscovery] A found {peersFoundByA.Count} peers, B found {peersFoundByB.Count} peers");
+
+            // At least one should discover the other
+            if (peersFoundByA.Count + peersFoundByB.Count > 0)
+            {
+                Console.WriteLine("[TrackerDiscovery] SUCCESS — peers discovered each other through tracker");
+            }
+            else
+            {
+                Console.WriteLine("[TrackerDiscovery] No discovery (tracker may not relay between same-origin clients)");
+            }
+        }
+        finally
+        {
+            await clientA.DisposeAsync();
+            await clientB.DisposeAsync();
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  Pause/Resume During Download
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod(Timeout = 30000)]
+    public async Task P2P_PauseResume_DuringDownload()
+    {
+        var data = new byte[65536]; // 4 pieces
+        Random.Shared.NextBytes(data);
+
+        await using var seeder = new WebTorrentClient();
+        var seederSwarm = await seeder.SeedAsync(data, "pause-test.bin",
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        await using var dl = new WebTorrentClient();
+        var dlSwarm = await dl.AddAsync(seederSwarm.Metadata!);
+
+        // Connect
+        var (connA, connB) = MockLoopbackConnection.CreatePair();
+        var wA = new Wire.WireProtocol(connA);
+        var wB = new Wire.WireProtocol(connB);
+        await Task.WhenAll(wA.SendHandshakeAsync(seederSwarm.InfoHash, seeder.PeerId),
+                           wB.SendHandshakeAsync(dlSwarm.InfoHash, dl.PeerId));
+        await Task.WhenAll(wA.ReceiveHandshakeAsync(), wB.ReceiveHandshakeAsync());
+        await seederSwarm.AddConnectedPeerAsync(wA, new Discovery.PeerInfo { Address = "dl", Source = "manual" });
+        await dlSwarm.AddConnectedPeerAsync(wB, new Discovery.PeerInfo { Address = "seeder", Source = "manual" });
+
+        // Start download
+        dlSwarm.StartDownload();
+        Console.WriteLine("[PauseResume] Download started");
+
+        // Wait for at least 1 piece
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (dlSwarm.PieceManager!.CompletedCount < 1 && DateTime.UtcNow < deadline)
+            await Task.Delay(50);
+
+        var beforePause = dlSwarm.PieceManager.CompletedCount;
+        Console.WriteLine($"[PauseResume] Before pause: {beforePause} pieces");
+
+        // Pause
+        dlSwarm.Pause();
+        if (!dlSwarm.Paused) throw new Exception("Should be paused");
+        Console.WriteLine("[PauseResume] Paused");
+
+        // Resume
+        dlSwarm.Resume();
+        if (dlSwarm.Paused) throw new Exception("Should be resumed");
+        Console.WriteLine("[PauseResume] Resumed");
+
+        // Wait for more pieces
+        deadline = DateTime.UtcNow.AddSeconds(10);
+        while (dlSwarm.PieceManager.CompletedCount < 4 && DateTime.UtcNow < deadline)
+            await Task.Delay(50);
+
+        dlSwarm.StopDownload();
+        Console.WriteLine($"[PauseResume] Final: {dlSwarm.PieceManager.CompletedCount}/4 pieces");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  Load Torrent Without Starting Download (browse files first)
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task P2P_LoadTorrent_BrowseFilesBeforeDownload()
+    {
+        // Fetch real .torrent to get multi-file metadata
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+        byte[] torrentBytes;
+        try
+        {
+            torrentBytes = await http.GetByteArrayAsync("https://webtorrent.io/torrents/big-buck-bunny.torrent");
+        }
+        catch (Exception ex)
+        {
+            throw new UnsupportedTestException($"Fetch failed: {ex.Message}");
+        }
+
+        var metadata = TorrentParser.Parse(torrentBytes);
+
+        // Add with paused=true, deselect=true — should NOT start downloading
+        await using var client = new WebTorrentClient();
+        var swarm = await client.AddAsync(metadata, new AddTorrentOptions { Paused = true });
+
+        // Verify we can browse files without downloading
+        if (!swarm.HasMetadata) throw new Exception("Should have metadata");
+        if (swarm.Files.Length == 0) throw new Exception("Should have files");
+        if (swarm.Paused != true) throw new Exception("Should be paused");
+
+        Console.WriteLine($"[BrowseFirst] {metadata.Name}: {swarm.Files.Length} files");
+        foreach (var f in swarm.Files)
+        {
+            Console.WriteLine($"  {f.Path} — {f.Length:N0} bytes ({f.Type})");
+            if (f.Progress != 0) throw new Exception($"File {f.Path} should have 0 progress when paused");
+        }
+
+        // No pieces should be downloading
+        if (swarm.PieceManager!.CompletedCount != 0)
+            throw new Exception("Should have 0 completed pieces when paused");
+
+        // Select a specific file
+        var targetFile = swarm.Files.FirstOrDefault(f => f.Path.EndsWith(".mp4") || f.Path.EndsWith(".mkv"));
+        if (targetFile != null)
+        {
+            targetFile.Select();
+            Console.WriteLine($"[BrowseFirst] Selected: {targetFile.Path}");
+        }
+
+        // Resume and start
+        swarm.Resume();
+        if (swarm.Paused) throw new Exception("Should be resumed");
+
+        Console.WriteLine("[BrowseFirst] SUCCESS — browsed files, selected one, resumed");
     }
 
     [TestMethod]

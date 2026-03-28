@@ -86,6 +86,7 @@ public class WebTorrentClient : IAsyncDisposable
         options ??= new AddTorrentOptions();
 
         var swarm = new TorrentSwarm(this, options);
+        WireSwarmEvents(swarm);
         _torrents.Add(swarm);
         OnTorrentAdd?.Invoke(swarm);
 
@@ -110,6 +111,7 @@ public class WebTorrentClient : IAsyncDisposable
         options ??= new AddTorrentOptions();
 
         var swarm = new TorrentSwarm(this, options);
+        WireSwarmEvents(swarm);
         _torrents.Add(swarm);
         OnTorrentAdd?.Invoke(swarm);
 
@@ -122,6 +124,13 @@ public class WebTorrentClient : IAsyncDisposable
         }
 
         return swarm;
+    }
+
+    private void WireSwarmEvents(TorrentSwarm swarm)
+    {
+        swarm.OnReady += () => OnTorrentReady?.Invoke(swarm);
+        swarm.OnDone += () => OnTorrentDone?.Invoke(swarm);
+        swarm.OnError += (ex) => OnError?.Invoke(ex);
     }
 
     /// <summary>Remove a torrent and optionally destroy its data.</summary>
@@ -156,8 +165,52 @@ public class WebTorrentClient : IAsyncDisposable
 
     private void HandleIncomingConnection(IConnection connection)
     {
-        // Route to correct torrent based on handshake info hash
-        // (handled after handshake completes)
+        _ = HandleIncomingConnectionAsync(connection);
+    }
+
+    private async Task HandleIncomingConnectionAsync(IConnection connection)
+    {
+        try
+        {
+            // Perform handshake to determine which torrent this peer wants
+            var wire = new Wire.WireProtocol(connection);
+
+            // Receive their handshake first
+            if (!await wire.ReceiveHandshakeAsync())
+            {
+                await connection.CloseAsync();
+                return;
+            }
+
+            if (wire.RemoteInfoHash == null)
+            {
+                await connection.CloseAsync();
+                return;
+            }
+
+            // Find the matching torrent
+            var swarm = _torrents.FirstOrDefault(t => t.InfoHash.SequenceEqual(wire.RemoteInfoHash));
+            if (swarm == null)
+            {
+                await connection.CloseAsync();
+                return;
+            }
+
+            // Send our handshake back
+            await wire.SendHandshakeAsync(swarm.InfoHash, _peerId);
+
+            // Add as a connected peer
+            var peerInfo = new Discovery.PeerInfo
+            {
+                Address = connection.RemoteId,
+                Source = connection.TransportType,
+            };
+            await swarm.AddConnectedPeerAsync(wire, peerInfo);
+        }
+        catch
+        {
+            try { await connection.CloseAsync(); } catch { }
+        }
     }
 
     public async ValueTask DisposeAsync()

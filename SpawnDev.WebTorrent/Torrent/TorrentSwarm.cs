@@ -13,7 +13,11 @@ public class TorrentSwarm : IAsyncDisposable
     private readonly WebTorrentClient _client;
     private readonly AddTorrentOptions _options;
     private readonly List<PeerConnection> _peers = new();
+    private readonly HashSet<string> _knownPeerAddresses = new();
+    private readonly SemaphoreSlim _peerLock = new(1, 1);
     private IChunkStore? _store;
+    private PieceManager? _pieceManager;
+    private DownloadCoordinator? _coordinator;
 
     /// <summary>Torrent metadata (available after initialization or metadata exchange).</summary>
     public TorrentMetadata? Metadata { get; private set; }
@@ -28,7 +32,7 @@ public class TorrentSwarm : IAsyncDisposable
     public bool Done { get; private set; }
 
     /// <summary>Download progress (0.0 to 1.0).</summary>
-    public double Progress { get; private set; }
+    public double Progress => _pieceManager?.Progress ?? 0;
 
     /// <summary>Current download speed in bytes/sec.</summary>
     public double DownloadSpeed { get; private set; }
@@ -46,10 +50,22 @@ public class TorrentSwarm : IAsyncDisposable
     public int PeerCount => _peers.Count;
 
     /// <summary>Bitfield of verified pieces.</summary>
-    public bool[]? Bitfield { get; private set; }
+    public bool[]? Bitfield => _pieceManager?.Bitfield;
 
     /// <summary>Files in this torrent (available after metadata).</summary>
     public TorrentFileStream[] Files { get; private set; } = Array.Empty<TorrentFileStream>();
+
+    /// <summary>The piece manager (available after metadata is set).</summary>
+    public PieceManager? PieceManager => _pieceManager;
+
+    /// <summary>The download coordinator (available after metadata is set).</summary>
+    public DownloadCoordinator? Coordinator => _coordinator;
+
+    /// <summary>The chunk store (available after metadata is set).</summary>
+    public IChunkStore? Store => _store;
+
+    /// <summary>Whether the swarm is paused (not connecting to new peers).</summary>
+    public bool Paused { get; private set; }
 
     // Events
     public event Action? OnReady;
@@ -65,12 +81,12 @@ public class TorrentSwarm : IAsyncDisposable
     {
         _client = client;
         _options = options;
+        Paused = options.Paused;
     }
 
     /// <summary>Initialize from magnet URI or info hash string.</summary>
     public Task InitializeAsync(string magnetOrInfoHash)
     {
-        // Parse magnet URI: magnet:?xt=urn:btih:{infoHash}&dn={name}&tr={tracker}
         if (magnetOrInfoHash.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase))
         {
             var uri = new Uri(magnetOrInfoHash);
@@ -87,7 +103,6 @@ public class TorrentSwarm : IAsyncDisposable
         }
         else if (magnetOrInfoHash.Length == 40)
         {
-            // Raw hex info hash
             InfoHash = Convert.FromHexString(magnetOrInfoHash);
         }
         else
@@ -101,54 +116,266 @@ public class TorrentSwarm : IAsyncDisposable
     /// <summary>Set metadata (from .torrent file parse or ut_metadata exchange).</summary>
     public void SetMetadata(TorrentMetadata metadata)
     {
+        if (Metadata != null) return; // already set
+
         Metadata = metadata;
         InfoHash = metadata.InfoHash;
-        Bitfield = new bool[metadata.PieceCount];
 
         // Create chunk store
         _store = _options.StoreFactory?.Invoke(metadata.PieceLength)
             ?? new MemoryChunkStore(metadata.PieceLength);
 
+        // Create piece manager
+        _pieceManager = new PieceManager(metadata, _store);
+        _pieceManager.OnPieceComplete += HandlePieceComplete;
+
+        // Create download coordinator
+        _coordinator = new DownloadCoordinator(_pieceManager, metadata);
+        _coordinator.OnDownloadComplete += () =>
+        {
+            Done = true;
+            OnDone?.Invoke();
+        };
+
         // Create file stream abstractions
         Files = metadata.Files.Select(f => new TorrentFileStream(this, f, _store)).ToArray();
+
+        // Add any already-connected peers to the coordinator
+        foreach (var peer in _peers)
+        {
+            _coordinator.AddPeer(peer.Wire, peer.PeerBitfield);
+        }
 
         OnReady?.Invoke();
     }
 
-    /// <summary>Add a discovered peer.</summary>
+    /// <summary>Add a discovered peer and initiate connection.</summary>
     public void AddPeer(PeerInfo info)
     {
-        if (_peers.Count >= _client.Torrents.Count * 55) return; // max peers
-        // TODO: connect to peer, perform handshake, add to _peers
+        if (Paused) return;
+        if (_peers.Count >= 55) return;
+
+        // Deduplicate
+        if (!_knownPeerAddresses.Add(info.Address)) return;
+
+        // Connect asynchronously — don't block the caller
+        _ = ConnectToPeerAsync(info);
     }
 
-    /// <summary>Mark a piece as verified.</summary>
-    internal void PieceVerified(int index, byte[] data)
+    private async Task ConnectToPeerAsync(PeerInfo info)
     {
-        if (Bitfield == null || Metadata == null) return;
-        Bitfield[index] = true;
-        Downloaded += data.Length;
-        OnPieceVerified?.Invoke(index);
-        OnDownload?.Invoke(data.Length);
+        try
+        {
+            // Find a suitable transport from the client
+            var transport = FindTransport(info);
+            if (transport == null) return;
 
-        // Check if done
-        int verified = Bitfield.Count(b => b);
-        Progress = (double)verified / Metadata.PieceCount;
-        if (verified == Metadata.PieceCount)
+            var conn = await transport.ConnectAsync(info.Address);
+
+            // Perform BitTorrent handshake
+            var wire = new WireProtocol(conn);
+            await wire.SendHandshakeAsync(InfoHash, _client.PeerId);
+
+            if (!await wire.ReceiveHandshakeAsync())
+            {
+                await conn.CloseAsync();
+                return;
+            }
+
+            // Verify info hash matches
+            if (wire.RemoteInfoHash == null || !wire.RemoteInfoHash.SequenceEqual(InfoHash))
+            {
+                await conn.CloseAsync();
+                return;
+            }
+
+            await AddConnectedPeerAsync(wire, info);
+        }
+        catch (Exception ex)
+        {
+            OnError?.Invoke(new Exception($"Failed to connect to {info.Address}: {ex.Message}"));
+        }
+    }
+
+    /// <summary>Add a peer that has already completed the handshake (from PeerCoordinator or incoming).</summary>
+    public async Task AddConnectedPeerAsync(WireProtocol wire, PeerInfo info)
+    {
+        await _peerLock.WaitAsync();
+        try
+        {
+            if (_peers.Count >= 55)
+            {
+                await wire.DisposeAsync();
+                return;
+            }
+
+            var peer = new PeerConnection(wire, info);
+
+            // Wire up events
+            wire.OnBitfield += (bf) =>
+            {
+                peer.PeerBitfield = new bool[bf.Length * 8];
+                for (int i = 0; i < bf.Length; i++)
+                    for (int bit = 0; bit < 8; bit++)
+                        if (i * 8 + bit < peer.PeerBitfield.Length)
+                            peer.PeerBitfield[i * 8 + bit] = (bf[i] & (1 << (7 - bit))) != 0;
+
+                // Add to coordinator if metadata is available
+                _coordinator?.AddPeer(wire, peer.PeerBitfield);
+            };
+
+            wire.OnHave += (pieceIndex) =>
+            {
+                if (pieceIndex < peer.PeerBitfield.Length)
+                    peer.PeerBitfield[pieceIndex] = true;
+            };
+
+            wire.OnRequest += async (pieceIndex, offset, length) =>
+            {
+                // Seeding: respond to piece requests
+                if (_store != null && _pieceManager != null && _pieceManager.Bitfield[pieceIndex])
+                {
+                    var data = await _store.GetAsync(pieceIndex, offset, length);
+                    if (data != null)
+                    {
+                        await wire.SendPieceAsync(pieceIndex, offset, data);
+                        Uploaded += data.Length;
+                        OnUpload?.Invoke(data.Length);
+                    }
+                }
+            };
+
+            _peers.Add(peer);
+            OnPeerConnect?.Invoke(peer);
+
+            // Send interested + unchoke
+            await wire.SendMessageAsync(MessageType.Interested);
+            await wire.SendMessageAsync(MessageType.Unchoke);
+
+            // Send our bitfield if we have metadata and any pieces
+            if (_pieceManager != null && _pieceManager.Bitfield.Any(b => b))
+            {
+                await wire.SendBitfieldAsync(BoolBitfieldToBytes(_pieceManager.Bitfield));
+            }
+
+            // Run the message read loop in background
+            _ = RunPeerAsync(peer);
+        }
+        finally
+        {
+            _peerLock.Release();
+        }
+    }
+
+    private async Task RunPeerAsync(PeerConnection peer)
+    {
+        try
+        {
+            await peer.Wire.RunAsync();
+        }
+        catch { }
+        finally
+        {
+            await _peerLock.WaitAsync();
+            try
+            {
+                _peers.Remove(peer);
+                _knownPeerAddresses.Remove(peer.Info.Address);
+            }
+            finally
+            {
+                _peerLock.Release();
+            }
+            OnPeerDisconnect?.Invoke(peer);
+        }
+    }
+
+    /// <summary>Convert bool[] bitfield to packed byte[] for wire protocol.</summary>
+    private static byte[] BoolBitfieldToBytes(bool[] bitfield)
+    {
+        int byteCount = (bitfield.Length + 7) / 8;
+        var bytes = new byte[byteCount];
+        for (int i = 0; i < bitfield.Length; i++)
+            if (bitfield[i])
+                bytes[i / 8] |= (byte)(1 << (7 - (i % 8)));
+        return bytes;
+    }
+
+    private Transports.ITransport? FindTransport(PeerInfo info)
+    {
+        // For now, use the first available transport
+        // TCP addresses look like "ip:port", WebRTC peer IDs are hex strings
+        // The transport selection can be made smarter later
+        return null; // Peers come through PeerCoordinator which handles transport
+    }
+
+    private void HandlePieceComplete(int pieceIndex)
+    {
+        if (_pieceManager == null || Metadata == null) return;
+
+        int pieceLength = (pieceIndex == Metadata.PieceCount - 1)
+            ? (int)(Metadata.TotalLength - (long)pieceIndex * Metadata.PieceLength)
+            : Metadata.PieceLength;
+
+        Downloaded += pieceLength;
+        OnPieceVerified?.Invoke(pieceIndex);
+        OnDownload?.Invoke(pieceLength);
+
+        // Notify all peers we have this piece
+        foreach (var peer in _peers.ToArray())
+        {
+            _ = peer.Wire.SendHaveAsync(pieceIndex);
+        }
+
+        if (_pieceManager.IsComplete)
         {
             Done = true;
             OnDone?.Invoke();
         }
     }
 
+    /// <summary>Start the download coordinator.</summary>
+    public void StartDownload()
+    {
+        _coordinator?.Start();
+    }
+
+    /// <summary>Stop the download coordinator.</summary>
+    public void StopDownload()
+    {
+        _coordinator?.Stop();
+    }
+
+    /// <summary>Pause — stop connecting to new peers.</summary>
+    public void Pause()
+    {
+        Paused = true;
+    }
+
+    /// <summary>Resume — allow connecting to new peers.</summary>
+    public void Resume()
+    {
+        Paused = false;
+    }
+
+    /// <summary>Add a web seed URL.</summary>
+    public void AddWebSeed(string url)
+    {
+        _coordinator?.AddWebSeed(new HttpClient { Timeout = TimeSpan.FromSeconds(30) }, url);
+    }
+
     public async ValueTask DisposeAsync()
     {
+        _coordinator?.Stop();
+
         foreach (var peer in _peers.ToArray())
             await peer.DisposeAsync();
         _peers.Clear();
 
         if (_store != null)
             await _store.DisposeAsync();
+
+        _peerLock.Dispose();
     }
 }
 
@@ -160,11 +387,15 @@ public class PeerConnection : IAsyncDisposable
     public WireProtocol Wire { get; }
     public PeerInfo Info { get; }
     public bool[] PeerBitfield { get; set; } = Array.Empty<bool>();
+    public bool IsChoked { get; set; } = true;
 
     public PeerConnection(WireProtocol wire, PeerInfo info)
     {
         Wire = wire;
         Info = info;
+
+        wire.OnChoke += () => IsChoked = true;
+        wire.OnUnchoke += () => IsChoked = false;
     }
 
     public async ValueTask DisposeAsync()
@@ -193,10 +424,11 @@ public class TorrentFileStream
     {
         get
         {
-            if (_swarm.Bitfield == null) return 0;
+            var bitfield = _swarm.Bitfield;
+            if (bitfield == null) return 0;
             int count = 0, total = _file.EndPiece - _file.StartPiece + 1;
             for (int i = _file.StartPiece; i <= _file.EndPiece; i++)
-                if (_swarm.Bitfield[i]) count++;
+                if (bitfield[i]) count++;
             return total > 0 ? (double)count / total : 0;
         }
     }
@@ -229,10 +461,13 @@ public class TorrentFileStream
             int bytesInPiece = Math.Min(meta.PieceLength - pieceOffset, length - resultOffset);
 
             // Wait for this piece to be available
-            while (_swarm.Bitfield != null && !_swarm.Bitfield[pieceIndex])
+            var bitfield = _swarm.Bitfield;
+            while (bitfield != null && !bitfield[pieceIndex])
             {
-                // TODO: prioritize this piece for immediate download
+                // Signal the coordinator to prioritize this piece
+                _swarm.Coordinator?.Prioritize(pieceIndex);
                 await Task.Delay(10, ct);
+                bitfield = _swarm.Bitfield;
             }
 
             var pieceData = await _store.GetAsync(pieceIndex, pieceOffset, bytesInPiece, ct);

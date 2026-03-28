@@ -67,6 +67,11 @@ public class TorrentSwarm : IAsyncDisposable
     /// <summary>Whether the swarm is paused (not connecting to new peers).</summary>
     public bool Paused { get; private set; }
 
+    // Speed tracking
+    private long _downloadedSinceLastTick;
+    private long _uploadedSinceLastTick;
+    private DateTime _lastSpeedTick = DateTime.UtcNow;
+
     /// <summary>Whether the torrent is ready (metadata available and store ready).</summary>
     public bool Ready => HasMetadata && _store != null;
 
@@ -173,9 +178,9 @@ public class TorrentSwarm : IAsyncDisposable
         Metadata = metadata;
         InfoHash = metadata.InfoHash;
 
-        // Create chunk store
+        // Create chunk store — use custom factory, or platform default
         _store = _options.StoreFactory?.Invoke(metadata.PieceLength)
-            ?? new MemoryChunkStore(metadata.PieceLength);
+            ?? CreateDefaultStore(metadata);
 
         // Create piece manager
         _pieceManager = new PieceManager(metadata, _store);
@@ -294,6 +299,7 @@ public class TorrentSwarm : IAsyncDisposable
                     {
                         await wire.SendPieceAsync(pieceIndex, offset, data);
                         Uploaded += data.Length;
+                        _uploadedSinceLastTick += data.Length;
                         OnUpload?.Invoke(data.Length);
                     }
                 }
@@ -372,6 +378,7 @@ public class TorrentSwarm : IAsyncDisposable
             : Metadata.PieceLength;
 
         Downloaded += pieceLength;
+        _downloadedSinceLastTick += pieceLength;
         OnPieceVerified?.Invoke(pieceIndex);
         OnDownload?.Invoke(pieceLength);
 
@@ -385,6 +392,40 @@ public class TorrentSwarm : IAsyncDisposable
         {
             Done = true;
             OnDone?.Invoke();
+        }
+    }
+
+    private IChunkStore CreateDefaultStore(TorrentMetadata metadata)
+    {
+        var hashHex = Convert.ToHexString(metadata.InfoHash).ToLowerInvariant();
+
+        // Use AsyncFSChunkStore if an IAsyncFS is provided via options
+        if (_options.AsyncFileSystem != null)
+            return new AsyncFSChunkStore(_options.AsyncFileSystem, $"webtorrent/{hashHex}", metadata.PieceLength);
+
+        // Desktop: use FileChunkStore in temp directory
+        if (!OperatingSystem.IsBrowser())
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "SpawnDev.WebTorrent", hashHex);
+            return new FileChunkStore(dir, metadata.PieceLength);
+        }
+
+        // Browser fallback: memory
+        return new MemoryChunkStore(metadata.PieceLength);
+    }
+
+    /// <summary>Update speed calculations. Call periodically (e.g., every second).</summary>
+    public void UpdateSpeed()
+    {
+        var now = DateTime.UtcNow;
+        var elapsed = (now - _lastSpeedTick).TotalSeconds;
+        if (elapsed >= 0.5)
+        {
+            DownloadSpeed = _downloadedSinceLastTick / elapsed;
+            UploadSpeed = _uploadedSinceLastTick / elapsed;
+            _downloadedSinceLastTick = 0;
+            _uploadedSinceLastTick = 0;
+            _lastSpeedTick = now;
         }
     }
 

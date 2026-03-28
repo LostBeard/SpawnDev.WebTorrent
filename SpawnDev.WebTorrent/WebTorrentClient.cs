@@ -320,6 +320,12 @@ public class AddTorrentOptions
     /// <summary>Piece selection strategy: "rarest" or "sequential".</summary>
     public string Strategy { get; set; } = "rarest";
 
-    /// <summary>Custom chunk store factory. If null, uses MemoryChunkStore.</summary>
+    /// <summary>Custom chunk store factory. If null, uses platform default.</summary>
     public Func<int, IChunkStore>? StoreFactory { get; set; }
+
+    /// <summary>
+    /// Async file system for persistent storage (OPFS in browser, native on desktop).
+    /// If provided, AsyncFSChunkStore is used instead of MemoryChunkStore.
+    /// </summary>
+    public SpawnDev.AsyncFileSystem.IAsyncFS? AsyncFileSystem { get; set; }
 }

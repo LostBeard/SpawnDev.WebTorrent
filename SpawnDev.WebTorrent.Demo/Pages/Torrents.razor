@@ -7,6 +7,7 @@
 @using SpawnDev.WebTorrent.Wire
 @using SpawnDev.BlazorJS
 @using SpawnDev.BlazorJS.JSObjects
+@using SpawnDev.AsyncFileSystem
 @inject BlazorJSRuntime JS
 @implements IAsyncDisposable
 
@@ -95,8 +96,8 @@
                                         <span class="tc-progress-text">@((progress * 100).ToString("F1"))%</span>
                                     </div>
                                 </td>
-                                <td class="col-speed tc-speed-val">—</td>
-                                <td class="col-speed tc-speed-val">—</td>
+                                <td class="col-speed tc-speed-val">@(e.Swarm.DownloadSpeed > 0 ? FormatSpeed(e.Swarm.DownloadSpeed) : "—")</td>
+                                <td class="col-speed tc-speed-val">@(e.Swarm.UploadSpeed > 0 ? FormatSpeed(e.Swarm.UploadSpeed) : "—")</td>
                                 <td class="col-peers">@e.Swarm.PeerCount</td>
                                 <td class="col-status">
                                     @if (e.PieceManager?.IsComplete == true)
@@ -343,6 +344,7 @@
     private readonly List<TorrentEntry> _torrents = new();
     private readonly List<string> _logMessages = new();
     private WebTorrentClient? _client;
+    private IAsyncFS? _asyncFs;
     private System.Threading.Timer? _refreshTimer;
     private TorrentEntry? _selectedTorrent;
     private string _detailTab = "general";
@@ -385,9 +387,28 @@
     protected override void OnInitialized()
     {
         _client = new WebTorrentClient();
-        Log("Client initialized");
 
-        _refreshTimer = new System.Threading.Timer(_ => InvokeAsync(StateHasChanged), null, 1000, 1000);
+        // Create persistent file system (OPFS in browser)
+        if (OperatingSystem.IsBrowser())
+        {
+            try
+            {
+                _asyncFs = new SpawnDev.AsyncFileSystem.BrowserWASM.AsyncFSFileSystemDirectoryHandle(JS);
+            }
+            catch { }
+        }
+
+        Log($"Client initialized (storage: {(_asyncFs != null ? "OPFS" : "memory")})");
+
+
+        _refreshTimer = new System.Threading.Timer(_ =>
+        {
+            // Update speed calculations for all torrents
+            foreach (var t in _torrents) t.Swarm.UpdateSpeed();
+            _globalDownSpeed = _torrents.Sum(t => t.Swarm.DownloadSpeed);
+            _globalUpSpeed = _torrents.Sum(t => t.Swarm.UploadSpeed);
+            InvokeAsync(StateHasChanged);
+        }, null, 1000, 1000);
     }
 
     private async Task OnMagnetKeyDown(KeyboardEventArgs e)
@@ -417,7 +438,7 @@
         if (_client == null) return;
         try
         {
-            var swarm = await _client.AddAsync(magnetUri);
+            var swarm = await _client.AddAsync(magnetUri, new AddTorrentOptions { AsyncFileSystem = _asyncFs });
             var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
 
             var entry = new TorrentEntry

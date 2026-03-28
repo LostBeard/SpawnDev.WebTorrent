@@ -44,7 +44,9 @@ public class DownloadCoordinator
     /// <summary>Add a web seed URL for CDN fallback.</summary>
     public void AddWebSeed(HttpClient httpClient, string url)
     {
-        _webSeeds.Add(new WebSeedConnection(httpClient, url, _metadata));
+        var seed = new WebSeedConnection(httpClient, url, _metadata);
+        seed.OnLog += (msg) => OnLog?.Invoke(msg);
+        _webSeeds.Add(seed);
     }
 
     /// <summary>Add an active peer with its wire protocol and bitfield.</summary>

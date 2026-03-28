@@ -173,7 +173,7 @@
                                         <button class="qb-action-btn" @onclick="() => ExportTorrent(sel)" title="Download .torrent file">&#128190; Export .torrent</button>
                                     }
                                     <label class="qb-toggle">
-                                        <input type="checkbox" checked="@sel.Sequential" @onchange="(e) => { sel.Sequential = (bool)(e.Value ?? false); }" />
+                                        <input type="checkbox" checked="@sel.Sequential" @onchange="(e) => ToggleSequential(sel, (bool)(e.Value ?? false))" />
                                         <span>Sequential Download</span>
                                     </label>
                                 </div>
@@ -547,6 +547,14 @@
         if (entry.WebRtcTransport != null) await entry.WebRtcTransport.DisposeAsync();
         if (_client != null) await _client.RemoveAsync(entry.Swarm);
         Log($"Removed: {entry.DisplayName}");
+    }
+
+    private void ToggleSequential(TorrentEntry entry, bool sequential)
+    {
+        entry.Sequential = sequential;
+        if (entry.Swarm.Coordinator != null)
+            entry.Swarm.Coordinator.Strategy = sequential ? "sequential" : "rarest";
+        Log($"[{entry.DisplayName}] Strategy: {(sequential ? "sequential" : "rarest-first")}");
     }
 
     // ── Torrent Actions ──

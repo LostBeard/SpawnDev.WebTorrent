@@ -35,6 +35,9 @@ public class DownloadCoordinator
     /// <summary>Threshold: enter endgame when this many pieces remain.</summary>
     public int EndgameThreshold { get; set; } = 5;
 
+    /// <summary>Piece selection strategy: "rarest" or "sequential".</summary>
+    public string Strategy { get; set; } = "rarest";
+
     // Events
     public event Action<int>? OnPieceComplete;
     public event Action? OnDownloadComplete;
@@ -124,7 +127,7 @@ public class DownloadCoordinator
                     // Then normal selection
                     if (peer.OutstandingRequests.Count < MaxRequestsPerPeer)
                     {
-                        int piece = _pieceManager.SelectPiece(peer.Bitfield);
+                        int piece = _pieceManager.SelectPiece(peer.Bitfield, Strategy);
                         if (piece >= 0)
                             await RequestBlocksFromPeer(peer, piece);
                     }

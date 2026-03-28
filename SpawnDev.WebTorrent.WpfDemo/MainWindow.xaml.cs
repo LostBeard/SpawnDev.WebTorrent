@@ -341,17 +341,25 @@ public partial class MainWindow : Window
         // Tab highlighting
         TabGeneral.Foreground = _currentTab == "general" ? (Brush)FindResource("AccentGreen") : (Brush)FindResource("TextMuted");
         TabGeneral.BorderBrush = _currentTab == "general" ? (Brush)FindResource("AccentGreen") : Brushes.Transparent;
-        TabFiles.Foreground = _currentTab == "files" ? (Brush)FindResource("AccentGreen") : (Brush)FindResource("TextMuted");
-        TabFiles.BorderBrush = _currentTab == "files" ? (Brush)FindResource("AccentGreen") : Brushes.Transparent;
-        TabTrackers.Foreground = _currentTab == "trackers" ? (Brush)FindResource("AccentGreen") : (Brush)FindResource("TextMuted");
-        TabTrackers.BorderBrush = _currentTab == "trackers" ? (Brush)FindResource("AccentGreen") : Brushes.Transparent;
-        TabLog.Foreground = _currentTab == "log" ? (Brush)FindResource("AccentGreen") : (Brush)FindResource("TextMuted");
-        TabLog.BorderBrush = _currentTab == "log" ? (Brush)FindResource("AccentGreen") : Brushes.Transparent;
+        foreach (var (btn, tab) in new[] { (TabFiles, "files"), (TabPeers, "peers"), (TabTrackers, "trackers"), (TabLog, "log") })
+        {
+            btn.Foreground = _currentTab == tab ? (Brush)FindResource("AccentGreen") : (Brush)FindResource("TextMuted");
+            btn.BorderBrush = _currentTab == tab ? (Brush)FindResource("AccentGreen") : Brushes.Transparent;
+        }
+        TabGeneral.Foreground = _currentTab == "general" ? (Brush)FindResource("AccentGreen") : (Brush)FindResource("TextMuted");
+        TabGeneral.BorderBrush = _currentTab == "general" ? (Brush)FindResource("AccentGreen") : Brushes.Transparent;
 
         PanelGeneral.Visibility = _currentTab == "general" ? Visibility.Visible : Visibility.Collapsed;
         PanelFiles.Visibility = _currentTab == "files" ? Visibility.Visible : Visibility.Collapsed;
+        PanelPeers.Visibility = _currentTab == "peers" ? Visibility.Visible : Visibility.Collapsed;
         PanelTrackers.Visibility = _currentTab == "trackers" ? Visibility.Visible : Visibility.Collapsed;
         PanelLog.Visibility = _currentTab == "log" ? Visibility.Visible : Visibility.Collapsed;
+
+        if (_currentTab == "peers" && _selectedVm != null)
+        {
+            var peerCount = _selectedVm.Swarm.PeerCount + (_selectedVm.Coordinator?.PeerCount ?? 0);
+            PanelPeers.Text = $"{peerCount} connected peer(s)\nWeb seeds: {_selectedVm.Swarm.WebSeedCount}\n\nPeers connect via WebSocket tracker signaling and WebRTC data channels.\nDesktop peers use SIPSorcery, browser peers use SpawnDev.BlazorJS.";
+        }
     }
 
     private void UpdatePieceMap()

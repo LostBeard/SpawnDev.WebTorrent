@@ -175,6 +175,7 @@
                     <Button Content="General" Tag="general" Click="Tab_Click" Style="{StaticResource TabBtn}" x:Name="TabGeneral"
                             Foreground="{StaticResource AccentGreen}" BorderBrush="{StaticResource AccentGreen}"/>
                     <Button Content="Files" Tag="files" Click="Tab_Click" Style="{StaticResource TabBtn}" x:Name="TabFiles"/>
+                    <Button Content="Peers" Tag="peers" Click="Tab_Click" Style="{StaticResource TabBtn}" x:Name="TabPeers"/>
                     <Button Content="Trackers" Tag="trackers" Click="Tab_Click" Style="{StaticResource TabBtn}" x:Name="TabTrackers"/>
                     <Button Content="Log" Tag="log" Click="Tab_Click" Style="{StaticResource TabBtn}" x:Name="TabLog"/>
                 </StackPanel>
@@ -213,6 +214,7 @@
                             </GridView>
                         </ListView.View>
                     </ListView>
+                    <TextBlock x:Name="PanelPeers" Visibility="Collapsed" Foreground="#64748b" FontSize="12" Margin="8" TextWrapping="Wrap"/>
                     <ListView x:Name="PanelTrackers" Visibility="Collapsed" Background="Transparent" BorderThickness="0"
                               Foreground="#94a3b8" FontSize="12">
                         <ListView.View>

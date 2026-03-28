@@ -267,6 +267,10 @@
                             case "content":
                                 @if (sel.Swarm.HasMetadata)
                                 {
+                                    <div style="display:flex;gap:4px;padding:2px 0">
+                                        <button class="qb-action-btn" style="font-size:10px" @onclick="() => { foreach (var f in sel.Swarm.Files) f.Select(); }">Select All</button>
+                                        <button class="qb-action-btn" style="font-size:10px" @onclick="() => { foreach (var f in sel.Swarm.Files) f.Deselect(); }">Deselect All</button>
+                                    </div>
                                     <table class="qb-sub-table">
                                         <thead><tr><th>File</th><th class="qb-col-fsize">Size</th><th class="qb-col-fprog-wide">Progress</th><th class="qb-col-fdl">Downloaded</th><th class="qb-col-ftype">Type</th><th class="qb-col-fpri">Priority</th><th></th></tr></thead>
                                         <tbody>

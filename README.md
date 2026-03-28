@@ -3,7 +3,7 @@
 [![NuGet](https://img.shields.io/nuget/v/SpawnDev.WebTorrent.svg)](https://www.nuget.org/packages/SpawnDev.WebTorrent)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Runs on desktop (.NET) and browser (Blazor WASM). 161 tests. 13 BEPs implemented.
+Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Runs on desktop (.NET) and browser (Blazor WASM). 188 tests. 13 BEPs implemented.
 
 ## Features
 
@@ -20,7 +20,7 @@ Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Run
 - **Speed Tracking** — Real-time download/upload bytes/sec per torrent.
 - **HuggingFace Integration** — Optional server extension that proxies HuggingFace model CDN with local caching and automatic torrent generation.
 - **.torrent Creation** — Create and parse .torrent files. Complete Bencode encoder/decoder.
-- **161 Unit Tests** — Every feature tested via PlaywrightMultiTest against real-world torrents.
+- **188 Unit Tests** — Every feature tested via PlaywrightMultiTest against real-world torrents.
 
 ## Packages
 

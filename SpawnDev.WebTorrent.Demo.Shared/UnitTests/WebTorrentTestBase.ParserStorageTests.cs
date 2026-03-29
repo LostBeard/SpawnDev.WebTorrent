@@ -1,3 +1,5 @@
+using SpawnDev.BlazorJS;
+using SpawnDev.BlazorJS.JSObjects;
 using SpawnDev.UnitTesting;
 using SpawnDev.WebTorrent.Bencode;
 using SpawnDev.WebTorrent.Storage;
@@ -354,7 +356,7 @@ public abstract partial class WebTorrentTestBase
             for (int i = 0; i < 10; i++)
             {
                 var data = new byte[1024];
-                Array.Fill(data, (byte)i);
+                System.Array.Fill(data, (byte)i);
                 await store.PutAsync(i, data);
             }
             for (int i = 0; i < 10; i++)
@@ -1054,5 +1056,128 @@ public abstract partial class WebTorrentTestBase
             throw new Exception("Large file cross-piece read mismatch");
 
         Console.WriteLine($"[RandomAccess] Large file cross-piece (50KB across 3 pieces): OK");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  Service Worker Streaming — End-to-End
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task ServiceWorker_IsRegistered()
+    {
+        if (!OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("Service worker requires browser");
+        if (JS == null) throw new UnsupportedTestException("Requires BlazorJSRuntime");
+
+        using var swContainer = JS.Get<ServiceWorkerContainer>("navigator.serviceWorker");
+        if (swContainer == null)
+            throw new Exception("navigator.serviceWorker not available");
+
+        using var controller = swContainer.Controller;
+        if (controller == null)
+            throw new Exception("No service worker controller — SW not active");
+
+        // Check what script URL the controller is using
+        var scriptUrl = controller.ScriptURL;
+        Console.WriteLine($"[SW] Controller active: state={controller.State}, script={scriptUrl}");
+
+        if (!scriptUrl.Contains("webtorrent-sw.js"))
+            throw new Exception($"Wrong service worker controlling the page: {scriptUrl}. Expected webtorrent-sw.js");
+    }
+
+    [TestMethod]
+    public async Task ServiceWorker_InterceptsWebtorrentUrl()
+    {
+        if (!OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("Service worker requires browser");
+        if (JS == null) throw new UnsupportedTestException("Requires BlazorJSRuntime");
+
+        // Fetch a /webtorrent/ URL with a fake hash — SW should intercept and respond
+        using var response = await JS.Fetch("/webtorrent/0000000000000000000000000000000000000000/0");
+        var status = response.Status;
+
+        // 404 from static file server means SW did NOT intercept
+        // 500/503 from our handler means SW DID intercept but no torrent found
+        if (status == 404)
+            throw new Exception($"SW did NOT intercept /webtorrent/ request (got 404 from static server). " +
+                $"The service worker fetch handler is not running.");
+
+        Console.WriteLine($"[SW] /webtorrent/ intercept: status={status}");
+    }
+
+    [TestMethod]
+    public async Task ServiceWorker_StreamsRealTorrentData()
+    {
+        if (!OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("Service worker requires browser");
+        if (JS == null) throw new UnsupportedTestException("Requires BlazorJSRuntime");
+
+        // Create a real torrent with known data, seed it, then fetch via SW URL
+        var data = new byte[65536];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 251);
+
+        await using var client = new WebTorrentClient();
+        var swarm = await client.SeedAsync(data, "sw-test.bin",
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
+
+        // Fetch the full file via the service worker URL
+        using var response = await JS.Fetch($"/webtorrent/{hash}/0");
+        var status = response.Status;
+        if (status != 200 && status != 206)
+            throw new Exception($"Expected 200 or 206, got {status}");
+
+        using var arrayBuffer = await response.ArrayBuffer();
+        using var uint8 = new Uint8Array(arrayBuffer);
+        var receivedData = uint8.ReadBytes();
+
+        if (receivedData.Length != data.Length)
+            throw new Exception($"Expected {data.Length} bytes, got {receivedData.Length}");
+        if (!receivedData.SequenceEqual(data))
+            throw new Exception("Data mismatch — SW served wrong data");
+
+        Console.WriteLine($"[SW] Streams real torrent data: {receivedData.Length} bytes, verified");
+    }
+
+    [TestMethod]
+    public async Task ServiceWorker_RangeRequest()
+    {
+        if (!OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("Service worker requires browser");
+        if (JS == null) throw new UnsupportedTestException("Requires BlazorJSRuntime");
+
+        // Create a real torrent with known data
+        var data = new byte[65536];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 251);
+
+        await using var client = new WebTorrentClient();
+        var swarm = await client.SeedAsync(data, "sw-range-test.bin",
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
+
+        // Fetch with a Range header — should get 206 Partial Content
+        using var response = await JS.Fetch($"/webtorrent/{hash}/0", new FetchOptions
+        {
+            Headers = new Dictionary<string, string> { ["Range"] = "bytes=10000-19999" }
+        });
+
+        var status = response.Status;
+        if (status != 206)
+            throw new Exception($"Expected 206 Partial Content, got {status}");
+
+        using var arrayBuffer = await response.ArrayBuffer();
+        using var uint8 = new Uint8Array(arrayBuffer);
+        var receivedData = uint8.ReadBytes();
+
+        if (receivedData.Length != 10000)
+            throw new Exception($"Expected 10000 bytes, got {receivedData.Length}");
+
+        var expected = data[10000..20000];
+        if (!receivedData.SequenceEqual(expected))
+            throw new Exception("Range data mismatch");
+
+        Console.WriteLine($"[SW] Range request: bytes=10000-19999, got {receivedData.Length} bytes, verified");
     }
 }

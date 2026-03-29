@@ -27,144 +27,143 @@ if (typeof window !== 'undefined') {
 
     function loadBlazor() {
         if (document.querySelector('script[src*="blazor.webassembly"]')) return;
-        var s = document.createElement('script');
+        const s = document.createElement('script');
         s.src = '_framework/blazor.webassembly.js';
         document.body.appendChild(s);
     }
 
-    if (window.crossOriginIsolated) {
-        sessionStorage.removeItem('wt-sw-reload');
-        loadBlazor();
-    } else if ('serviceWorker' in navigator) {
-        var reloadKey = 'wt-sw-reload';
-        var reloadCount = parseInt(sessionStorage.getItem(reloadKey) || '0', 10);
+    (async () => {
+        if (window.crossOriginIsolated) {
+            sessionStorage.removeItem('wt-sw-reload');
+            loadBlazor();
+            return;
+        }
 
-        if (reloadCount < 2) {
-            navigator.serviceWorker
-                .register(window.document.currentScript.src)
-                .then(function (reg) {
-                    console.log('[WebTorrent SW] Registered:', reg.scope);
-                })
-                .catch(function (err) {
-                    console.error('[WebTorrent SW] Registration failed:', err);
-                    loadBlazor();
-                });
+        if (!('serviceWorker' in navigator)) {
+            console.warn('[WebTorrent SW] Service workers not supported');
+            loadBlazor();
+            return;
+        }
 
-            var reloaded = false;
-            var doReload = function () {
-                if (reloaded) return;
-                reloaded = true;
-                sessionStorage.setItem(reloadKey, String(reloadCount + 1));
-                window.location.reload();
-            };
+        const reloadKey = 'wt-sw-reload';
+        const reloadCount = parseInt(sessionStorage.getItem(reloadKey) || '0', 10);
 
-            navigator.serviceWorker.ready.then(doReload);
-            setTimeout(function () {
-                if (!reloaded && navigator.serviceWorker.controller) {
-                    doReload();
-                } else if (!reloaded) {
-                    console.warn('[WebTorrent SW] Not ready after 5s — loading without COI');
-                    loadBlazor();
-                }
-            }, 5000);
-        } else {
+        if (reloadCount >= 2) {
             console.warn('[WebTorrent SW] Cross-origin isolation failed — proceeding without SharedArrayBuffer');
             sessionStorage.removeItem(reloadKey);
             loadBlazor();
+            return;
         }
-    } else {
-        console.warn('[WebTorrent SW] Service workers not supported');
-        loadBlazor();
-    }
+
+        try {
+            const reg = await navigator.serviceWorker.register(window.document.currentScript.src, { updateViaCache: 'none' });
+            console.log('[WebTorrent SW] Registered:', reg.scope);
+            await reg.update();
+        } catch (err) {
+            console.error('[WebTorrent SW] Registration failed:', err);
+            loadBlazor();
+            return;
+        }
+
+        // Wait for SW to be ready, then reload for COI headers
+        let reloaded = false;
+        const doReload = () => {
+            if (reloaded) return;
+            reloaded = true;
+            sessionStorage.setItem(reloadKey, String(reloadCount + 1));
+            window.location.reload();
+        };
+
+        navigator.serviceWorker.ready.then(doReload);
+        setTimeout(() => {
+            if (!reloaded && navigator.serviceWorker.controller) {
+                doReload();
+            } else if (!reloaded) {
+                console.warn('[WebTorrent SW] Not ready after 5s — loading without COI');
+                loadBlazor();
+            }
+        }, 5000);
+    })();
 
 } else {
     // ═══════════════════════════════════════════════════════════
     //  SERVICE WORKER CONTEXT — COI Headers + Torrent Streaming
     // ═══════════════════════════════════════════════════════════
 
-    self.addEventListener('install', function () { self.skipWaiting(); });
-    self.addEventListener('activate', function (event) { event.waitUntil(self.clients.claim()); });
+    self.addEventListener('install', () => self.skipWaiting());
+    self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
 
-    self.addEventListener('fetch', function (event) {
+    self.addEventListener('fetch', (event) => {
         if (event.request.cache === 'only-if-cached' && event.request.mode !== 'same-origin') {
             return;
         }
 
-        var url = new URL(event.request.url);
+        const url = new URL(event.request.url);
         if (url.origin !== self.location.origin) {
             return;
         }
 
-        // WebTorrent streaming
+        // WebTorrent streaming — intercept /webtorrent/ paths
         if (url.pathname.includes('/webtorrent/')) {
             event.respondWith(handleWebtorrentStream(event));
             return;
         }
 
         // COI headers for all other same-origin requests
-        event.respondWith(
-            fetch(event.request)
-                .then(function (response) {
-                    var headers = new Headers(response.headers);
-                    headers.set('Cross-Origin-Embedder-Policy', 'credentialless');
-                    headers.set('Cross-Origin-Opener-Policy', 'same-origin');
-                    return new Response(response.body, {
-                        status: response.status,
-                        statusText: response.statusText,
-                        headers: headers,
-                    });
-                })
-                .catch(function (e) {
-                    return new Response('Service Worker fetch failed', { status: 502 });
-                })
-        );
+        event.respondWith(addCoiHeaders(event.request));
     });
 
+    async function addCoiHeaders(request) {
+        try {
+            const response = await fetch(request);
+            const headers = new Headers(response.headers);
+            headers.set('Cross-Origin-Embedder-Policy', 'credentialless');
+            headers.set('Cross-Origin-Opener-Policy', 'same-origin');
+            return new Response(response.body, {
+                status: response.status,
+                statusText: response.statusText,
+                headers,
+            });
+        } catch (e) {
+            return new Response('Service Worker fetch failed', { status: 502 });
+        }
+    }
+
     // ── WebTorrent streaming ──
-    // Matches the protocol from webtorrent/webtorrent (worker-server.js):
+    // Protocol (matches webtorrent/webtorrent worker-server.js):
     // 1. SW posts request details to client window via MessageChannel
     // 2. Client responds with { status, headers, body } where body is 'STREAM' or data
     // 3. If 'STREAM': SW creates ReadableStream, pulls chunks via port messages
     // 4. Client sends Uint8Array chunks on pull (true), null = end, false = cancel
 
     async function handleWebtorrentStream(event) {
-        var allClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+        const allClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
         if (allClients.length === 0) {
             return new Response('No client available', { status: 503 });
         }
 
-        var request = event.request;
-        var url = new URL(request.url);
+        const request = event.request;
 
-        // Race: post to all clients, first to respond wins (matches webtorrent pattern)
-        var result = await new Promise(function (resolve) {
-            for (var i = 0; i < allClients.length; i++) {
-                var mc = new MessageChannel();
-                mc.port1.onmessage = function (evt) {
-                    resolve([evt.data, mc.port1]);
-                };
-                allClients[i].postMessage({
-                    type: 'webtorrent',
-                    url: request.url,
-                    method: request.method,
-                    headers: Object.fromEntries(request.headers.entries()),
-                    scope: self.registration.scope,
-                    destination: request.destination,
-                }, [mc.port2]);
-                // Only use first client's channel for the resolve
-                var mc = { port1: mc.port1 };
-            }
+        // Post to first client, get initial response via MessageChannel
+        const mc = new MessageChannel();
+        const [data, port] = await new Promise((resolve) => {
+            mc.port1.onmessage = (evt) => resolve([evt.data, mc.port1]);
+            allClients[0].postMessage({
+                type: 'webtorrent',
+                url: request.url,
+                method: request.method,
+                headers: Object.fromEntries(request.headers.entries()),
+                scope: self.registration.scope,
+                destination: request.destination,
+            }, [mc.port2]);
         });
-
-        var data = result[0];
-        var port = result[1];
 
         if (!data) {
             return new Response('No response from client', { status: 500 });
         }
 
+        // Direct response (small files, errors, non-streamable)
         if (data.body !== 'STREAM') {
-            // Direct response (small files, errors, etc.)
             port.onmessage = null;
             return new Response(data.body, {
                 status: data.status || 200,
@@ -173,38 +172,38 @@ if (typeof window !== 'undefined') {
         }
 
         // Streaming response — pull chunks from client on demand
-        var timeOut = null;
-        var portTimeoutDuration = 5000;
-        var cleanup = function () {
-            port.postMessage(false); // cancel
+        let timeOut = null;
+        const portTimeoutDuration = 5000;
+
+        const cleanup = () => {
+            port.postMessage(false);
             clearTimeout(timeOut);
             port.onmessage = null;
         };
 
-        var stream = new ReadableStream({
-            pull: function (controller) {
-                return new Promise(function (resolve) {
-                    port.onmessage = function (msg) {
+        const stream = new ReadableStream({
+            async pull(controller) {
+                return new Promise((resolve) => {
+                    port.onmessage = (msg) => {
                         if (msg.data) {
-                            controller.enqueue(msg.data); // Uint8Array chunk
+                            controller.enqueue(msg.data);
                         } else {
                             cleanup();
                             controller.close();
                         }
                         resolve();
                     };
-                    // Timeout for non-document requests (Firefox compat)
                     clearTimeout(timeOut);
                     if (data.destination !== 'document') {
-                        timeOut = setTimeout(function () {
+                        timeOut = setTimeout(() => {
                             cleanup();
                             resolve();
                         }, portTimeoutDuration);
                     }
-                    port.postMessage(true); // pull request
+                    port.postMessage(true);
                 });
             },
-            cancel: function () {
+            cancel() {
                 cleanup();
             }
         });

@@ -887,6 +887,12 @@ public class TorrentFileStream
     }
 
     /// <summary>
+    /// Get a seekable .NET Stream for this file. Pieces download on demand as the stream is read.
+    /// Works on both desktop and browser. Use like any System.IO.Stream.
+    /// </summary>
+    public Stream CreateReadStream(long start = 0) => new TorrentReadStream(this, start);
+
+    /// <summary>
     /// Get a ReadableStream for this file (browser). Reads on demand as the stream is consumed.
     /// </summary>
     public async IAsyncEnumerable<byte[]> StreamAsync(long start = 0, long end = -1,

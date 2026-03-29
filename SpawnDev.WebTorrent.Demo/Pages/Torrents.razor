@@ -857,28 +857,52 @@
     }
 
     // ── Media ──
+    private Blob? _mediaBlob;
     private async Task OpenMedia(TorrentFileStream file, string ext)
     {
         _mediaFileName = file.Name; _mediaType = IsVideoFile(ext) ? "video" : IsAudioFile(ext) ? "audio" : "image";
         _mediaOpen = true; _mediaLoading = true; _mediaBlobUrl = ""; StateHasChanged();
         try
         {
-            var metadata = _selectedTorrent!.Swarm.Metadata!; var wsUrls = metadata.UrlList; byte[]? fileData = null;
-            if (wsUrls.Length > 0)
+            var swarm = _selectedTorrent!.Swarm;
+            byte[]? fileData = null;
+
+            // Read from already-downloaded pieces in the chunk store first
+            if (swarm.Store != null && swarm.PieceManager != null && file.Done)
             {
-                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
-                var url = wsUrls[0].TrimEnd('/') + "/" + (metadata.Files.Length == 1 ? metadata.Files[0].Path : file.Path);
-                var request = new HttpRequestMessage(HttpMethod.Get, url);
-                request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(file.Offset, file.Offset + file.Length - 1);
-                var response = await http.SendAsync(request); fileData = await response.Content.ReadAsByteArrayAsync();
+                fileData = await file.GetArrayBufferAsync();
             }
-            if (fileData == null || fileData.Length == 0) { _mediaLoading = false; return; }
-            using var blob = new Blob(new[] { fileData }, new BlobOptions { Type = GetMimeType(ext) });
-            _mediaBlobUrl = URL.CreateObjectURL(blob); _mediaLoading = false; StateHasChanged();
+
+            // Fallback: download from web seed if pieces aren't available
+            if (fileData == null || fileData.Length == 0)
+            {
+                var metadata = swarm.Metadata!; var wsUrls = metadata.UrlList;
+                if (wsUrls.Length > 0)
+                {
+                    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
+                    var url = wsUrls[0].TrimEnd('/') + "/" + (metadata.Files.Length == 1 ? metadata.Files[0].Path : file.Path);
+                    var request = new HttpRequestMessage(HttpMethod.Get, url);
+                    request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(file.Offset, file.Offset + file.Length - 1);
+                    var response = await http.SendAsync(request); fileData = await response.Content.ReadAsByteArrayAsync();
+                }
+            }
+
+            if (fileData == null || fileData.Length == 0) { _mediaLoading = false; StateHasChanged(); return; }
+
+            // Create blob — do NOT dispose it until media is closed
+            _mediaBlob?.Dispose();
+            _mediaBlob = new Blob(new[] { fileData }, new BlobOptions { Type = GetMimeType(ext) });
+            _mediaBlobUrl = URL.CreateObjectURL(_mediaBlob);
+            _mediaLoading = false; StateHasChanged();
         }
-        catch { _mediaLoading = false; }
+        catch (Exception ex) { _mediaLoading = false; Log($"Media error: {ex.Message}"); StateHasChanged(); }
     }
-    private void CloseMedia() { if (!string.IsNullOrEmpty(_mediaBlobUrl)) try { URL.RevokeObjectURL(_mediaBlobUrl); } catch { } _mediaOpen = false; _mediaBlobUrl = ""; }
+    private void CloseMedia()
+    {
+        if (!string.IsNullOrEmpty(_mediaBlobUrl)) try { URL.RevokeObjectURL(_mediaBlobUrl); } catch { }
+        _mediaBlob?.Dispose(); _mediaBlob = null;
+        _mediaOpen = false; _mediaBlobUrl = "";
+    }
 
     // ── Helpers ──
     private void Log(string msg) { _logMessages.Add($"[{DateTime.Now:HH:mm:ss}] {msg}"); }

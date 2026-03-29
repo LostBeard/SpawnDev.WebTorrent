@@ -206,8 +206,8 @@ public class ModelStream : IAsyncDisposable
                 var pieceData = await _webSeed.DownloadPieceAsync(pieceIndex, ct);
                 if (pieceData != null)
                 {
-                    _pieceManager.GetNextBlock(pieceIndex);
-                    await _pieceManager.ReceiveBlockAsync(pieceIndex, 0, pieceData);
+                    // Use ReceiveCompletePieceAsync for SHA-1 hash verification
+                    await _pieceManager.ReceiveCompletePieceAsync(pieceIndex, pieceData);
                 }
             }
 

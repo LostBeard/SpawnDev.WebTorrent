@@ -3,7 +3,7 @@
 [![NuGet](https://img.shields.io/nuget/v/SpawnDev.WebTorrent.svg)](https://www.nuget.org/packages/SpawnDev.WebTorrent)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Runs on desktop (.NET) and browser (Blazor WASM). 363 tests. 15 BEPs implemented.
+Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Runs on desktop (.NET) and browser (Blazor WASM). 444 tests. 15 BEPs implemented.
 
 ## Features
 
@@ -14,13 +14,14 @@ Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Run
 - **3 Tracker Types** — WebSocket (browser+desktop), HTTP/HTTPS, UDP (desktop).
 - **Web Seed Download** — HTTP range requests with multi-file piece assembly (BEP 17/19).
 - **Persistent Storage** — OPFS in browser (survives page reloads), filesystem on desktop.
-- **Media Streaming** — Built-in video/audio/image viewers with seeking. HTTP server for desktop media players.
+- **Media Streaming** — Service worker intercepts video/audio range requests and serves pieces on demand from the torrent client. True seeking support — no loading entire files into memory. HTTP server for desktop media players.
+- **Service Worker** — `webtorrent-sw.js` ships with the library. Handles Cross-Origin-Isolation headers, Blazor loading, and torrent streaming via MessageChannel. One `<script>` tag and your app streams.
 - **Random-Access Streaming** — Read any byte range from a torrent file as it downloads. Perfect for ML model weight streaming.
 - **Seeding** — Upload pieces to requesting peers with configurable rate limiting.
 - **Speed Tracking** — Real-time download/upload bytes/sec per torrent.
 - **HuggingFace Integration** — Optional server extension that proxies HuggingFace model CDN with local caching and automatic torrent generation.
 - **.torrent Creation** — Create and parse .torrent files. Complete Bencode encoder/decoder.
-- **363 Unit Tests** — Every feature tested via PlaywrightMultiTest against real-world torrents.
+- **444 Unit Tests** — Every BEP tested, ECDSA crypto verified in browser, security tests for signature verification, protocol compliance verified via PlaywrightMultiTest.
 
 ## Packages
 
@@ -51,6 +52,45 @@ Console.WriteLine(seeded.MagnetURI);
 var server = client.CreateServer(8080);
 // Now play at: http://localhost:8080/{infoHash}/movie.mp4
 ```
+
+## Service Worker — Media Streaming with Seeking
+
+SpawnDev.WebTorrent includes a service worker (`webtorrent-sw.js`) that enables media streaming with full seeking support. The service worker intercepts HTTP range requests from `<video>` and `<audio>` elements and serves piece data directly from the torrent client.
+
+### Setup
+
+In your `index.html`, replace the static Blazor script tag with the WebTorrent loader:
+
+```html
+<!-- This registers the SW, waits for COI headers, then loads Blazor -->
+<script src="webtorrent-sw.js"></script>
+```
+
+The file deploys automatically to your app root when you reference the SpawnDev.WebTorrent NuGet package. No manual copying needed.
+
+### How It Works
+
+1. `webtorrent-sw.js` registers itself as a service worker and reloads the page to apply Cross-Origin-Isolation headers
+2. Once the SW is active, it loads `_framework/blazor.webassembly.js` to start the Blazor app
+3. When a `<video src="/webtorrent/{infoHash}/{fileIndex}">` element makes range requests, the SW intercepts them
+4. The SW forwards the request to the main window via `MessageChannel`
+5. Your Blazor code reads the requested byte range from the torrent's chunk store and responds
+6. The SW wraps the data in a proper HTTP `206 Partial Content` response with `Content-Range` headers
+
+### Streaming a Video
+
+```csharp
+// Point a video element at the service worker URL
+var videoUrl = $"/webtorrent/{infoHashHex}/{fileIndex}";
+// The browser handles seeking automatically via range requests
+```
+
+### What the Service Worker Provides
+
+- **Cross-Origin-Isolation** — COOP/COEP headers for SharedArrayBuffer support
+- **Torrent Streaming** — Intercepts `/webtorrent/` requests, serves pieces via MessageChannel
+- **Range Request Support** — Proper `206 Partial Content` responses for seeking
+- **Blazor Loading** — Waits for SW ready, then dynamically loads Blazor WebAssembly
 
 ## Quick Start — Server
 
@@ -86,7 +126,7 @@ app.MapHuggingFaceProxy(proxy);
 
 | App | Platform | Features |
 |-----|----------|----------|
-| Blazor WASM Demo | Browser | Full torrent client UI, media viewer, WebRTC P2P, OPFS storage |
+| Blazor WASM Demo | Browser | Full torrent client UI, media streaming with seeking (via SW), WebRTC P2P, OPFS storage, seeding, .torrent creation |
 | WPF Desktop Demo | Windows | Full torrent client UI, media player with seeking, drag-drop .torrent files, SIPSorcery WebRTC |
 
 Both demos connect to the same trackers and can P2P with each other.
@@ -151,6 +191,7 @@ Browser Client                    Desktop Client
 | [Trackers](Docs/trackers.md) | Default tracker list, running your own tracker, protocol details |
 | [BEP Support](Docs/bep-support.md) | BitTorrent Enhancement Proposal implementation status |
 | [AI Agents](Docs/ai-agents.md) | DHT pub/sub for AI agent communication, shared compute, BEP 46 |
+| [Service Worker](Docs/service-worker.md) | Media streaming, COI headers, Blazor loading, range requests |
 | [Deployment](Docs/deployment.md) | Production server setup, GitHub Pages demo, local development |
 
 ## Credits

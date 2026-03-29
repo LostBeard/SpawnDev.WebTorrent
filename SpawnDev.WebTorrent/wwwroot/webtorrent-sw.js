@@ -21,71 +21,85 @@
  */
 
 if (typeof window !== 'undefined') {
-    // ═══════════════════════════════════════════════════════════
-    //  PAGE CONTEXT — Register SW + Load Blazor
-    // ═══════════════════════════════════════════════════════════
+    // --- Running as a regular script in the page context ---
 
+    var verbose = false;
+    function consoleLog(...args) {
+        if (!verbose) return;
+        console.log("[COI]", ...args);
+    }
+
+    // Helper to check if Blazor script tag exists in the HTML
+    function hasBlazorScript() {
+        return !!document.querySelector('script[src*="blazor.webassembly"]');
+    }
+
+    // Load Blazor dynamically (only needed when no static script tag in HTML)
     function loadBlazor() {
-        if (document.querySelector('script[src*="blazor.webassembly"]')) return;
-        const s = document.createElement('script');
-        s.src = '_framework/blazor.webassembly.js';
+        if (hasBlazorScript()) return;
+        var s = document.createElement("script");
+        s.src = "_framework/blazor.webassembly.js";
         document.body.appendChild(s);
     }
 
-    (async () => {
-        if (!('serviceWorker' in navigator)) {
-            console.warn('[WebTorrent SW] Service workers not supported');
-            loadBlazor();
-            return;
-        }
+    if (window.crossOriginIsolated) {
+        // Already cross-origin isolated — SharedArrayBuffer available
+        consoleLog("[COI] Cross-origin isolated ✓");
+        sessionStorage.removeItem("coi-reload-count");
+        loadBlazor();
+    } else if ("serviceWorker" in navigator) {
+        // Not yet isolated — register/activate the SW, then reload ONCE to apply headers.
+        // Use sessionStorage to prevent infinite reload loops: if COI still fails after
+        // reloading, stop retrying and load Blazor without SharedArrayBuffer.
+        var reloadKey = "coi-reload-count";
+        var reloadCount = parseInt(sessionStorage.getItem(reloadKey) || "0", 10);
 
-        // Always wait for SW to be ready and controlling before loading Blazor
-        if (window.crossOriginIsolated && navigator.serviceWorker.controller) {
-            sessionStorage.removeItem('wt-sw-reload');
-            await navigator.serviceWorker.ready;
-            loadBlazor();
-            return;
-        }
+        if (reloadCount < 2) {
+            // Register the SW (idempotent if already registered)
+            navigator.serviceWorker
+                .register(window.document.currentScript.src)
+                .then(function (reg) {
+                    consoleLog("[COI] Service worker registered:", reg.scope);
+                })
+                .catch(function (err) {
+                    console.error("[COI] Service worker registration failed:", err);
+                    // Registration failed — load Blazor without COI
+                    loadBlazor();
+                });
 
-        const reloadKey = 'wt-sw-reload';
-        const reloadCount = parseInt(sessionStorage.getItem(reloadKey) || '0', 10);
+            // Wait for SW to be ready, then reload to pick up COI headers.
+            // Timeout after 5s — if the SW doesn't activate in time, load Blazor anyway.
+            var reloaded = false;
+            var doReload = function () {
+                if (reloaded) return;
+                reloaded = true;
+                sessionStorage.setItem(reloadKey, String(reloadCount + 1));
+                consoleLog("[COI] Reloading to apply COI headers (attempt " + (reloadCount + 1) + ")");
+                window.location.reload();
+            };
 
-        if (reloadCount >= 2) {
-            console.warn('[WebTorrent SW] Cross-origin isolation failed — proceeding without SharedArrayBuffer');
+            navigator.serviceWorker.ready.then(doReload);
+            setTimeout(function () {
+                if (!reloaded && navigator.serviceWorker.controller) {
+                    // SW is controlling but ready didn't fire — force reload
+                    doReload();
+                } else if (!reloaded) {
+                    consoleLog("[COI] Service worker not ready after 5s — loading without COI");
+                    loadBlazor();
+                }
+            }, 5000);
+        } else {
+            // Already tried reloading — COI isn't working, proceed without it.
+            // Clear the counter so next fresh navigation can try again.
+            console.warn("[COI] Cross-origin isolation failed after " + reloadCount +
+                " reload(s) — SharedArrayBuffer unavailable. Wasm limited to 1 worker.");
             sessionStorage.removeItem(reloadKey);
             loadBlazor();
-            return;
         }
-
-        try {
-            const reg = await navigator.serviceWorker.register(window.document.currentScript.src, { updateViaCache: 'none' });
-            console.log('[WebTorrent SW] Registered:', reg.scope);
-            await reg.update();
-        } catch (err) {
-            console.error('[WebTorrent SW] Registration failed:', err);
-            loadBlazor();
-            return;
-        }
-
-        // Wait for SW to be ready, then reload for COI headers
-        let reloaded = false;
-        const doReload = () => {
-            if (reloaded) return;
-            reloaded = true;
-            sessionStorage.setItem(reloadKey, String(reloadCount + 1));
-            window.location.reload();
-        };
-
-        navigator.serviceWorker.ready.then(doReload);
-        setTimeout(() => {
-            if (!reloaded && navigator.serviceWorker.controller) {
-                doReload();
-            } else if (!reloaded) {
-                console.warn('[WebTorrent SW] Not ready after 5s — loading without COI');
-                loadBlazor();
-            }
-        }, 5000);
-    })();
+    } else {
+        consoleLog("[COI] Service workers not supported — SharedArrayBuffer unavailable");
+        loadBlazor();
+    }
 
 } else {
     // ═══════════════════════════════════════════════════════════

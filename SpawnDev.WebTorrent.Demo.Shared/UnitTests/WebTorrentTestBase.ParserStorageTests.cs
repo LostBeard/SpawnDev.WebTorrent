@@ -1092,17 +1092,17 @@ public abstract partial class WebTorrentTestBase
             throw new UnsupportedTestException("Service worker requires browser");
         if (JS == null) throw new UnsupportedTestException("Requires BlazorJSRuntime");
 
-        // Fetch a /webtorrent/ URL with a fake hash — SW should intercept and respond
+        // Fetch a /webtorrent/ URL with a fake hash
+        // If SW intercepts: we get our 404 with body "No handler for this request"
+        // If SW does NOT intercept: we get a static server 404 with HTML body
         using var response = await JS.Fetch("/webtorrent/0000000000000000000000000000000000000000/0");
-        var status = response.Status;
+        var body = await response.Text();
 
-        // 404 from static file server means SW did NOT intercept
-        // 500/503 from our handler means SW DID intercept but no torrent found
-        if (status == 404)
-            throw new Exception($"SW did NOT intercept /webtorrent/ request (got 404 from static server). " +
-                $"The service worker fetch handler is not running.");
+        if (body.Contains("<!DOCTYPE") || body.Contains("<html"))
+            throw new Exception("Got HTML 404 from static server — SW is NOT intercepting");
 
-        Console.WriteLine($"[SW] /webtorrent/ intercept: status={status}");
+        // Our handler returns plain text responses
+        Console.WriteLine($"[SW] /webtorrent/ intercept: status={response.Status}, body={body}");
     }
 
     [TestMethod]
@@ -1110,14 +1110,13 @@ public abstract partial class WebTorrentTestBase
     {
         if (!OperatingSystem.IsBrowser())
             throw new UnsupportedTestException("Service worker requires browser");
-        if (JS == null) throw new UnsupportedTestException("Requires BlazorJSRuntime");
+        if (JS == null || Client == null) throw new UnsupportedTestException("Requires BlazorJSRuntime + DI WebTorrentClient");
 
-        // Create a real torrent with known data, seed it, then fetch via SW URL
+        // Seed via the DI singleton client so the SW handler can find it
         var data = new byte[65536];
         for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 251);
 
-        await using var client = new WebTorrentClient();
-        var swarm = await client.SeedAsync(data, "sw-test.bin",
+        var swarm = await Client.SeedAsync(data, "sw-test.bin",
             new TorrentCreatorOptions { PieceLength = 16384 });
 
         var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
@@ -1137,6 +1136,9 @@ public abstract partial class WebTorrentTestBase
         if (!receivedData.SequenceEqual(data))
             throw new Exception("Data mismatch — SW served wrong data");
 
+        // Clean up
+        await Client.RemoveAsync(swarm);
+
         Console.WriteLine($"[SW] Streams real torrent data: {receivedData.Length} bytes, verified");
     }
 
@@ -1145,14 +1147,13 @@ public abstract partial class WebTorrentTestBase
     {
         if (!OperatingSystem.IsBrowser())
             throw new UnsupportedTestException("Service worker requires browser");
-        if (JS == null) throw new UnsupportedTestException("Requires BlazorJSRuntime");
+        if (JS == null || Client == null) throw new UnsupportedTestException("Requires BlazorJSRuntime + DI WebTorrentClient");
 
-        // Create a real torrent with known data
+        // Seed via the DI singleton client
         var data = new byte[65536];
         for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 251);
 
-        await using var client = new WebTorrentClient();
-        var swarm = await client.SeedAsync(data, "sw-range-test.bin",
+        var swarm = await Client.SeedAsync(data, "sw-range-test.bin",
             new TorrentCreatorOptions { PieceLength = 16384 });
 
         var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
@@ -1177,6 +1178,9 @@ public abstract partial class WebTorrentTestBase
         var expected = data[10000..20000];
         if (!receivedData.SequenceEqual(expected))
             throw new Exception("Range data mismatch");
+
+        // Clean up
+        await Client.RemoveAsync(swarm);
 
         Console.WriteLine($"[SW] Range request: bytes=10000-19999, got {receivedData.Length} bytes, verified");
     }

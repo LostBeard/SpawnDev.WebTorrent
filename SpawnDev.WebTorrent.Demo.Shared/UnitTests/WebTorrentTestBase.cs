@@ -22,6 +22,13 @@ public abstract partial class WebTorrentTestBase
     protected BlazorJSRuntime? JS { get; set; }
 
     /// <summary>
+    /// DI singleton WebTorrentClient. Available in browser tests.
+    /// Use this instead of creating new WebTorrentClient() for tests that need
+    /// the service worker stream handler.
+    /// </summary>
+    protected WebTorrentClient? Client { get; set; }
+
+    /// <summary>
     /// Creates the platform-appropriate IPortableCrypto implementation.
     /// Browser: BrowserWASMCrypto (SubtleCrypto). Desktop: DotNetCrypto.
     /// </summary>

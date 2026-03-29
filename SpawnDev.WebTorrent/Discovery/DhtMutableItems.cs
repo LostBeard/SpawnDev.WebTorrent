@@ -26,6 +26,7 @@ public class DhtMutableItems
     private readonly DhtDiscovery _dht;
     private readonly IDhtSigner _signer;
     private long _sequence;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte[]> _tokenCache = new();
 
     /// <summary>Our public key identity (from the signer).</summary>
     public byte[] PublicKey => _signer.PublicKey;
@@ -72,7 +73,10 @@ public class DhtMutableItems
         {
             try
             {
-                var putMsg = BuildPutMessage(value, _signer.PublicKey, signature, _sequence, salt);
+                // Use cached token from prior GET, or fallback
+                var nodeKey = node.EndPoint.ToString();
+                var token = _tokenCache.TryGetValue(nodeKey, out var cached) ? cached : new byte[] { (byte)'x' };
+                var putMsg = BuildPutMessage(value, _signer.PublicKey, signature, _sequence, salt, token);
                 await _dht.SendKrpcAsync(node.EndPoint, putMsg, ct);
             }
             catch { }
@@ -155,6 +159,20 @@ public class DhtMutableItems
         return await _signer.VerifyAsync(publicKey, signData, signature);
     }
 
+    /// <summary>
+    /// Store a write token received from a DHT node's GET response.
+    /// Tokens are per-node and used in subsequent PUT requests.
+    /// </summary>
+    public void CacheToken(System.Net.IPEndPoint nodeEndPoint, byte[] token)
+    {
+        _tokenCache[nodeEndPoint.ToString()] = token;
+    }
+
+    /// <summary>
+    /// Number of cached write tokens.
+    /// </summary>
+    public int CachedTokenCount => _tokenCache.Count;
+
     // ── BEP 44/46 Message Builders ──
 
     private static byte[] ComputeTarget(byte[] publicKey, byte[]? salt)
@@ -186,7 +204,7 @@ public class DhtMutableItems
     }
 
     private byte[] BuildPutMessage(byte[] value, byte[] publicKey, byte[] signature,
-        long seq, byte[]? salt)
+        long seq, byte[]? salt, byte[]? token = null)
     {
         var txId = new byte[] { (byte)(seq >> 8), (byte)seq };
         var buf = new List<byte>();
@@ -214,9 +232,10 @@ public class DhtMutableItems
         buf.AddRange(Encoding.ASCII.GetBytes($"3:sig{signature.Length}:"));
         buf.AddRange(signature);
 
-        // token — should come from a prior get response
-        // TODO: Cache tokens from get responses per-node for proper DHT interaction
-        buf.AddRange(Encoding.ASCII.GetBytes("5:token1:x"));
+        // Token from prior GET response — required for DHT PUT
+        var tok = token ?? new byte[] { (byte)'x' };
+        buf.AddRange(Encoding.ASCII.GetBytes($"5:token{tok.Length}:"));
+        buf.AddRange(tok);
 
         // v (value)
         buf.AddRange(Encoding.ASCII.GetBytes($"1:v{value.Length}:"));

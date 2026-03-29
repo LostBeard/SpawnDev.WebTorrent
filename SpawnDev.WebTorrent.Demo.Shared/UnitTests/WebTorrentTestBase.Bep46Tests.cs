@@ -606,6 +606,38 @@ public abstract partial class WebTorrentTestBase
     // ═══════════════════════════════════════════════════════════
 
     [TestMethod]
+    public async Task MutableItems_TokenCaching()
+    {
+        var dht = new DhtDiscovery();
+        var signer = new HmacFallbackSigner();
+        var items = dht.CreateMutableItems(signer);
+
+        if (items.CachedTokenCount != 0)
+            throw new Exception("Should start with 0 cached tokens");
+
+        // Cache a token for a node
+        var ep = new System.Net.IPEndPoint(System.Net.IPAddress.Parse("1.2.3.4"), 6881);
+        items.CacheToken(ep, new byte[] { 0xAB, 0xCD });
+
+        if (items.CachedTokenCount != 1)
+            throw new Exception($"Should have 1 cached token, got {items.CachedTokenCount}");
+
+        // Cache another
+        var ep2 = new System.Net.IPEndPoint(System.Net.IPAddress.Parse("5.6.7.8"), 6881);
+        items.CacheToken(ep2, new byte[] { 0xEF });
+        if (items.CachedTokenCount != 2)
+            throw new Exception($"Should have 2, got {items.CachedTokenCount}");
+
+        // Overwrite existing
+        items.CacheToken(ep, new byte[] { 0x11, 0x22, 0x33 });
+        if (items.CachedTokenCount != 2)
+            throw new Exception("Overwrite should not increase count");
+
+        Console.WriteLine("[MutableItems] Token caching: OK");
+        await dht.DisposeAsync();
+    }
+
+    [TestMethod]
     public async Task MutableItems_Algorithm()
     {
         var dht = new DhtDiscovery();

@@ -225,6 +225,8 @@ public class WebTorrentClient : IAsyncDisposable
     {
         _torrents.Remove(torrent);
         OnTorrentRemove?.Invoke(torrent);
+        if (destroyStore && torrent.Store != null)
+            await torrent.Store.ClearAsync();
         await torrent.DisposeAsync();
     }
 

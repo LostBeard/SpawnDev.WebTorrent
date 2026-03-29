@@ -142,7 +142,7 @@
                                         {
                                             <button class="qb-icon-btn" @onclick="() => entry.Swarm.Pause()" @onclick:stopPropagation title="Pause">&#9646;&#9646;</button>
                                         }
-                                        <button class="qb-icon-btn qb-icon-delete" @onclick="() => RemoveTorrent(entry)" @onclick:stopPropagation title="Remove">&#10005;</button>
+                                        <button class="qb-icon-btn qb-icon-delete" @onclick="() => RemoveTorrent(entry, false)" @onclick:stopPropagation title="Remove">&#10005;</button>
                                     </td>
                                 </tr>
                             }
@@ -387,7 +387,8 @@
                 }
                 <div class="qb-ctx-item" @onclick="() => ShowProperties(ce)">&#9432; Properties</div>
                 <div class="qb-ctx-sep"></div>
-                <div class="qb-ctx-item qb-ctx-danger" @onclick="() => { RemoveTorrent(ce); _contextMenuOpen = false; }">&#10005; Remove</div>
+                <div class="qb-ctx-item qb-ctx-danger" @onclick="() => { RemoveTorrent(ce, false); _contextMenuOpen = false; }">&#10005; Remove</div>
+                <div class="qb-ctx-item qb-ctx-danger" @onclick="() => { RemoveTorrent(ce, true); _contextMenuOpen = false; }">&#128465; Remove + Delete Data</div>
             }
         </div>
     }
@@ -425,12 +426,12 @@
                     @foreach (var t in _defaultTrackers) { <div class="qb-mono" style="font-size:0.7rem;color:#475569">@t</div> }
                     <h4>Client</h4>
                     <div class="qb-setting"><label>Peer ID</label><span class="qb-mono" style="color:#10b981">@PeerIdString</span></div>
-                    <div class="qb-setting"><label>Version</label><span>1.1.0</span></div>
+                    <div class="qb-setting"><label>Version</label><span>2.0.0-rc1</span></div>
                     <div class="qb-setting"><label>Platform</label><span>@(OperatingSystem.IsBrowser() ? "Browser (Blazor WASM)" : "Desktop")</span></div>
                     <div class="qb-setting"><label>Storage</label><span>@(_asyncFs != null ? "OPFS (persistent)" : "Memory")</span></div>
                     <div class="qb-setting"><label>WebRTC</label><span>SpawnDev.BlazorJS</span></div>
                     <div class="qb-setting"><label>BEPs</label><span>3, 5, 6, 9, 10, 11, 15, 17, 19, 20, 23, 27, 44, 46, 53</span></div>
-                    <div class="qb-setting"><label>Tests</label><span>244 (236 pass, 8 skip)</span></div>
+                    <div class="qb-setting"><label>Tests</label><span>444 (428 pass, 16 skip)</span></div>
                 </div>
             </div>
         </div>
@@ -725,14 +726,14 @@
         await InvokeAsync(StateHasChanged);
     }
 
-    private async Task RemoveTorrent(TorrentEntry entry)
+    private async Task RemoveTorrent(TorrentEntry entry, bool destroyData = false)
     {
         if (_selectedTorrent == entry) _selectedTorrent = null;
         _torrents.Remove(entry);
         if (entry.PeerCoordinator != null) await entry.PeerCoordinator.DisposeAsync();
         if (entry.WebRtcTransport != null) await entry.WebRtcTransport.DisposeAsync();
-        if (_client != null) await _client.RemoveAsync(entry.Swarm);
-        Log($"Removed: {entry.DisplayName}");
+        if (_client != null) await _client.RemoveAsync(entry.Swarm, destroyData);
+        Log(destroyData ? $"Removed + deleted data: {entry.DisplayName}" : $"Removed: {entry.DisplayName}");
     }
 
     private void OnDragOver(DragEventArgs e) { }
@@ -764,7 +765,7 @@
         switch (e.Key)
         {
             case "Delete":
-                await RemoveTorrent(_selectedTorrent);
+                await RemoveTorrent(_selectedTorrent, false);
                 break;
             case " ": // Space
                 if (_selectedTorrent.Swarm.Paused) _selectedTorrent.Swarm.Resume();

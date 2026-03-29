@@ -311,4 +311,79 @@ public abstract partial class WebTorrentTestBase
 
         Console.WriteLine("[Wire] Message size limit: OK");
     }
+
+    // ═══════════════════════════════════════════════════════════
+    //  BEP 11 — PEX (Peer Exchange)
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Bep11_PexExtension_ParseCompactPeers()
+    {
+        var pex = new UtPexExtension();
+        var received = new List<string>();
+        pex.OnPeersReceived += (peers) => received.AddRange(peers);
+
+        // Build a bencoded PEX message with "added" compact peer list
+        // d5:added12:...e  (2 peers × 6 bytes = 12 bytes)
+        var addedBytes = new byte[]
+        {
+            10, 0, 0, 1,    0x1A, 0xE1,   // 10.0.0.1:6881
+            192, 168, 1, 5,  0x1F, 0x90,  // 192.168.1.5:8080
+        };
+
+        // Bencode: d5:added12:<bytes>e
+        var msg = new System.Collections.Generic.Dictionary<string, object>
+        {
+            ["added"] = addedBytes
+        };
+        var encoded = Bencode.BencodeEncoder.Encode(msg);
+
+        await pex.HandleMessageAsync(encoded);
+
+        if (received.Count != 2) throw new Exception($"Should receive 2 peers, got {received.Count}");
+        if (received[0] != "10.0.0.1:6881") throw new Exception($"Peer 0: {received[0]}");
+        if (received[1] != "192.168.1.5:8080") throw new Exception($"Peer 1: {received[1]}");
+
+        Console.WriteLine("[BEP11] PEX compact peer parsing: OK");
+    }
+
+    [TestMethod]
+    public async Task Bep11_PexExtension_EmptyMessage()
+    {
+        var pex = new UtPexExtension();
+        var received = new List<string>();
+        pex.OnPeersReceived += (peers) => received.AddRange(peers);
+
+        // Empty PEX message (no added peers)
+        var msg = new System.Collections.Generic.Dictionary<string, object>();
+        var encoded = Bencode.BencodeEncoder.Encode(msg);
+
+        await pex.HandleMessageAsync(encoded);
+
+        if (received.Count != 0) throw new Exception($"Should receive 0 peers, got {received.Count}");
+
+        Console.WriteLine("[BEP11] PEX empty message: OK");
+    }
+
+    [TestMethod]
+    public async Task Bep11_PexExtension_Name()
+    {
+        var pex = new UtPexExtension();
+        if (pex.Name != "ut_pex") throw new Exception($"Name should be ut_pex, got {pex.Name}");
+
+        Console.WriteLine("[BEP11] PEX extension name: OK");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  BEP 9 — Metadata Extension
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Bep9_MetadataExtension_Name()
+    {
+        var meta = new UtMetadataExtension();
+        if (meta.Name != "ut_metadata") throw new Exception($"Name should be ut_metadata, got {meta.Name}");
+
+        Console.WriteLine("[BEP9] Metadata extension name: OK");
+    }
 }

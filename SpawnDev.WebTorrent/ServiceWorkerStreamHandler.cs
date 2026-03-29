@@ -15,7 +15,6 @@ namespace SpawnDev.WebTorrent;
 public class ServiceWorkerStreamHandler : IDisposable
 {
     private readonly WebTorrentClient _client;
-    private readonly Action<MessageEvent> _handler;
     private bool _disposed;
 
     private static readonly Dictionary<string, string> MimeTypes = new()
@@ -31,13 +30,12 @@ public class ServiceWorkerStreamHandler : IDisposable
     public ServiceWorkerStreamHandler(WebTorrentClient client)
     {
         _client = client;
-        _handler = HandleMessage;
 
         if (!OperatingSystem.IsBrowser()) return;
 
         var swContainer = BlazorJSRuntime.JS.Get<ServiceWorkerContainer>("navigator.serviceWorker");
         if (swContainer == null) return;
-        swContainer.OnMessage += _handler;
+        swContainer.OnMessage += HandleMessage;
     }
 
     private void HandleMessage(MessageEvent msgEvent)
@@ -183,7 +181,7 @@ public class ServiceWorkerStreamHandler : IDisposable
         {
             var swContainer = BlazorJSRuntime.JS.Get<ServiceWorkerContainer>("navigator.serviceWorker");
             if (swContainer == null) return;
-            swContainer.OnMessage -= _handler;
+            swContainer.OnMessage -= HandleMessage;
             swContainer.Dispose();
         }
         catch { }

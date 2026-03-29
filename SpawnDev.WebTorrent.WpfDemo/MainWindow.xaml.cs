@@ -58,6 +58,15 @@ public partial class MainWindow : Window
         };
         _refreshTimer.Start();
 
+        // Clean up resources on close
+        Closing += (_, _) =>
+        {
+            _refreshTimer.Stop();
+            _httpServer?.Stop();
+            foreach (var t in _torrents) _ = t.Swarm.DisposeAsync();
+            _ = _client.DisposeAsync();
+        };
+
         Log("SpawnDev.WebTorrent Desktop Client initialized");
 
         // Handle command-line .torrent files (open with this app)

@@ -627,6 +627,98 @@ public abstract partial class WebTorrentTestBase
         Console.WriteLine("[MemoryChunkStore] Write/Read/Delete: OK");
     }
 
+    // ═══════════════════════════════════════════════════════════
+    //  AsyncFSChunkStore — OPFS / Native FS Storage
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task AsyncFSChunkStore_WriteReadDelete()
+    {
+        SpawnDev.AsyncFileSystem.IAsyncFS? fs = null;
+        if (OperatingSystem.IsBrowser())
+        {
+            if (JS == null) throw new UnsupportedTestException("Requires BlazorJSRuntime");
+            var opfs = new SpawnDev.AsyncFileSystem.BrowserWASM.AsyncFSFileSystemDirectoryHandle(JS);
+            await opfs.Ready;
+            fs = opfs;
+        }
+        else
+        {
+            throw new UnsupportedTestException("AsyncFSChunkStore OPFS test requires browser");
+        }
+
+        var testPath = $"test_chunks_{Guid.NewGuid():N}";
+        await using var store = new AsyncFSChunkStore(fs, testPath, 16384);
+
+        // Put a chunk
+        var data = new byte[] { 10, 20, 30, 40, 50 };
+        await store.PutAsync(0, data);
+
+        // Read it back
+        var result = await store.GetAsync(0);
+        if (result == null) throw new Exception("Should read back stored chunk");
+        if (!result.SequenceEqual(data)) throw new Exception("Data mismatch after read");
+
+        // Partial read
+        var partial = await store.GetAsync(0, 1, 3);
+        if (partial == null) throw new Exception("Partial read should work");
+        if (partial.Length != 3) throw new Exception($"Partial length: {partial.Length}");
+        if (partial[0] != 20 || partial[1] != 30 || partial[2] != 40)
+            throw new Exception("Partial data mismatch");
+
+        // Read non-existent
+        var missing = await store.GetAsync(99);
+        if (missing != null) throw new Exception("Non-existent chunk should return null");
+
+        // Remove
+        await store.RemoveAsync(0);
+        var deleted = await store.GetAsync(0);
+        if (deleted != null) throw new Exception("Deleted chunk should return null");
+
+        // Clean up
+        await store.ClearAsync();
+
+        Console.WriteLine("[AsyncFSChunkStore] OPFS Write/Read/Delete: OK");
+    }
+
+    [TestMethod]
+    public async Task AsyncFSChunkStore_ClearAll()
+    {
+        SpawnDev.AsyncFileSystem.IAsyncFS? fs = null;
+        if (OperatingSystem.IsBrowser())
+        {
+            if (JS == null) throw new UnsupportedTestException("Requires BlazorJSRuntime");
+            var opfs = new SpawnDev.AsyncFileSystem.BrowserWASM.AsyncFSFileSystemDirectoryHandle(JS);
+            await opfs.Ready;
+            fs = opfs;
+        }
+        else
+        {
+            throw new UnsupportedTestException("AsyncFSChunkStore OPFS test requires browser");
+        }
+
+        var testPath = $"test_chunks_{Guid.NewGuid():N}";
+        await using var store = new AsyncFSChunkStore(fs, testPath, 16384);
+
+        await store.PutAsync(0, new byte[] { 1, 2, 3 });
+        await store.PutAsync(1, new byte[] { 4, 5, 6 });
+        await store.PutAsync(2, new byte[] { 7, 8, 9 });
+
+        await store.ClearAsync();
+
+        var c0 = await store.GetAsync(0);
+        var c1 = await store.GetAsync(1);
+        var c2 = await store.GetAsync(2);
+        if (c0 != null || c1 != null || c2 != null)
+            throw new Exception("All chunks should be cleared");
+
+        Console.WriteLine("[AsyncFSChunkStore] OPFS ClearAll: OK");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  MemoryChunkStore — Dedicated Tests
+    // ═══════════════════════════════════════════════════════════
+
     [TestMethod]
     public async Task MemoryChunkStore_MultipleChunks()
     {

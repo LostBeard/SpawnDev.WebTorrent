@@ -113,13 +113,20 @@ if (typeof window !== 'undefined') {
             return;
         }
 
-        // Don't intercept cross-origin requests — we can't add useful
-        // headers to them and they are the main source of "Failed to fetch" errors
         var url = new URL(event.request.url);
+
+        // Don't intercept cross-origin requests
         if (url.origin !== self.location.origin) {
-            return; // Let the browser handle it natively
+            return;
         }
 
+        // ── WebTorrent streaming: intercept /webtorrent/ requests ──
+        if (url.pathname.includes('/webtorrent/')) {
+            event.respondWith(handleTorrentStream(event));
+            return;
+        }
+
+        // ── COI headers for all other same-origin requests ──
         event.respondWith(
             fetch(event.request)
                 .then(function (response) {
@@ -142,4 +149,68 @@ if (typeof window !== 'undefined') {
                 })
         );
     });
+
+    // ── WebTorrent streaming via MessageChannel to main window ──
+    async function handleTorrentStream(event) {
+        var allClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+        if (allClients.length === 0) {
+            return new Response('No client available', { status: 503 });
+        }
+        var client = allClients[0];
+        var mc = new MessageChannel();
+        var url = new URL(event.request.url);
+        var rangeHeader = event.request.headers.get('range');
+
+        return new Promise(function (resolve) {
+            mc.port1.onmessage = function (evt) {
+                var data = evt.data;
+                if (!data || data.error) {
+                    resolve(new Response(data ? data.error : 'No response', { status: 500 }));
+                    return;
+                }
+                if (data.body === 'stream_pull') {
+                    // Pull-based streaming — the client sends chunks on demand
+                    var stream = new ReadableStream({
+                        pull: function (controller) {
+                            return new Promise(function (pullResolve) {
+                                mc.port1.onmessage = function (chunkEvt) {
+                                    if (chunkEvt.data) {
+                                        try {
+                                            controller.enqueue(chunkEvt.data);
+                                        } catch (ex) {
+                                            mc.port1.postMessage({ eventType: 'error', desiredSize: 0 });
+                                        }
+                                    } else {
+                                        try { controller.close(); } catch (e) { }
+                                        mc.port1.onmessage = null;
+                                    }
+                                    pullResolve();
+                                };
+                                mc.port1.postMessage({ eventType: 'pull', desiredSize: controller.desiredSize });
+                            });
+                        },
+                        cancel: function () {
+                            mc.port1.postMessage({ eventType: 'cancel', desiredSize: 0 });
+                        }
+                    });
+                    resolve(new Response(stream, {
+                        status: data.status || 200,
+                        headers: data.headers || {}
+                    }));
+                } else {
+                    // Direct response — complete data in one message
+                    resolve(new Response(data.body, {
+                        status: data.status || 200,
+                        headers: data.headers || {}
+                    }));
+                }
+            };
+
+            client.postMessage({
+                type: 'webtorrent-stream',
+                url: url.pathname,
+                range: rangeHeader,
+            }, [mc.port2]);
+        });
+    }
 }

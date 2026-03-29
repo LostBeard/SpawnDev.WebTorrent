@@ -856,51 +856,124 @@
         Log($"Exported: {fileName}");
     }
 
-    // ── Media ──
+    // ── Media via Service Worker streaming ──
     private Blob? _mediaBlob;
+    private TorrentFileStream? _streamingFile;
+    private string _streamingInfoHash = "";
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            // Listen for service worker messages requesting torrent data
+            JS.Set("_wtStreamHandler", new ActionCallback<MessageEvent>(HandleStreamRequest));
+            JS.CallVoid("eval", @"
+                if (navigator.serviceWorker) {
+                    navigator.serviceWorker.addEventListener('message', function(e) {
+                        if (e.data && e.data.type === 'webtorrent-stream' && e.ports && e.ports[0]) {
+                            window._wtStreamHandler(e);
+                        }
+                    });
+                }
+            ");
+        }
+    }
+
+    private void HandleStreamRequest(MessageEvent msgEvent)
+    {
+        try
+        {
+            using var data = msgEvent.GetData<JSObject>();
+            var urlPath = data.JSRef!.Get<string>("url") ?? "";
+            var range = data.JSRef!.Get<string?>("range");
+            using var ports = msgEvent.Ports;
+            var port = ports?.Length > 0 ? ports[0] : null;
+            if (port == null) return;
+
+            // Parse URL: /webtorrent/{infoHash}/{fileIndex}
+            var parts = urlPath.Split('/').Where(s => !string.IsNullOrEmpty(s)).ToArray();
+            // Expected: ["webtorrent", "{infoHash}", "{fileIndex}"]
+            if (parts.Length < 3 || parts[0] != "webtorrent") { port.PostMessage(new { error = "Invalid URL" }); return; }
+
+            var infoHash = parts[1];
+            var fileIdx = int.TryParse(parts[2], out var fi) ? fi : 0;
+
+            var entry = _torrents.FirstOrDefault(t => t.InfoHashFull == infoHash);
+            if (entry == null || !entry.HasMetadata) { port.PostMessage(new { error = "Torrent not found" }); return; }
+
+            var metadata = entry.Swarm.Metadata!;
+            if (fileIdx >= metadata.Files.Length) { port.PostMessage(new { error = "File not found" }); return; }
+
+            var file = entry.Swarm.Files![fileIdx];
+            var totalSize = file.Length;
+            var contentType = GetMimeType(System.IO.Path.GetExtension(file.Name).ToLowerInvariant());
+
+            // Parse range header
+            long rangeStart = 0;
+            long rangeEnd = totalSize - 1;
+            bool isRange = false;
+            if (!string.IsNullOrEmpty(range) && range.StartsWith("bytes="))
+            {
+                isRange = true;
+                var rangeParts = range.Substring(6).Split('-');
+                if (rangeParts.Length >= 1 && long.TryParse(rangeParts[0], out var rs)) rangeStart = rs;
+                if (rangeParts.Length >= 2 && !string.IsNullOrEmpty(rangeParts[1]) && long.TryParse(rangeParts[1], out var re)) rangeEnd = re;
+                if (rangeEnd >= totalSize) rangeEnd = totalSize - 1;
+            }
+
+            var length = (int)(rangeEnd - rangeStart + 1);
+
+            // Read the data from the chunk store
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var readData = await file.ReadAsync(rangeStart, length);
+                    var headers = new Dictionary<string, string>
+                    {
+                        ["Content-Type"] = contentType,
+                        ["Accept-Ranges"] = "bytes",
+                        ["Content-Length"] = readData.Length.ToString(),
+                    };
+
+                    if (isRange)
+                    {
+                        headers["Content-Range"] = $"bytes {rangeStart}-{rangeStart + readData.Length - 1}/{totalSize}";
+                        port.PostMessage(new { body = (object)readData, status = 206, headers });
+                    }
+                    else
+                    {
+                        port.PostMessage(new { body = (object)readData, status = 200, headers });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    port.PostMessage(new { error = ex.Message });
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            Log($"Stream handler error: {ex.Message}");
+        }
+    }
+
     private async Task OpenMedia(TorrentFileStream file, string ext)
     {
         _mediaFileName = file.Name; _mediaType = IsVideoFile(ext) ? "video" : IsAudioFile(ext) ? "audio" : "image";
-        _mediaOpen = true; _mediaLoading = true; _mediaBlobUrl = ""; StateHasChanged();
-        try
-        {
-            var swarm = _selectedTorrent!.Swarm;
-            byte[]? fileData = null;
+        _mediaOpen = true; _mediaLoading = false;
 
-            // Read from already-downloaded pieces in the chunk store first
-            if (swarm.Store != null && swarm.PieceManager != null && file.Done)
-            {
-                fileData = await file.GetArrayBufferAsync();
-            }
+        // Use service worker streaming URL — supports range requests for seeking
+        var entry = _selectedTorrent!;
+        var fileIdx = System.Array.IndexOf(entry.Swarm.Files!, file);
+        _mediaBlobUrl = $"/webtorrent/{entry.InfoHashFull}/{fileIdx}";
 
-            // Fallback: download from web seed if pieces aren't available
-            if (fileData == null || fileData.Length == 0)
-            {
-                var metadata = swarm.Metadata!; var wsUrls = metadata.UrlList;
-                if (wsUrls.Length > 0)
-                {
-                    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
-                    var url = wsUrls[0].TrimEnd('/') + "/" + (metadata.Files.Length == 1 ? metadata.Files[0].Path : file.Path);
-                    var request = new HttpRequestMessage(HttpMethod.Get, url);
-                    request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(file.Offset, file.Offset + file.Length - 1);
-                    var response = await http.SendAsync(request); fileData = await response.Content.ReadAsByteArrayAsync();
-                }
-            }
-
-            if (fileData == null || fileData.Length == 0) { _mediaLoading = false; StateHasChanged(); return; }
-
-            // Create blob — do NOT dispose it until media is closed
-            _mediaBlob?.Dispose();
-            _mediaBlob = new Blob(new[] { fileData }, new BlobOptions { Type = GetMimeType(ext) });
-            _mediaBlobUrl = URL.CreateObjectURL(_mediaBlob);
-            _mediaLoading = false; StateHasChanged();
-        }
-        catch (Exception ex) { _mediaLoading = false; Log($"Media error: {ex.Message}"); StateHasChanged(); }
+        StateHasChanged();
     }
+
     private void CloseMedia()
     {
-        if (!string.IsNullOrEmpty(_mediaBlobUrl)) try { URL.RevokeObjectURL(_mediaBlobUrl); } catch { }
-        _mediaBlob?.Dispose(); _mediaBlob = null;
+        // No blob to revoke — we use SW URL now
         _mediaOpen = false; _mediaBlobUrl = "";
     }
 

@@ -16,11 +16,12 @@ builder.Services.AddSingleton(new TorrentTracker(new TrackerOptions
 }));
 
 builder.Services.AddSingleton(new WebSeedServer("seed-data"));
+builder.Services.AddSingleton(new ComputeRequestBoard());
 
 builder.Services.AddSingleton(new HuggingFaceProxy(new HuggingFaceProxyOptions
 {
     CacheDirectory = "hf-cache",
-    TrackerUrls = new[] { "wss://hub.spawndev.com:44365/announce", "wss://tracker.webtorrent.dev" },
+    TrackerUrls = new[] { "wss://hub.spawndev.com:44365/announce" },
 }));
 
 // CORS for browser clients
@@ -49,6 +50,9 @@ app.MapGet("/", () => new
         huggingFace = "/hf/{repoId}/{filePath}",
         torrent = "/torrent/{repoId}/{filePath}",
         stats = "/stats",
+        computeRequests = "/compute/requests",
+        computeStats = "/compute/stats",
+        postComputeRequest = "POST /compute/request",
     }
 });
 
@@ -60,6 +64,20 @@ app.MapWebTorrentServer(tracker, webSeed);
 var hfProxy = app.Services.GetRequiredService<HuggingFaceProxy>();
 app.MapHuggingFaceProxy(hfProxy);
 
+// Compute request board
+var computeBoard = app.Services.GetRequiredService<ComputeRequestBoard>();
+app.MapPost("/compute/request", (ComputeRequest request) =>
+{
+    var posted = computeBoard.Post(request);
+    return Results.Ok(posted);
+});
+app.MapGet("/compute/requests", () => computeBoard.GetActive());
+app.MapGet("/compute/stats", () => computeBoard.GetStats());
+app.MapDelete("/compute/request/{id}", (string id) =>
+{
+    return computeBoard.Remove(id) ? Results.Ok() : Results.NotFound();
+});
+
 Console.WriteLine("SpawnDev.WebTorrent.Server starting...");
 Console.WriteLine("  Tracker:      wss://localhost:5560/announce");
 Console.WriteLine("  Web Seed:     https://localhost:5560/seed/{infoHash}/{filePath}");
@@ -68,5 +86,6 @@ Console.WriteLine("  Torrent Gen:  https://localhost:5560/torrent/{repoId}/{file
 Console.WriteLine("  Magnet URI:   https://localhost:5560/magnet/{repoId}/{filePath}");
 Console.WriteLine("  Stats:        https://localhost:5560/stats");
 Console.WriteLine("  HF Stats:     https://localhost:5560/hf-stats");
+Console.WriteLine("  Compute Board: https://localhost:5560/compute/requests");
 
 app.Run();

@@ -20,6 +20,7 @@ public class ServiceWorkerStreamHandler : IAsyncBackgroundService, IDisposable
 {
     public Task Ready => _ready ??= InitAsync();
     private Task? _ready;
+    private ServiceWorkerContainer? _swContainer;
     private bool _disposed;
 
     /// <summary>Fired when a streaming request is received from the service worker.</summary>
@@ -39,9 +40,10 @@ public class ServiceWorkerStreamHandler : IAsyncBackgroundService, IDisposable
     {
         if (!OperatingSystem.IsBrowser()) return Task.CompletedTask;
 
-        var swContainer = BlazorJSRuntime.JS.Get<ServiceWorkerContainer>("navigator.serviceWorker");
-        if (swContainer == null) return Task.CompletedTask;
-        swContainer.OnMessage += HandleMessage;
+        _swContainer = BlazorJSRuntime.JS.Get<ServiceWorkerContainer>("navigator.serviceWorker");
+        if (_swContainer == null) return Task.CompletedTask;
+        _swContainer.OnMessage += HandleMessage;
+        Console.WriteLine("[WebTorrent SW Handler] Initialized — listening for SW messages");
         return Task.CompletedTask;
     }
 
@@ -54,6 +56,7 @@ public class ServiceWorkerStreamHandler : IAsyncBackgroundService, IDisposable
             if (msgType != "webtorrent") return;
 
             var requestUrl = data.JSRef!.Get<string>("url") ?? "";
+            Console.WriteLine($"[WebTorrent SW Handler] Received request: {requestUrl}");
             using var headersObj = data.JSRef!.Get<JSObject?>("headers");
             var rangeHeader = headersObj?.JSRef?.Get<string?>("range");
             var destination = data.JSRef!.Get<string?>("destination") ?? "";
@@ -81,7 +84,9 @@ public class ServiceWorkerStreamHandler : IAsyncBackgroundService, IDisposable
                 Port = port,
             };
 
+            Console.WriteLine($"[WebTorrent SW Handler] Firing OnRequest: hash={infoHash}, fileIdx={fileIdx}, subscribers={OnRequest?.GetInvocationList().Length ?? 0}");
             OnRequest?.Invoke(request);
+            Console.WriteLine($"[WebTorrent SW Handler] OnRequest done: handled={request.Handled}");
 
             if (!request.Handled)
             {
@@ -146,10 +151,10 @@ public class ServiceWorkerStreamHandler : IAsyncBackgroundService, IDisposable
         if (!OperatingSystem.IsBrowser()) return;
         try
         {
-            var swContainer = BlazorJSRuntime.JS.Get<ServiceWorkerContainer>("navigator.serviceWorker");
-            if (swContainer == null) return;
-            swContainer.OnMessage -= HandleMessage;
-            swContainer.Dispose();
+            if (_swContainer == null) return;
+            _swContainer.OnMessage -= HandleMessage;
+            _swContainer.Dispose();
+            _swContainer = null;
         }
         catch (Exception ex)
         {

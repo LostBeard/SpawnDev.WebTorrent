@@ -1086,6 +1086,21 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
+    public async Task ServiceWorker_ClientHasStreamHandler()
+    {
+        if (!OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("Requires browser");
+        if (Client == null) throw new UnsupportedTestException("Requires DI WebTorrentClient");
+
+        await Client.Ready;
+
+        if (Client.StreamHandler == null)
+            throw new Exception("WebTorrentClient.StreamHandler is null — DI not wired");
+
+        Console.WriteLine($"[SW] Client has stream handler: OK");
+    }
+
+    [TestMethod]
     public async Task ServiceWorker_InterceptsWebtorrentUrl()
     {
         if (!OperatingSystem.IsBrowser())
@@ -1120,8 +1135,11 @@ public abstract partial class WebTorrentTestBase
             new TorrentCreatorOptions { PieceLength = 16384 });
 
         var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
+        Console.WriteLine($"[SW Test] Seeded: hash={hash}, hasMetadata={swarm.HasMetadata}, files={swarm.Files?.Length}, store={swarm.Store?.GetType().Name}");
+        Console.WriteLine($"[SW Test] Client torrents: {Client.Torrents.Count}, streamHandler={Client.StreamHandler != null}");
 
         // Fetch the full file via the service worker URL
+        Console.WriteLine($"[SW Test] Fetching /webtorrent/{hash}/0 ...");
         using var response = await JS.Fetch($"/webtorrent/{hash}/0");
         var status = response.Status;
         if (status != 200 && status != 206)

@@ -33,7 +33,6 @@ if (typeof window !== 'undefined') {
     }
 
     if (window.crossOriginIsolated) {
-        // Already cross-origin isolated — SW is active, COI headers applied
         sessionStorage.removeItem('wt-sw-reload');
         loadBlazor();
     } else if ('serviceWorker' in navigator) {
@@ -41,7 +40,6 @@ if (typeof window !== 'undefined') {
         var reloadCount = parseInt(sessionStorage.getItem(reloadKey) || '0', 10);
 
         if (reloadCount < 2) {
-            // Register this file as the service worker
             navigator.serviceWorker
                 .register(window.document.currentScript.src)
                 .then(function (reg) {
@@ -52,7 +50,6 @@ if (typeof window !== 'undefined') {
                     loadBlazor();
                 });
 
-            // Wait for SW to be ready, then reload to pick up COI headers
             var reloaded = false;
             var doReload = function () {
                 if (reloaded) return;
@@ -71,7 +68,6 @@ if (typeof window !== 'undefined') {
                 }
             }, 5000);
         } else {
-            // Already tried — COI not working, load Blazor without it
             console.warn('[WebTorrent SW] Cross-origin isolation failed — proceeding without SharedArrayBuffer');
             sessionStorage.removeItem(reloadKey);
             loadBlazor();
@@ -95,19 +91,17 @@ if (typeof window !== 'undefined') {
         }
 
         var url = new URL(event.request.url);
-
-        // Don't intercept cross-origin requests
         if (url.origin !== self.location.origin) {
             return;
         }
 
-        // WebTorrent streaming — intercept /webtorrent/ requests
+        // WebTorrent streaming
         if (url.pathname.includes('/webtorrent/')) {
             event.respondWith(handleWebtorrentStream(event));
             return;
         }
 
-        // All other same-origin requests — add COI headers
+        // COI headers for all other same-origin requests
         event.respondWith(
             fetch(event.request)
                 .then(function (response) {
@@ -126,7 +120,12 @@ if (typeof window !== 'undefined') {
         );
     });
 
-    // ── WebTorrent streaming via MessageChannel ──
+    // ── WebTorrent streaming ──
+    // Matches the protocol from webtorrent/webtorrent (worker-server.js):
+    // 1. SW posts request details to client window via MessageChannel
+    // 2. Client responds with { status, headers, body } where body is 'STREAM' or data
+    // 3. If 'STREAM': SW creates ReadableStream, pulls chunks via port messages
+    // 4. Client sends Uint8Array chunks on pull (true), null = end, false = cancel
 
     async function handleWebtorrentStream(event) {
         var allClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
@@ -134,63 +133,85 @@ if (typeof window !== 'undefined') {
             return new Response('No client available', { status: 503 });
         }
 
-        var client = allClients[0];
-        var mc = new MessageChannel();
-        var url = new URL(event.request.url);
-        var rangeHeader = event.request.headers.get('range');
+        var request = event.request;
+        var url = new URL(request.url);
 
-        return new Promise(function (resolve) {
-            mc.port1.onmessage = function (evt) {
-                var data = evt.data;
+        // Race: post to all clients, first to respond wins (matches webtorrent pattern)
+        var result = await new Promise(function (resolve) {
+            for (var i = 0; i < allClients.length; i++) {
+                var mc = new MessageChannel();
+                mc.port1.onmessage = function (evt) {
+                    resolve([evt.data, mc.port1]);
+                };
+                allClients[i].postMessage({
+                    type: 'webtorrent',
+                    url: request.url,
+                    method: request.method,
+                    headers: Object.fromEntries(request.headers.entries()),
+                    scope: self.registration.scope,
+                    destination: request.destination,
+                }, [mc.port2]);
+                // Only use first client's channel for the resolve
+                var mc = { port1: mc.port1 };
+            }
+        });
 
-                if (!data || data.error) {
-                    resolve(new Response(data ? data.error : 'No response', { status: 500 }));
-                    return;
-                }
+        var data = result[0];
+        var port = result[1];
 
-                if (data.body === 'stream_pull') {
-                    // Pull-based streaming — client sends chunks on demand
-                    var stream = new ReadableStream({
-                        pull: function (controller) {
-                            return new Promise(function (pullResolve) {
-                                mc.port1.onmessage = function (chunkEvt) {
-                                    if (chunkEvt.data) {
-                                        try {
-                                            controller.enqueue(chunkEvt.data);
-                                        } catch (ex) {
-                                            mc.port1.postMessage({ eventType: 'error', desiredSize: 0 });
-                                        }
-                                    } else {
-                                        try { controller.close(); } catch (e) { }
-                                        mc.port1.onmessage = null;
-                                    }
-                                    pullResolve();
-                                };
-                                mc.port1.postMessage({ eventType: 'pull', desiredSize: controller.desiredSize });
-                            });
-                        },
-                        cancel: function () {
-                            mc.port1.postMessage({ eventType: 'cancel', desiredSize: 0 });
+        if (!data) {
+            return new Response('No response from client', { status: 500 });
+        }
+
+        if (data.body !== 'STREAM') {
+            // Direct response (small files, errors, etc.)
+            port.onmessage = null;
+            return new Response(data.body, {
+                status: data.status || 200,
+                headers: data.headers || {},
+            });
+        }
+
+        // Streaming response — pull chunks from client on demand
+        var timeOut = null;
+        var portTimeoutDuration = 5000;
+        var cleanup = function () {
+            port.postMessage(false); // cancel
+            clearTimeout(timeOut);
+            port.onmessage = null;
+        };
+
+        var stream = new ReadableStream({
+            pull: function (controller) {
+                return new Promise(function (resolve) {
+                    port.onmessage = function (msg) {
+                        if (msg.data) {
+                            controller.enqueue(msg.data); // Uint8Array chunk
+                        } else {
+                            cleanup();
+                            controller.close();
                         }
-                    });
-                    resolve(new Response(stream, {
-                        status: data.status || 200,
-                        headers: data.headers || {}
-                    }));
-                } else {
-                    // Direct response — complete data in one message
-                    resolve(new Response(data.body, {
-                        status: data.status || 200,
-                        headers: data.headers || {}
-                    }));
-                }
-            };
+                        resolve();
+                    };
+                    // Timeout for non-document requests (Firefox compat)
+                    clearTimeout(timeOut);
+                    if (data.destination !== 'document') {
+                        timeOut = setTimeout(function () {
+                            cleanup();
+                            resolve();
+                        }, portTimeoutDuration);
+                    }
+                    port.postMessage(true); // pull request
+                });
+            },
+            cancel: function () {
+                cleanup();
+            }
+        });
 
-            client.postMessage({
-                type: 'webtorrent-stream',
-                url: url.pathname,
-                range: rangeHeader,
-            }, [mc.port2]);
+        return new Response(stream, {
+            status: data.status || 200,
+            headers: data.headers || {},
         });
     }
 }

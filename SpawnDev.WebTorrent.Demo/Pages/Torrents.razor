@@ -857,25 +857,19 @@
     }
 
     // ── Media via Service Worker streaming ──
-    private Blob? _mediaBlob;
-    private TorrentFileStream? _streamingFile;
-    private string _streamingInfoHash = "";
+    // Protocol: SW posts request → we respond with {status, headers, body:'STREAM'}
+    // → SW pulls chunks via port.postMessage(true) → we send Uint8Array chunks → null = done
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (firstRender)
+        if (firstRender && OperatingSystem.IsBrowser())
         {
             // Listen for service worker messages requesting torrent data
-            JS.Set("_wtStreamHandler", new ActionCallback<MessageEvent>(HandleStreamRequest));
-            JS.CallVoid("eval", @"
-                if (navigator.serviceWorker) {
-                    navigator.serviceWorker.addEventListener('message', function(e) {
-                        if (e.data && e.data.type === 'webtorrent-stream' && e.ports && e.ports[0]) {
-                            window._wtStreamHandler(e);
-                        }
-                    });
-                }
-            ");
+            using var swContainer = JS.Get<ServiceWorkerContainer>("navigator.serviceWorker");
+            if (swContainer != null)
+            {
+                swContainer.OnMessage += HandleStreamRequest;
+            }
         }
     }
 
@@ -884,27 +878,36 @@
         try
         {
             using var data = msgEvent.GetData<JSObject>();
-            var urlPath = data.JSRef!.Get<string>("url") ?? "";
-            var range = data.JSRef!.Get<string?>("range");
+            var msgType = data.JSRef!.Get<string?>("type");
+            if (msgType != "webtorrent") return;
+
+            var requestUrl = data.JSRef!.Get<string>("url") ?? "";
+            var method = data.JSRef!.Get<string>("method") ?? "GET";
+            using var headersObj = data.JSRef!.Get<JSObject?>("headers");
+            var rangeHeader = headersObj?.JSRef?.Get<string?>("range");
+            var destination = data.JSRef!.Get<string?>("destination") ?? "";
+
             using var ports = msgEvent.Ports;
-            var port = ports?.Length > 0 ? ports[0] : null;
-            if (port == null) return;
+            if (ports == null || ports.Length == 0) return;
+            var port = ports[0];
 
-            // Parse URL: /webtorrent/{infoHash}/{fileIndex}
-            var parts = urlPath.Split('/').Where(s => !string.IsNullOrEmpty(s)).ToArray();
-            // Expected: ["webtorrent", "{infoHash}", "{fileIndex}"]
-            if (parts.Length < 3 || parts[0] != "webtorrent") { port.PostMessage(new { error = "Invalid URL" }); return; }
+            // Parse URL: .../webtorrent/{infoHash}/{fileIndex}
+            var url = new Uri(requestUrl);
+            var segments = url.AbsolutePath.Split('/').Where(s => !string.IsNullOrEmpty(s)).ToArray();
+            var wtIdx = System.Array.IndexOf(segments, "webtorrent");
+            if (wtIdx < 0 || wtIdx + 2 >= segments.Length) { port.PostMessage(new { status = 404, headers = new Dictionary<string, string>(), body = "Not found" }); return; }
 
-            var infoHash = parts[1];
-            var fileIdx = int.TryParse(parts[2], out var fi) ? fi : 0;
+            var infoHash = segments[wtIdx + 1];
+            var fileIdx = int.TryParse(segments[wtIdx + 2], out var fi) ? fi : -1;
 
             var entry = _torrents.FirstOrDefault(t => t.InfoHashFull == infoHash);
-            if (entry == null || !entry.HasMetadata) { port.PostMessage(new { error = "Torrent not found" }); return; }
+            if (entry == null || !entry.HasMetadata || entry.Swarm.Files == null || fileIdx < 0 || fileIdx >= entry.Swarm.Files.Length)
+            {
+                port.PostMessage(new { status = 404, headers = new Dictionary<string, string>(), body = "Not found" });
+                return;
+            }
 
-            var metadata = entry.Swarm.Metadata!;
-            if (fileIdx >= metadata.Files.Length) { port.PostMessage(new { error = "File not found" }); return; }
-
-            var file = entry.Swarm.Files![fileIdx];
+            var file = entry.Swarm.Files[fileIdx];
             var totalSize = file.Length;
             var contentType = GetMimeType(System.IO.Path.GetExtension(file.Name).ToLowerInvariant());
 
@@ -912,10 +915,10 @@
             long rangeStart = 0;
             long rangeEnd = totalSize - 1;
             bool isRange = false;
-            if (!string.IsNullOrEmpty(range) && range.StartsWith("bytes="))
+            if (!string.IsNullOrEmpty(rangeHeader) && rangeHeader.StartsWith("bytes="))
             {
                 isRange = true;
-                var rangeParts = range.Substring(6).Split('-');
+                var rangeParts = rangeHeader.Substring(6).Split('-');
                 if (rangeParts.Length >= 1 && long.TryParse(rangeParts[0], out var rs)) rangeStart = rs;
                 if (rangeParts.Length >= 2 && !string.IsNullOrEmpty(rangeParts[1]) && long.TryParse(rangeParts[1], out var re)) rangeEnd = re;
                 if (rangeEnd >= totalSize) rangeEnd = totalSize - 1;
@@ -923,34 +926,63 @@
 
             var length = (int)(rangeEnd - rangeStart + 1);
 
-            // Read the data from the chunk store
-            _ = Task.Run(async () =>
+            // Build response headers
+            var responseHeaders = new Dictionary<string, string>
             {
-                try
-                {
-                    var readData = await file.ReadAsync(rangeStart, length);
-                    var headers = new Dictionary<string, string>
-                    {
-                        ["Content-Type"] = contentType,
-                        ["Accept-Ranges"] = "bytes",
-                        ["Content-Length"] = readData.Length.ToString(),
-                    };
+                ["Content-Type"] = contentType,
+                ["Accept-Ranges"] = "bytes",
+                ["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0",
+                ["Content-Length"] = length.ToString(),
+            };
+            if (isRange)
+            {
+                responseHeaders["Content-Range"] = $"bytes {rangeStart}-{rangeEnd}/{totalSize}";
+            }
 
-                    if (isRange)
-                    {
-                        headers["Content-Range"] = $"bytes {rangeStart}-{rangeStart + readData.Length - 1}/{totalSize}";
-                        port.PostMessage(new { body = (object)readData, status = 206, headers });
-                    }
-                    else
-                    {
-                        port.PostMessage(new { body = (object)readData, status = 200, headers });
-                    }
-                }
-                catch (Exception ex)
+            int status = isRange ? 206 : 200;
+
+            // Send STREAM response — SW will set up ReadableStream and pull chunks
+            port.PostMessage(new { status, headers = responseHeaders, body = "STREAM", destination });
+
+            // Handle pull requests from SW
+            var offset = rangeStart;
+            var remaining = length;
+            var chunkSize = 65536; // 64KB chunks
+
+            port.OnMessage += (MessageEvent pullMsg) =>
+            {
+                var pullData = pullMsg.GetData<bool>();
+                if (!pullData)
                 {
-                    port.PostMessage(new { error = ex.Message });
+                    // Cancel request
+                    return;
                 }
-            });
+
+                // Pull request — send next chunk
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        if (remaining <= 0)
+                        {
+                            port.PostMessage(null); // Stream done
+                            return;
+                        }
+
+                        var toRead = Math.Min(chunkSize, remaining);
+                        var chunk = await file.ReadAsync(offset, (int)toRead);
+                        offset += chunk.Length;
+                        remaining -= chunk.Length;
+
+                        using var uint8 = new Uint8Array(chunk);
+                        port.PostMessage(uint8);
+                    }
+                    catch
+                    {
+                        port.PostMessage(null); // End on error
+                    }
+                });
+            };
         }
         catch (Exception ex)
         {
@@ -973,7 +1005,6 @@
 
     private void CloseMedia()
     {
-        // No blob to revoke — we use SW URL now
         _mediaOpen = false; _mediaBlobUrl = "";
     }
 

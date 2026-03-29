@@ -62,7 +62,12 @@ public class HmacFallbackSigner : IDhtSigner
 
     public Task<bool> VerifyAsync(byte[] publicKey, byte[] message, byte[] signature)
     {
-        return Task.FromResult(signature.Length >= 64);
+        // HMAC verify: recompute and compare
+        // Note: this signer is for testing only — real deployments should use EcdsaP256Signer
+        if (signature.Length < 64) return Task.FromResult(false);
+        using var hmac = new System.Security.Cryptography.HMACSHA512(_privateKey);
+        var expected = hmac.ComputeHash(message);
+        return Task.FromResult(expected.AsSpan().SequenceEqual(signature.AsSpan(0, expected.Length)));
     }
 
     public Task<(byte[] publicKey, byte[] privateKey)> ExportKeyPairAsync()
@@ -116,8 +121,16 @@ public class EcdsaP256Signer : IDhtSigner
 
     public async Task<bool> VerifyAsync(byte[] publicKey, byte[] message, byte[] signature)
     {
-        // Would need the peer's ECDSA key to verify — for now accept
-        return signature.Length >= 64;
+        try
+        {
+            // Import the peer's public key and verify the signature
+            var peerKey = await _crypto.ImportECDSAKey(publicKey, "P-256");
+            return await _crypto.Verify(peerKey, message, signature, "SHA-256");
+        }
+        catch
+        {
+            return false; // Invalid key or signature format
+        }
     }
 
     public async Task<(byte[] publicKey, byte[] privateKey)> ExportKeyPairAsync()

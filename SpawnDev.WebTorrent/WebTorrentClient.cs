@@ -84,10 +84,15 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
     /// <summary>Service worker stream handler (injected via DI, may be null on desktop without DI).</summary>
     public ServiceWorkerStreamHandler? StreamHandler { get; private set; }
 
-    public WebTorrentClient(ServiceWorkerStreamHandler? streamHandler = null, WebTorrentOptions? options = null)
+    private SpawnDev.AsyncFileSystem.IAsyncFS? _asyncFs;
+    private const string TorrentStateDir = "webtorrent/_state";
+
+    public WebTorrentClient(ServiceWorkerStreamHandler? streamHandler = null,
+        SpawnDev.AsyncFileSystem.IAsyncFS? asyncFs = null, WebTorrentOptions? options = null)
     {
         _options = options ?? new WebTorrentOptions();
         StreamHandler = streamHandler;
+        _asyncFs = asyncFs;
         UploadLimit = _options.UploadLimit;
         DownloadLimit = _options.DownloadLimit;
 
@@ -104,6 +109,86 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
         if (StreamHandler != null)
         {
             StreamHandler.OnRequest += HandleStreamRequest;
+        }
+
+        // Restore persisted torrents from storage
+        await RestoreTorrentsAsync();
+    }
+
+    /// <summary>Save a torrent's .torrent bytes so it persists across page reloads.</summary>
+    private async Task SaveTorrentStateAsync(TorrentSwarm swarm)
+    {
+        if (_asyncFs == null || !swarm.HasMetadata) return;
+        try
+        {
+            var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
+            var torrentBytes = swarm.Metadata!.OriginalTorrentBytes;
+            if (torrentBytes == null || torrentBytes.Length == 0) return;
+
+            if (!await _asyncFs.DirectoryExists(TorrentStateDir))
+                await _asyncFs.CreateDirectory(TorrentStateDir);
+
+            await _asyncFs.Write($"{TorrentStateDir}/{hash}.torrent", torrentBytes);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[WebTorrent] Failed to save torrent state: {ex.Message}");
+        }
+    }
+
+    /// <summary>Remove a torrent's persisted state.</summary>
+    private async Task RemoveTorrentStateAsync(TorrentSwarm swarm)
+    {
+        if (_asyncFs == null) return;
+        try
+        {
+            var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
+            var path = $"{TorrentStateDir}/{hash}.torrent";
+            if (await _asyncFs.FileExists(path))
+                await _asyncFs.Remove(path);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[WebTorrent] Failed to remove torrent state: {ex.Message}");
+        }
+    }
+
+    /// <summary>Restore all persisted torrents on startup.</summary>
+    private async Task RestoreTorrentsAsync()
+    {
+        if (_asyncFs == null) return;
+        try
+        {
+            if (!await _asyncFs.DirectoryExists(TorrentStateDir)) return;
+
+            var files = await _asyncFs.GetFiles(TorrentStateDir);
+            foreach (var file in files)
+            {
+                if (!file.EndsWith(".torrent")) continue;
+                try
+                {
+                    var torrentBytes = await _asyncFs.ReadBytes(file);
+                    if (torrentBytes == null || torrentBytes.Length == 0) continue;
+
+                    var metadata = Torrent.TorrentParser.Parse(torrentBytes);
+                    var hash = Convert.ToHexString(metadata.InfoHash).ToLowerInvariant();
+
+                    // Don't add duplicates
+                    if (_torrents.Any(t => Convert.ToHexString(t.InfoHash).ToLowerInvariant() == hash))
+                        continue;
+
+                    var swarm = await AddAsync(metadata, new AddTorrentOptions { AsyncFileSystem = _asyncFs });
+                    Console.WriteLine($"[WebTorrent] Restored: {metadata.Name} ({hash[..8]}...)");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[WebTorrent] Failed to restore {file}: {ex.Message}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[WebTorrent] Failed to restore torrents: {ex.Message}");
         }
     }
 
@@ -191,6 +276,9 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
             await discovery.StartAsync(metadata.InfoHash, 0);
         }
 
+        // Persist torrent state for restore after page reload
+        await SaveTorrentStateAsync(swarm);
+
         return swarm;
     }
 
@@ -258,6 +346,7 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
     {
         _torrents.Remove(torrent);
         OnTorrentRemove?.Invoke(torrent);
+        await RemoveTorrentStateAsync(torrent);
         if (destroyStore && torrent.Store != null)
             await torrent.Store.ClearAsync();
         await torrent.DisposeAsync();
@@ -291,7 +380,7 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
     public static async Task<(WebTorrentClient client, TorrentSwarm swarm)> QuickStartAsync(
         string magnetUri, WebTorrentOptions? options = null)
     {
-        var client = new WebTorrentClient(null, options);
+        var client = new WebTorrentClient(options: options);
         var swarm = await client.AddAsync(magnetUri);
         return (client, swarm);
     }

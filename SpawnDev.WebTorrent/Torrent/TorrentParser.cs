@@ -27,6 +27,7 @@ public static class TorrentParser
             torrentBytes, 0, "info");
 
         var metadata = new TorrentMetadata();
+        metadata.OriginalTorrentBytes = torrentBytes;
 
         // Announce (single tracker)
         if (dict.TryGetValue("announce", out var announce) && announce is byte[] announceBytes)

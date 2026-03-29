@@ -349,6 +349,7 @@ public class TorrentSwarm : IAsyncDisposable
                         await wire.SendPieceAsync(pieceIndex, offset, data);
                         Uploaded += data.Length;
                         _uploadedSinceLastTick += data.Length;
+                        peer.BytesUploaded += data.Length;
                         OnUpload?.Invoke(data.Length);
                     }
                 }
@@ -543,9 +544,14 @@ public class TorrentSwarm : IAsyncDisposable
                 var peers = _peers.ToArray();
                 if (peers.Length == 0) continue;
 
-                // Unchoke up to 4 interested peers
+                // BEP 3: Unchoke the 4 interested peers with highest upload rate to us
+                var interested = peers.Where(p => p.IsInterested)
+                    .OrderByDescending(p => p.UploadRate)
+                    .ToArray();
+                var notInterested = peers.Where(p => !p.IsInterested).ToArray();
+
                 int unchokedCount = 0;
-                foreach (var peer in peers)
+                foreach (var peer in interested)
                 {
                     if (unchokedCount < 4)
                     {
@@ -559,14 +565,23 @@ public class TorrentSwarm : IAsyncDisposable
                         catch { }
                     }
                 }
-
-                // Every 30 seconds: optimistic unchoke a random choked peer
-                if (tick % 3 == 0 && peers.Length > 4)
+                // Choke all uninterested peers
+                foreach (var peer in notInterested)
                 {
-                    var chokedPeers = peers.Skip(4).ToArray();
-                    if (chokedPeers.Length > 0)
+                    try { await peer.Wire.SendMessageAsync(Wire.MessageType.Choke); }
+                    catch { }
+                }
+
+                // Reset upload counters for next interval
+                foreach (var peer in peers) peer.ResetUploadCounter();
+
+                // Every 30 seconds: optimistic unchoke a random choked interested peer
+                if (tick % 3 == 0)
+                {
+                    var chokedInterested = interested.Skip(4).ToArray();
+                    if (chokedInterested.Length > 0)
                     {
-                        var lucky = chokedPeers[Random.Shared.Next(chokedPeers.Length)];
+                        var lucky = chokedInterested[Random.Shared.Next(chokedInterested.Length)];
                         try { await lucky.Wire.SendMessageAsync(Wire.MessageType.Unchoke); }
                         catch { }
                     }
@@ -671,6 +686,26 @@ public class PeerConnection : IAsyncDisposable
     public PeerInfo Info { get; }
     public bool[] PeerBitfield { get; set; } = Array.Empty<bool>();
     public bool IsChoked { get; set; } = true;
+    public bool IsInterested { get; set; }
+    public long BytesUploaded { get; set; }
+    private DateTime _lastUploadReset = DateTime.UtcNow;
+
+    /// <summary>Upload rate in bytes/sec over the last choke interval.</summary>
+    public double UploadRate
+    {
+        get
+        {
+            var elapsed = (DateTime.UtcNow - _lastUploadReset).TotalSeconds;
+            return elapsed > 0 ? BytesUploaded / elapsed : 0;
+        }
+    }
+
+    /// <summary>Reset upload rate counter (call at each choke interval).</summary>
+    public void ResetUploadCounter()
+    {
+        BytesUploaded = 0;
+        _lastUploadReset = DateTime.UtcNow;
+    }
 
     public PeerConnection(WireProtocol wire, PeerInfo info)
     {
@@ -679,6 +714,8 @@ public class PeerConnection : IAsyncDisposable
 
         wire.OnChoke += () => IsChoked = true;
         wire.OnUnchoke += () => IsChoked = false;
+        wire.OnInterested += () => IsInterested = true;
+        wire.OnNotInterested += () => IsInterested = false;
     }
 
     public async ValueTask DisposeAsync()

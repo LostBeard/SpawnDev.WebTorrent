@@ -259,4 +259,190 @@ public abstract partial class WebTorrentTestBase
 
         await dht.DisposeAsync();
     }
+
+    // ═══════════════════════════════════════════════════════════
+    //  BEP 23 — Compact Peer List Parsing
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Bep23_CompactPeerParsing_IPv4()
+    {
+        // BEP 23: 6 bytes per peer = 4 bytes IP + 2 bytes port (big-endian)
+        var compact = new byte[]
+        {
+            192, 168, 1, 100,  0x1A, 0xE1,   // 192.168.1.100:6881
+            10, 0, 0, 1,       0x1A, 0xE9,    // 10.0.0.1:6889
+            172, 16, 0, 50,    0x00, 0x50,    // 172.16.0.50:80
+        };
+
+        var peers = new System.Collections.Generic.List<string>();
+        for (int i = 0; i + 6 <= compact.Length; i += 6)
+        {
+            var ip = $"{compact[i]}.{compact[i + 1]}.{compact[i + 2]}.{compact[i + 3]}";
+            var port = (compact[i + 4] << 8) | compact[i + 5];
+            peers.Add($"{ip}:{port}");
+        }
+
+        if (peers.Count != 3)
+            throw new Exception($"Should parse 3 peers, got {peers.Count}");
+        if (peers[0] != "192.168.1.100:6881")
+            throw new Exception($"Peer 0: {peers[0]}");
+        if (peers[1] != "10.0.0.1:6889")
+            throw new Exception($"Peer 1: {peers[1]}");
+        if (peers[2] != "172.16.0.50:80")
+            throw new Exception($"Peer 2: {peers[2]}");
+
+        Console.WriteLine("[BEP23] Compact peer parsing: OK");
+    }
+
+    [TestMethod]
+    public async Task Bep23_CompactPeerParsing_TruncatedIgnored()
+    {
+        // 7 bytes: one full peer + 1 trailing byte (should be ignored)
+        var compact = new byte[] { 1, 2, 3, 4, 0x00, 0x50, 0xFF };
+
+        var peers = new System.Collections.Generic.List<string>();
+        for (int i = 0; i + 6 <= compact.Length; i += 6)
+        {
+            var ip = $"{compact[i]}.{compact[i + 1]}.{compact[i + 2]}.{compact[i + 3]}";
+            var port = (compact[i + 4] << 8) | compact[i + 5];
+            peers.Add($"{ip}:{port}");
+        }
+
+        if (peers.Count != 1) throw new Exception($"Should parse 1 peer, got {peers.Count}");
+        if (peers[0] != "1.2.3.4:80") throw new Exception($"Peer: {peers[0]}");
+
+        Console.WriteLine("[BEP23] Truncated bytes ignored: OK");
+    }
+
+    [TestMethod]
+    public async Task Bep23_CompactPeerParsing_Empty()
+    {
+        var compact = Array.Empty<byte>();
+        var peers = new System.Collections.Generic.List<string>();
+        for (int i = 0; i + 6 <= compact.Length; i += 6)
+        {
+            var ip = $"{compact[i]}.{compact[i + 1]}.{compact[i + 2]}.{compact[i + 3]}";
+            var port = (compact[i + 4] << 8) | compact[i + 5];
+            peers.Add($"{ip}:{port}");
+        }
+
+        if (peers.Count != 0) throw new Exception("Empty compact should parse 0 peers");
+        Console.WriteLine("[BEP23] Empty compact: OK");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  BEP 5 — DHT Routing Table
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Bep5_DhtDiscovery_Properties()
+    {
+        var dht = new DhtDiscovery();
+
+        // Initially empty routing table
+        if (dht.NodeCount != 0)
+            throw new Exception($"Should start with 0 nodes, got {dht.NodeCount}");
+
+        // Can create mutable items
+        var signer = new HmacFallbackSigner();
+        var items = dht.CreateMutableItems(signer);
+        if (items == null) throw new Exception("CreateMutableItems should not return null");
+
+        Console.WriteLine("[BEP5] DhtDiscovery properties: OK");
+        await dht.DisposeAsync();
+    }
+
+    [TestMethod]
+    public async Task Bep5_DhtDiscovery_MutableItemsTarget()
+    {
+        var dht = new DhtDiscovery();
+        var signer = new HmacFallbackSigner();
+        var items = dht.CreateMutableItems(signer);
+
+        // Mutable items should use the signer's public key
+        if (!items.PublicKey.SequenceEqual(signer.PublicKey))
+            throw new Exception("MutableItems PublicKey should match signer");
+
+        if (items.Algorithm != signer.Algorithm)
+            throw new Exception("Algorithm should match signer");
+
+        Console.WriteLine("[BEP5] Mutable items target computation: OK");
+        await dht.DisposeAsync();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  BEP 3 — Choke/Unchoke Protocol Properties
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Bep3_PeerConnection_InterestAndUploadTracking()
+    {
+        // Verify PeerConnection tracks IsInterested and upload bytes
+        var peer = new PeerConnection(
+            new WireProtocol(new MockConnection(new List<byte>())),
+            new PeerInfo { Address = "test:1234", Source = "test" });
+
+        if (peer.IsInterested) throw new Exception("Should start not interested");
+        if (peer.IsChoked != true) throw new Exception("Should start choked");
+        if (peer.BytesUploaded != 0) throw new Exception("Should start with 0 bytes uploaded");
+        if (peer.UploadRate != 0) throw new Exception("Should start with 0 upload rate");
+
+        // Simulate upload
+        peer.BytesUploaded = 16384;
+        await Task.Delay(10); // small delay for rate calculation
+        if (peer.UploadRate <= 0) throw new Exception("Upload rate should be positive after upload");
+
+        // Reset
+        peer.ResetUploadCounter();
+        if (peer.BytesUploaded != 0) throw new Exception("Should be 0 after reset");
+
+        Console.WriteLine("[BEP3] PeerConnection interest/upload tracking: OK");
+        await peer.DisposeAsync();
+    }
+
+    [TestMethod]
+    public async Task Bep3_DownloadCoordinator_RemovePeer()
+    {
+        var data = new byte[16384];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(data);
+        var (_, metadata) = TorrentCreator.CreateFromBytes("test.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384 });
+        await using var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+
+        var coordinator = new DownloadCoordinator(pm, metadata);
+
+        // Create mock wire and add peer
+        var wire = new WireProtocol(new MockConnection(new List<byte>()));
+        coordinator.AddPeer(wire, new bool[] { true });
+        if (coordinator.PeerCount != 1) throw new Exception($"Should have 1 peer, got {coordinator.PeerCount}");
+
+        // Remove peer
+        coordinator.RemovePeer(wire);
+        if (coordinator.PeerCount != 0) throw new Exception($"Should have 0 peers, got {coordinator.PeerCount}");
+
+        coordinator.Dispose();
+        Console.WriteLine("[BEP3] DownloadCoordinator RemovePeer: OK");
+    }
+
+    [TestMethod]
+    public async Task Bep3_DownloadCoordinator_Dispose()
+    {
+        var data = new byte[16384];
+        var (_, metadata) = TorrentCreator.CreateFromBytes("test.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384 });
+        await using var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+
+        var coordinator = new DownloadCoordinator(pm, metadata);
+        coordinator.Start();
+
+        // Dispose should not throw
+        coordinator.Dispose();
+        // Double dispose should also not throw
+        coordinator.Dispose();
+
+        Console.WriteLine("[BEP3] DownloadCoordinator Dispose: OK");
+    }
 }

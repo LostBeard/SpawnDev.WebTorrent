@@ -144,11 +144,15 @@ if (typeof window !== 'undefined') {
 
         const request = event.request;
 
-        // Post to first client, get initial response via MessageChannel
+        // Send to the client that made the request (not a random client)
+        const clientId = event.clientId || event.resultingClientId;
+        let client = clientId ? await self.clients.get(clientId) : null;
+        if (!client) client = allClients[0]; // fallback
+
         const mc = new MessageChannel();
         const [data, port] = await new Promise((resolve) => {
             mc.port1.onmessage = (evt) => resolve([evt.data, mc.port1]);
-            allClients[0].postMessage({
+            client.postMessage({
                 type: 'webtorrent',
                 url: request.url,
                 method: request.method,

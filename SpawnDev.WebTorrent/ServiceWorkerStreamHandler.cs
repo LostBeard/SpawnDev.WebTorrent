@@ -122,7 +122,10 @@ public class ServiceWorkerStreamHandler : IDisposable
             streamState.Handler = streamState.HandlePull;
             port.OnMessage += streamState.Handler;
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[WebTorrent SW Handler] HandleMessage error: {ex}");
+        }
     }
 
     private TorrentSwarm? FindSwarm(string infoHashHex)
@@ -149,7 +152,11 @@ public class ServiceWorkerStreamHandler : IDisposable
             infoHash = segments[wtIdx + 1];
             return int.TryParse(segments[wtIdx + 2], out fileIdx);
         }
-        catch { return false; }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[WebTorrent SW Handler] TryParseStreamUrl error: {ex.Message}");
+            return false;
+        }
     }
 
     /// <summary>
@@ -184,7 +191,10 @@ public class ServiceWorkerStreamHandler : IDisposable
             swContainer.OnMessage -= HandleMessage;
             swContainer.Dispose();
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[WebTorrent SW Handler] Dispose error: {ex.Message}");
+        }
     }
 
     private class StreamState
@@ -245,8 +255,9 @@ public class ServiceWorkerStreamHandler : IDisposable
                     using var uint8 = new Uint8Array(chunk);
                     Port.PostMessage(uint8);
                 }
-                catch
+                catch (Exception ex)
                 {
+                    Console.Error.WriteLine($"[WebTorrent SW Handler] Stream chunk error: {ex}");
                     Port.PostMessage(null);
                     Cleanup();
                 }

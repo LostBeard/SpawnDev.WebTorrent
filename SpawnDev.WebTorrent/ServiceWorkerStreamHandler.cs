@@ -213,9 +213,14 @@ public class StreamRequest
             responseHeaders["Content-Range"] = $"bytes {rangeStart}-{rangeEnd}/{totalSize}";
 
         int status = isRange ? 206 : 200;
-        Port.PostMessage(new { status, headers = responseHeaders, body = "STREAM", destination = Destination });
+        var response = new FSExtensionResponse
+        {
+            status = status,
+            headers = responseHeaders,
+            body = "stream_pull",
+        };
 
-        // Pull-based chunk streaming
+        // Wire up pull handler FIRST, then Start, then PostMessage (order matters)
         var streamState = new StreamState
         {
             Port = Port,
@@ -227,6 +232,8 @@ public class StreamRequest
         };
         streamState.Handler = streamState.HandlePull;
         Port.OnMessage += streamState.Handler;
+        Port.Start();
+        Port.PostMessage(response);
     }
 
     private class StreamState
@@ -242,10 +249,20 @@ public class StreamRequest
 
         public void HandlePull(MessageEvent pullMsg)
         {
-            var pullData = pullMsg.GetData<bool>();
-            if (!pullData)
+            // Pull message: { eventType: 'pull', desiredSize: N } or { eventType: 'cancel', desiredSize: 0 }
+            using var pullData = pullMsg.GetData<JSObject>();
+            var eventType = pullData.JSRef!.Get<string>("eventType");
+
+            if (eventType == "cancel" || eventType == "error")
             {
                 Cleanup();
+                pullMsg.Dispose();
+                return;
+            }
+
+            if (eventType != "pull")
+            {
+                pullMsg.Dispose();
                 return;
             }
 
@@ -255,7 +272,8 @@ public class StreamRequest
                 {
                     if (Remaining <= 0)
                     {
-                        Port.PostMessage(null);
+                        // Send falsy to signal done
+                        Port.PostMessage("");
                         Cleanup();
                         return;
                     }
@@ -279,6 +297,7 @@ public class StreamRequest
                         }
                     }
 
+                    // Fallback: read through .NET byte[]
                     var chunk = await File.ReadAsync(Offset, toRead);
                     Offset += chunk.Length;
                     Remaining -= chunk.Length;
@@ -288,10 +307,12 @@ public class StreamRequest
                 catch (Exception ex)
                 {
                     Console.Error.WriteLine($"[WebTorrent SW Handler] Stream chunk error: {ex}");
-                    Port.PostMessage(null);
+                    Port.PostMessage("");
                     Cleanup();
                 }
             });
+
+            pullMsg.Dispose();
         }
 
         private void Cleanup()
@@ -302,5 +323,13 @@ public class StreamRequest
                 Handler = null;
             }
         }
+    }
+
+    /// <summary>Response object matching the service-worker-fs.js FSExtensionResponse protocol.</summary>
+    private class FSExtensionResponse
+    {
+        public int status { get; set; }
+        public Dictionary<string, string> headers { get; set; } = new();
+        public string body { get; set; } = "";
     }
 }

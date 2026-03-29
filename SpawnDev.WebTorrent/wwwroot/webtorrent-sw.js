@@ -159,11 +159,13 @@ if (typeof window !== 'undefined') {
     }
 
     // ── WebTorrent streaming ──
-    // Protocol (matches webtorrent/webtorrent worker-server.js):
-    // 1. SW posts request details to client window via MessageChannel
-    // 2. Client responds with { status, headers, body } where body is 'STREAM' or data
-    // 3. If 'STREAM': SW creates ReadableStream, pulls chunks via port messages
-    // 4. Client sends Uint8Array chunks on pull (true), null = end, false = cancel
+    // Protocol (matches SpawnDev.BlazorJS.WebDesktop/service-worker-fs.js exactly):
+    // 1. SW posts request to client via MessageChannel port2
+    // 2. Client wires up port.OnMessage, calls port.Start(), then port.PostMessage(response)
+    // 3. If response.body === 'stream_pull': SW creates ReadableStream
+    // 4. On pull: SW sends { eventType: 'pull', desiredSize: N } to client
+    // 5. Client reads chunk, sends Uint8Array back. Falsy = done.
+    // 6. On cancel: SW sends { eventType: 'cancel', desiredSize: 0 }
 
     async function handleWebtorrentStream(event) {
         const allClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
@@ -172,78 +174,62 @@ if (typeof window !== 'undefined') {
         }
 
         const request = event.request;
-
-        // Send to the client that made the request (not a random client)
         const clientId = event.clientId || event.resultingClientId;
         let client = clientId ? await self.clients.get(clientId) : null;
-        if (!client) client = allClients[0]; // fallback
+        if (!client) client = allClients[0];
 
         const mc = new MessageChannel();
-        const [data, port] = await new Promise((resolve) => {
-            mc.port1.onmessage = (evt) => resolve([evt.data, mc.port1]);
+
+        // Wait for initial response from client
+        const data = await new Promise((resolve) => {
+            mc.port1.onmessage = (evt) => resolve(evt.data);
             client.postMessage({
                 type: 'webtorrent',
                 url: request.url,
                 method: request.method,
+                destination: request.destination,
                 headers: Object.fromEntries(request.headers.entries()),
                 scope: self.registration.scope,
-                destination: request.destination,
             }, [mc.port2]);
         });
 
-        if (!data) {
+        if (!data || !data.body) {
             return new Response('No response from client', { status: 500 });
         }
 
-        // Direct response (small files, errors, non-streamable)
-        if (data.body !== 'STREAM') {
-            port.onmessage = null;
-            return new Response(data.body, {
-                status: data.status || 200,
-                headers: data.headers || {},
-            });
-        }
-
-        // Streaming response — pull chunks from client on demand
-        let timeOut = null;
-        const portTimeoutDuration = 5000;
-
-        const cleanup = () => {
-            port.postMessage(false);
-            clearTimeout(timeOut);
-            port.onmessage = null;
-        };
-
-        const stream = new ReadableStream({
-            async pull(controller) {
-                return new Promise((resolve) => {
-                    port.onmessage = (msg) => {
-                        if (msg.data) {
-                            controller.enqueue(msg.data);
-                        } else {
-                            cleanup();
-                            controller.close();
-                        }
-                        resolve();
-                    };
-                    clearTimeout(timeOut);
-                    if (data.destination !== 'document') {
-                        timeOut = setTimeout(() => {
-                            cleanup();
+        if (data.body === 'stream_pull') {
+            // Pull-based streaming — matches service-worker-fs.js exactly
+            const stream = new ReadableStream({
+                pull(controller) {
+                    const desiredSize = controller.desiredSize;
+                    return new Promise((resolve) => {
+                        mc.port1.onmessage = (evt) => {
+                            let done = !evt.data;
+                            if (evt.data) {
+                                try {
+                                    controller.enqueue(evt.data);
+                                } catch (ex) {
+                                    done = true;
+                                    mc.port1.postMessage({ eventType: 'error', desiredSize: 0 });
+                                }
+                            }
+                            if (done) {
+                                try { controller.close(); } catch {}
+                                mc.port1.onmessage = null;
+                            }
                             resolve();
-                        }, portTimeoutDuration);
-                    }
-                    port.postMessage(true);
-                });
-            },
-            cancel() {
-                cleanup();
-            }
-        });
-
-        return new Response(stream, {
-            status: data.status || 200,
-            headers: data.headers || {},
-        });
+                        };
+                        mc.port1.postMessage({ eventType: 'pull', desiredSize: desiredSize });
+                    });
+                },
+                cancel() {
+                    mc.port1.postMessage({ eventType: 'cancel', desiredSize: 0 });
+                }
+            });
+            return new Response(stream, data);
+        } else {
+            // Direct response
+            return new Response(data.body, data);
+        }
     }
 }

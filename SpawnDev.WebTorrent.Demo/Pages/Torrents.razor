@@ -887,9 +887,10 @@
             var rangeHeader = headersObj?.JSRef?.Get<string?>("range");
             var destination = data.JSRef!.Get<string?>("destination") ?? "";
 
-            using var ports = msgEvent.Ports;
-            if (ports == null || ports.Length == 0) return;
+            var ports = msgEvent.Ports;
+            if (ports == null || ports.Length == 0) { ports?.Dispose(); return; }
             var port = ports[0];
+            ports.Dispose();
 
             // Parse URL: .../webtorrent/{infoHash}/{fileIndex}
             var url = new Uri(requestUrl);
@@ -907,6 +908,7 @@
                 return;
             }
 
+            var metadata = entry.Swarm.Metadata!;
             var file = entry.Swarm.Files[fileIdx];
             var totalSize = file.Length;
             var contentType = GetMimeType(System.IO.Path.GetExtension(file.Name).ToLowerInvariant());
@@ -949,40 +951,21 @@
             var remaining = length;
             var chunkSize = 65536; // 64KB chunks
 
-            port.OnMessage += (MessageEvent pullMsg) =>
+            // Check if the store supports zero-copy Uint8Array reads (OPFS)
+            var opfsStore = entry.Swarm.Store as AsyncFSChunkStore;
+
+            // Set up pull-based streaming with proper cleanup
+            var streamState = new StreamState
             {
-                var pullData = pullMsg.GetData<bool>();
-                if (!pullData)
-                {
-                    // Cancel request
-                    return;
-                }
-
-                // Pull request — send next chunk
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        if (remaining <= 0)
-                        {
-                            port.PostMessage(null); // Stream done
-                            return;
-                        }
-
-                        var toRead = Math.Min(chunkSize, remaining);
-                        var chunk = await file.ReadAsync(offset, (int)toRead);
-                        offset += chunk.Length;
-                        remaining -= chunk.Length;
-
-                        using var uint8 = new Uint8Array(chunk);
-                        port.PostMessage(uint8);
-                    }
-                    catch
-                    {
-                        port.PostMessage(null); // End on error
-                    }
-                });
+                Port = port,
+                File = file,
+                Metadata = metadata,
+                OpfsStore = opfsStore,
+                Offset = rangeStart,
+                Remaining = length,
             };
+            streamState.Handler = streamState.HandlePull;
+            port.OnMessage += streamState.Handler;
         }
         catch (Exception ex)
         {
@@ -1040,6 +1023,85 @@
         public string StatusClass => IsDone ? "qb-dot-seed" : Swarm.Paused ? "qb-dot-paused" : HasMetadata ? "qb-dot-dl" : "qb-dot-meta";
     }
     private class TrackerEntry { public string Url { get; set; } = ""; public string Status { get; set; } = ""; }
+
+    /// <summary>
+    /// Holds state for a single streaming session. Named method for proper += / -= cleanup.
+    /// </summary>
+    private class StreamState
+    {
+        public MessagePort Port { get; set; } = null!;
+        public TorrentFileStream File { get; set; } = null!;
+        public TorrentMetadata Metadata { get; set; } = null!;
+        public AsyncFSChunkStore? OpfsStore { get; set; }
+        public long Offset { get; set; }
+        public int Remaining { get; set; }
+        public Action<MessageEvent>? Handler { get; set; }
+        private const int ChunkSize = 65536;
+
+        public void HandlePull(MessageEvent pullMsg)
+        {
+            var pullData = pullMsg.GetData<bool>();
+            if (!pullData)
+            {
+                Cleanup();
+                return;
+            }
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    if (Remaining <= 0)
+                    {
+                        Port.PostMessage(null);
+                        Cleanup();
+                        return;
+                    }
+
+                    var toRead = (int)Math.Min(ChunkSize, Remaining);
+                    var pieceIdx = (int)(Offset / Metadata.PieceLength);
+                    var pieceOffset = (int)(Offset % Metadata.PieceLength);
+
+                    // Zero-copy path: read piece as Uint8Array directly from OPFS
+                    if (OpfsStore != null && OpfsStore.SupportsUint8Array)
+                    {
+                        using var pieceUint8 = await OpfsStore.GetUint8ArrayAsync(pieceIdx);
+                        if (pieceUint8 != null)
+                        {
+                            var available = (int)pieceUint8.Length - pieceOffset;
+                            var sendLen = Math.Min(toRead, available);
+                            using var slice = pieceUint8.Slice(pieceOffset, pieceOffset + sendLen);
+                            Port.PostMessage(slice);
+                            Offset += sendLen;
+                            Remaining -= sendLen;
+                            return;
+                        }
+                    }
+
+                    // Fallback: read through .NET byte[]
+                    var chunk = await File.ReadAsync(Offset, toRead);
+                    Offset += chunk.Length;
+                    Remaining -= chunk.Length;
+                    using var uint8 = new Uint8Array(chunk);
+                    Port.PostMessage(uint8);
+                }
+                catch
+                {
+                    Port.PostMessage(null);
+                    Cleanup();
+                }
+            });
+        }
+
+        private void Cleanup()
+        {
+            if (Handler != null)
+            {
+                Port.OnMessage -= Handler;
+                Handler = null;
+            }
+        }
+    }
 }
 
 <style>

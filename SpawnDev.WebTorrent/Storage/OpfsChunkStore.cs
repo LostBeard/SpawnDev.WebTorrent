@@ -1,4 +1,5 @@
 using SpawnDev.AsyncFileSystem;
+using SpawnDev.BlazorJS.JSObjects;
 
 namespace SpawnDev.WebTorrent.Storage;
 
@@ -12,10 +13,14 @@ namespace SpawnDev.WebTorrent.Storage;
 public class AsyncFSChunkStore : IChunkStore
 {
     private readonly IAsyncFS _fs;
+    private readonly IAsyncBrowserFileSystem? _browserFs;
     private readonly string _basePath;
     private bool _initialized;
 
     public int ChunkLength { get; }
+
+    /// <summary>Whether this store supports zero-copy Uint8Array reads (browser OPFS).</summary>
+    public bool SupportsUint8Array => _browserFs != null;
 
     /// <summary>
     /// Create a persistent chunk store.
@@ -26,8 +31,23 @@ public class AsyncFSChunkStore : IChunkStore
     public AsyncFSChunkStore(IAsyncFS fs, string basePath, int chunkLength)
     {
         _fs = fs;
+        _browserFs = fs as IAsyncBrowserFileSystem;
         _basePath = basePath;
         ChunkLength = chunkLength;
+    }
+
+    /// <summary>
+    /// Read a chunk as a JS Uint8Array without copying through .NET byte[].
+    /// Only available when the backing FS is a browser file system (OPFS).
+    /// The caller owns the returned Uint8Array and must dispose it.
+    /// </summary>
+    public async Task<Uint8Array?> GetUint8ArrayAsync(int index, CancellationToken ct = default)
+    {
+        if (_browserFs == null) return null;
+        await EnsureInitializedAsync();
+        var path = $"{_basePath}/piece_{index}";
+        if (!await _fs.FileExists(path)) return null;
+        return await _browserFs.ReadUint8Array(path);
     }
 
     private async Task EnsureInitializedAsync()
@@ -60,7 +80,7 @@ public class AsyncFSChunkStore : IChunkStore
         int actualLen = Math.Min(length, full.Length - offset);
         if (actualLen <= 0) return null;
         var result = new byte[actualLen];
-        Array.Copy(full, offset, result, 0, actualLen);
+        System.Array.Copy(full, offset, result, 0, actualLen);
         return result;
     }
 

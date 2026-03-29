@@ -119,6 +119,19 @@ if (typeof window !== 'undefined') {
             return;
         }
 
+        // Health check — lets clients verify the SW is active and intercepting
+        if (url.pathname.endsWith('/webtorrent-sw-check')) {
+            event.respondWith(new Response(JSON.stringify({
+                name: 'SpawnDev.WebTorrent',
+                active: true,
+                scope: self.registration.scope,
+            }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            }));
+            return;
+        }
+
         // WebTorrent streaming — intercept /webtorrent/ paths
         if (url.pathname.includes('/webtorrent/')) {
             event.respondWith(handleWebtorrentStream(event));

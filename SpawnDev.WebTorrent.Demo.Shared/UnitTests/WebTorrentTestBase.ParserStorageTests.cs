@@ -1063,6 +1063,24 @@ public abstract partial class WebTorrentTestBase
     // ═══════════════════════════════════════════════════════════
 
     [TestMethod]
+    public async Task ServiceWorker_HealthCheck()
+    {
+        if (!OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("Service worker requires browser");
+        if (JS == null) throw new UnsupportedTestException("Requires BlazorJSRuntime");
+
+        using var response = await JS.Fetch("/webtorrent-sw-check");
+        if (response.Status != 200)
+            throw new Exception($"SW health check failed: status={response.Status}");
+
+        var json = await response.Text();
+        if (!json.Contains("SpawnDev.WebTorrent"))
+            throw new Exception($"Wrong SW responding: {json}");
+
+        Console.WriteLine($"[SW] Health check: {json}");
+    }
+
+    [TestMethod]
     public async Task ServiceWorker_IsRegistered()
     {
         if (!OperatingSystem.IsBrowser())

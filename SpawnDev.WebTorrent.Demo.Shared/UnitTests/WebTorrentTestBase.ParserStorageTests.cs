@@ -488,4 +488,169 @@ public abstract partial class WebTorrentTestBase
             sb.Append(alphabet[(buffer << (5 - bitsLeft)) & 0x1F]);
         return sb.ToString();
     }
+
+    // ═══════════════════════════════════════════════════════════
+    //  FileChunkStore — Desktop Storage
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task FileChunkStore_WriteReadDelete()
+    {
+        if (OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("FileChunkStore requires desktop filesystem");
+
+        var tmpDir = Path.Combine(Path.GetTempPath(), $"wt_test_{Guid.NewGuid():N}");
+        try
+        {
+            await using var store = new FileChunkStore(tmpDir, 16384);
+
+            // Put a chunk
+            var data = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
+            await store.PutAsync(0, data);
+
+            // Read it back
+            var result = await store.GetAsync(0);
+            if (result == null) throw new Exception("Should read back stored chunk");
+            if (!result.SequenceEqual(data)) throw new Exception("Data mismatch after read");
+
+            // Partial read
+            var partial = await store.GetAsync(0, 2, 3);
+            if (partial == null) throw new Exception("Partial read should work");
+            if (partial.Length != 3) throw new Exception($"Partial length: {partial.Length}");
+            if (partial[0] != 3 || partial[1] != 4 || partial[2] != 5)
+                throw new Exception("Partial data mismatch");
+
+            // Read non-existent
+            var missing = await store.GetAsync(99);
+            if (missing != null) throw new Exception("Non-existent chunk should return null");
+
+            // Remove
+            await store.RemoveAsync(0);
+            var deleted = await store.GetAsync(0);
+            if (deleted != null) throw new Exception("Deleted chunk should return null");
+
+            Console.WriteLine("[FileChunkStore] Write/Read/Delete: OK");
+        }
+        finally
+        {
+            if (Directory.Exists(tmpDir)) Directory.Delete(tmpDir, true);
+        }
+    }
+
+    [TestMethod]
+    public async Task FileChunkStore_ClearAll()
+    {
+        if (OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("FileChunkStore requires desktop filesystem");
+
+        var tmpDir = Path.Combine(Path.GetTempPath(), $"wt_test_{Guid.NewGuid():N}");
+        try
+        {
+            await using var store = new FileChunkStore(tmpDir, 16384);
+
+            await store.PutAsync(0, new byte[] { 1, 2, 3 });
+            await store.PutAsync(1, new byte[] { 4, 5, 6 });
+            await store.PutAsync(2, new byte[] { 7, 8, 9 });
+
+            await store.ClearAsync();
+
+            var c0 = await store.GetAsync(0);
+            var c1 = await store.GetAsync(1);
+            var c2 = await store.GetAsync(2);
+            if (c0 != null || c1 != null || c2 != null)
+                throw new Exception("All chunks should be cleared");
+
+            Console.WriteLine("[FileChunkStore] ClearAll: OK");
+        }
+        finally
+        {
+            if (Directory.Exists(tmpDir)) Directory.Delete(tmpDir, true);
+        }
+    }
+
+    [TestMethod]
+    public async Task FileChunkStore_Overwrite()
+    {
+        if (OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("FileChunkStore requires desktop filesystem");
+
+        var tmpDir = Path.Combine(Path.GetTempPath(), $"wt_test_{Guid.NewGuid():N}");
+        try
+        {
+            await using var store = new FileChunkStore(tmpDir, 16384);
+
+            await store.PutAsync(0, new byte[] { 1, 2, 3 });
+            await store.PutAsync(0, new byte[] { 10, 20, 30, 40 }); // overwrite
+
+            var result = await store.GetAsync(0);
+            if (result == null) throw new Exception("Should read overwritten chunk");
+            if (result.Length != 4) throw new Exception($"Overwritten length: {result.Length}");
+            if (result[0] != 10 || result[3] != 40)
+                throw new Exception("Overwritten data mismatch");
+
+            Console.WriteLine("[FileChunkStore] Overwrite: OK");
+        }
+        finally
+        {
+            if (Directory.Exists(tmpDir)) Directory.Delete(tmpDir, true);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  MemoryChunkStore — Dedicated Tests
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task MemoryChunkStore_WriteReadDelete()
+    {
+        await using var store = new MemoryChunkStore(16384);
+
+        var data = new byte[] { 10, 20, 30, 40, 50 };
+        await store.PutAsync(0, data);
+
+        var result = await store.GetAsync(0);
+        if (result == null) throw new Exception("Should read back stored chunk");
+        if (!result.SequenceEqual(data)) throw new Exception("Data mismatch");
+
+        // Partial read
+        var partial = await store.GetAsync(0, 1, 3);
+        if (partial == null) throw new Exception("Partial read should work");
+        if (partial.Length != 3) throw new Exception($"Partial length: {partial.Length}");
+        if (partial[0] != 20 || partial[1] != 30 || partial[2] != 40)
+            throw new Exception("Partial data mismatch");
+
+        // Remove
+        await store.RemoveAsync(0);
+        var deleted = await store.GetAsync(0);
+        if (deleted != null) throw new Exception("Deleted chunk should return null");
+
+        Console.WriteLine("[MemoryChunkStore] Write/Read/Delete: OK");
+    }
+
+    [TestMethod]
+    public async Task MemoryChunkStore_MultipleChunks()
+    {
+        await using var store = new MemoryChunkStore(16384);
+
+        for (int i = 0; i < 10; i++)
+            await store.PutAsync(i, new byte[] { (byte)i, (byte)(i * 2) });
+
+        for (int i = 0; i < 10; i++)
+        {
+            var result = await store.GetAsync(i);
+            if (result == null) throw new Exception($"Chunk {i} missing");
+            if (result[0] != (byte)i || result[1] != (byte)(i * 2))
+                throw new Exception($"Chunk {i} data mismatch");
+        }
+
+        await store.ClearAsync();
+
+        for (int i = 0; i < 10; i++)
+        {
+            var result = await store.GetAsync(i);
+            if (result != null) throw new Exception($"Chunk {i} should be cleared");
+        }
+
+        Console.WriteLine("[MemoryChunkStore] Multiple chunks + clear: OK");
+    }
 }

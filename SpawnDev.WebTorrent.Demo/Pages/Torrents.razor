@@ -10,6 +10,7 @@
 @using SpawnDev.BlazorJS
 @using SpawnDev.BlazorJS.JSObjects
 @inject BlazorJSRuntime JS
+@inject IAsyncFS AsyncFS
 @implements IAsyncDisposable
 
 <PageTitle>SpawnDev.WebTorrent Client</PageTitle>
@@ -442,7 +443,7 @@
     private readonly List<TorrentEntry> _torrents = new();
     private readonly List<string> _logMessages = new();
     private WebTorrentClient? _client;
-    private IAsyncFS? _asyncFs;
+    private IAsyncFS? _asyncFs => AsyncFS;
     private System.Threading.Timer? _refreshTimer;
     private TorrentEntry? _selectedTorrent;
     private string _detailTab = "general";
@@ -491,7 +492,6 @@
     protected override void OnInitialized()
     {
         _client = new WebTorrentClient();
-        if (OperatingSystem.IsBrowser()) { try { _asyncFs = new SpawnDev.AsyncFileSystem.BrowserWASM.AsyncFSFileSystemDirectoryHandle(JS); } catch { } }
         Log($"Client initialized (storage: {(_asyncFs != null ? "OPFS" : "memory")})");
 
         _refreshTimer = new System.Threading.Timer(_ =>

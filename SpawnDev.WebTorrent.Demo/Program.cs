@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.Components.WebAssembly.Hosting;
 
+using SpawnDev.AsyncFileSystem;
+using SpawnDev.AsyncFileSystem.BrowserWASM;
 using SpawnDev.BlazorJS;
 using SpawnDev.BlazorJS.Cryptography;
 using SpawnDev.WebTorrent.Demo;
@@ -22,6 +24,9 @@ else
 {
     builder.Services.AddSingleton<IPortableCrypto, DotNetCrypto>();
 }
+
+// Cross-platform persistent file system (OPFS in browser, native on desktop)
+builder.Services.AddSingleton<IAsyncFS, AsyncFSFileSystemDirectoryHandle>();
 
 builder.Services.AddScoped(sp => new HttpClient { BaseAddress = new Uri(builder.HostEnvironment.BaseAddress) });
 

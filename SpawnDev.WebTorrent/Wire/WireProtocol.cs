@@ -42,6 +42,12 @@ public class WireProtocol : IAsyncDisposable
     /// <summary>Remote peer's extension flags (reserved bytes).</summary>
     public byte[]? RemoteReserved { get; private set; }
 
+    /// <summary>Maximum allowed message size (16MB). Prevents OOM from malicious length prefixes.</summary>
+    public const int MaxMessageSize = 16 * 1024 * 1024;
+
+    /// <summary>Diagnostic log event.</summary>
+    public event Action<string>? OnLog;
+
     /// <summary>Whether the remote peer supports BEP 10 (Extension Protocol).</summary>
     public bool SupportsExtensions => RemoteReserved != null && (RemoteReserved[5] & 0x10) != 0;
 
@@ -248,6 +254,11 @@ public class WireProtocol : IAsyncDisposable
 
             int msgLen = ReadInt32BE(lenBuf, 0);
             if (msgLen == 0) { OnKeepAlive?.Invoke(); continue; }
+            if (msgLen < 0 || msgLen > MaxMessageSize)
+            {
+                OnLog?.Invoke($"Message too large: {msgLen} bytes (max {MaxMessageSize})");
+                return; // Disconnect from malicious peer
+            }
 
             var payload = new byte[msgLen];
             read = 0;

@@ -1,5 +1,6 @@
 using SpawnDev.UnitTesting;
 using SpawnDev.WebTorrent.Discovery;
+using SpawnDev.WebTorrent.Server;
 using SpawnDev.WebTorrent.Storage;
 using SpawnDev.WebTorrent.Torrent;
 using SpawnDev.WebTorrent.Transports;
@@ -684,5 +685,222 @@ public abstract partial class WebTorrentTestBase
         if (client.UploadSpeed < 0) throw new Exception($"UploadSpeed: {client.UploadSpeed}");
 
         Console.WriteLine($"[Client] Speed: down={client.DownloadSpeed}, up={client.UploadSpeed}");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  ComputeRequestBoard — Authenticated Marketplace
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task ComputeBoard_PostSigned_RequiresFields()
+    {
+        var board = new ComputeRequestBoard();
+
+        // Missing fingerprint
+        var (r1, e1) = board.PostSigned(new ComputeRequest { SwarmName = "test" });
+        if (r1 != null) throw new Exception("Should reject without fingerprint");
+        if (!e1!.Contains("OwnerFingerprint")) throw new Exception($"Error: {e1}");
+
+        // Missing signature
+        var (r2, e2) = board.PostSigned(new ComputeRequest
+        {
+            SwarmName = "test",
+            OwnerFingerprint = "abc123",
+        });
+        if (r2 != null) throw new Exception("Should reject without signature");
+        if (!e2!.Contains("Signature")) throw new Exception($"Error: {e2}");
+
+        // Missing public key
+        var (r3, e3) = board.PostSigned(new ComputeRequest
+        {
+            SwarmName = "test",
+            OwnerFingerprint = "abc123",
+            Signature = "sig",
+        });
+        if (r3 != null) throw new Exception("Should reject without public key");
+        if (!e3!.Contains("PublicKey")) throw new Exception($"Error: {e3}");
+
+        Console.WriteLine("[ComputeBoard] PostSigned requires all fields: OK ✓");
+    }
+
+    [TestMethod]
+    public async Task ComputeBoard_PostSigned_VerifiesFingerprint()
+    {
+        var board = new ComputeRequestBoard();
+
+        // Generate a real key pair for the fingerprint
+        var pubKey = new byte[91]; // SPKI format length varies, use test bytes
+        System.Security.Cryptography.RandomNumberGenerator.Fill(pubKey);
+        var fingerprint = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(pubKey)).ToLowerInvariant();
+
+        // Correct fingerprint should succeed
+        var (posted, err) = board.PostSigned(new ComputeRequest
+        {
+            SwarmName = "verified-swarm",
+            OwnerFingerprint = fingerprint,
+            PublicKey = Convert.ToBase64String(pubKey),
+            Signature = "test-sig",
+            TflopsNeeded = 10.0,
+        });
+        if (posted == null) throw new Exception($"Should accept valid fingerprint: {err}");
+        if (posted.SwarmName != "verified-swarm") throw new Exception($"Name: {posted.SwarmName}");
+
+        // Wrong fingerprint should fail
+        var (bad, badErr) = board.PostSigned(new ComputeRequest
+        {
+            SwarmName = "bad",
+            OwnerFingerprint = "wrong_fingerprint",
+            PublicKey = Convert.ToBase64String(pubKey),
+            Signature = "test-sig",
+        });
+        if (bad != null) throw new Exception("Should reject mismatched fingerprint");
+        if (!badErr!.Contains("does not match")) throw new Exception($"Error: {badErr}");
+
+        Console.WriteLine("[ComputeBoard] Fingerprint verification: OK ✓");
+    }
+
+    [TestMethod]
+    public async Task ComputeBoard_RateLimit()
+    {
+        var board = new ComputeRequestBoard { MaxRequestsPerHour = 3 };
+
+        var pubKey = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(pubKey);
+        var fingerprint = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(pubKey)).ToLowerInvariant();
+        var pubKeyB64 = Convert.ToBase64String(pubKey);
+
+        // Post 3 — should all succeed
+        for (int i = 0; i < 3; i++)
+        {
+            var (r, e) = board.PostSigned(new ComputeRequest
+            {
+                SwarmName = $"swarm-{i}",
+                OwnerFingerprint = fingerprint,
+                PublicKey = pubKeyB64,
+                Signature = "sig",
+            });
+            if (r == null) throw new Exception($"Request {i} should succeed: {e}");
+        }
+
+        // 4th should be rate limited
+        var (limited, limitErr) = board.PostSigned(new ComputeRequest
+        {
+            SwarmName = "too-many",
+            OwnerFingerprint = fingerprint,
+            PublicKey = pubKeyB64,
+            Signature = "sig",
+        });
+        if (limited != null) throw new Exception("4th request should be rate limited");
+        if (!limitErr!.Contains("Rate limited")) throw new Exception($"Error: {limitErr}");
+
+        // Different identity should still work
+        var pubKey2 = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(pubKey2);
+        var fp2 = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(pubKey2)).ToLowerInvariant();
+        var (other, otherErr) = board.PostSigned(new ComputeRequest
+        {
+            SwarmName = "other-identity",
+            OwnerFingerprint = fp2,
+            PublicKey = Convert.ToBase64String(pubKey2),
+            Signature = "sig",
+        });
+        if (other == null) throw new Exception($"Different identity should not be rate limited: {otherErr}");
+
+        Console.WriteLine("[ComputeBoard] Rate limiting: OK ✓");
+    }
+
+    [TestMethod]
+    public async Task ComputeBoard_DeleteRequiresOwner()
+    {
+        var board = new ComputeRequestBoard();
+
+        var pubKey = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(pubKey);
+        var fingerprint = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(pubKey)).ToLowerInvariant();
+
+        // Post a request
+        var (posted, _) = board.PostSigned(new ComputeRequest
+        {
+            SwarmName = "delete-test",
+            OwnerFingerprint = fingerprint,
+            PublicKey = Convert.ToBase64String(pubKey),
+            Signature = "sig",
+        });
+
+        // Wrong fingerprint can't delete
+        var (wrongDel, wrongErr) = board.RemoveAuthenticated(posted!.Id, "wrong_fingerprint");
+        if (wrongDel) throw new Exception("Wrong fingerprint should not delete");
+        if (!wrongErr!.Contains("forbidden")) throw new Exception($"Error: {wrongErr}");
+
+        // Correct fingerprint can delete
+        var (rightDel, rightErr) = board.RemoveAuthenticated(posted.Id, fingerprint);
+        if (!rightDel) throw new Exception($"Owner should be able to delete: {rightErr}");
+
+        // Should be gone
+        var active = board.GetActive();
+        if (active.Any(r => r.Id == posted.Id)) throw new Exception("Should be deleted");
+
+        Console.WriteLine("[ComputeBoard] Delete requires owner: OK ✓");
+    }
+
+    [TestMethod]
+    public async Task ComputeBoard_GetActive_FiltersExpired()
+    {
+        var board = new ComputeRequestBoard();
+
+        // Post with very short TTL
+        var request = board.Post(new ComputeRequest
+        {
+            SwarmName = "expiring",
+            TimeToLive = TimeSpan.FromMilliseconds(1),
+        });
+
+        await Task.Delay(10);
+
+        var active = board.GetActive();
+        if (active.Any(r => r.Id == request.Id))
+            throw new Exception("Expired request should be filtered");
+
+        Console.WriteLine("[ComputeBoard] Expired filtering: OK ✓");
+    }
+
+    [TestMethod]
+    public async Task ComputeBoard_Stats()
+    {
+        var board = new ComputeRequestBoard();
+
+        board.Post(new ComputeRequest { SwarmName = "a", TflopsNeeded = 10 });
+        board.Post(new ComputeRequest { SwarmName = "b", TflopsNeeded = 20 });
+        board.Post(new ComputeRequest { SwarmName = "a", TflopsNeeded = 5 }); // same swarm name
+
+        var stats = board.GetStats();
+        if (stats.ActiveRequests != 3) throw new Exception($"Active: {stats.ActiveRequests}");
+        if (stats.TotalTflopsNeeded != 35) throw new Exception($"TFLOPS: {stats.TotalTflopsNeeded}");
+        if (stats.UniqueSwarms != 2) throw new Exception($"Unique: {stats.UniqueSwarms}");
+
+        Console.WriteLine("[ComputeBoard] Stats aggregation: OK ✓");
+    }
+
+    [TestMethod]
+    public async Task ComputeBoard_UpdateAvailable()
+    {
+        var board = new ComputeRequestBoard();
+        var request = board.Post(new ComputeRequest { SwarmName = "update-test", TflopsNeeded = 50 });
+
+        if (request.TflopsAvailable != 0) throw new Exception("Should start at 0");
+        if (request.PeerCount != 0) throw new Exception("Should start at 0 peers");
+
+        board.UpdateAvailable(request.Id, 25.5, 3);
+
+        var active = board.GetActive();
+        var updated = active.First(r => r.Id == request.Id);
+        if (updated.TflopsAvailable != 25.5) throw new Exception($"TFLOPS: {updated.TflopsAvailable}");
+        if (updated.PeerCount != 3) throw new Exception($"Peers: {updated.PeerCount}");
+
+        Console.WriteLine("[ComputeBoard] UpdateAvailable: OK ✓");
     }
 }

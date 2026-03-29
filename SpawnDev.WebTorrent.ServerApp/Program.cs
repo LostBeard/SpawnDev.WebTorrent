@@ -64,18 +64,32 @@ app.MapWebTorrentServer(tracker, webSeed);
 var hfProxy = app.Services.GetRequiredService<HuggingFaceProxy>();
 app.MapHuggingFaceProxy(hfProxy);
 
-// Compute request board
+// Compute request board — authenticated endpoints
 var computeBoard = app.Services.GetRequiredService<ComputeRequestBoard>();
+
+// POST: signed request (requires OwnerFingerprint + PublicKey + Signature)
 app.MapPost("/compute/request", (ComputeRequest request) =>
 {
-    var posted = computeBoard.Post(request);
-    return Results.Ok(posted);
+    var (posted, error) = computeBoard.PostSigned(request);
+    if (posted != null)
+        return Results.Ok(posted);
+    return Results.BadRequest(new { error });
 });
+
+// GET: public — anyone can browse
 app.MapGet("/compute/requests", () => computeBoard.GetActive());
 app.MapGet("/compute/stats", () => computeBoard.GetStats());
-app.MapDelete("/compute/request/{id}", (string id) =>
+
+// DELETE: requires fingerprint query param matching the owner
+app.MapDelete("/compute/request/{id}", (string id, string? fingerprint) =>
 {
-    return computeBoard.Remove(id) ? Results.Ok() : Results.NotFound();
+    if (string.IsNullOrEmpty(fingerprint))
+        return Results.BadRequest(new { error = "fingerprint query parameter required" });
+
+    var (success, error) = computeBoard.RemoveAuthenticated(id, fingerprint);
+    if (success) return Results.Ok();
+    if (error == "not found") return Results.NotFound();
+    return Results.Json(new { error }, statusCode: 403);
 });
 
 Console.WriteLine("SpawnDev.WebTorrent.Server starting...");

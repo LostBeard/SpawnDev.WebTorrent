@@ -1,4 +1,7 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 
 namespace SpawnDev.WebTorrent.Server;
 
@@ -6,21 +9,77 @@ namespace SpawnDev.WebTorrent.Server;
 /// Compute request board — a marketplace where swarm coordinators post
 /// "looking for compute" requests and volunteers browse available swarms to join.
 ///
-/// This is the meeting point between compute demand and supply.
-/// Sovereign AI swarms can post requests here too.
+/// Authentication:
+///   - POST requires a signed payload (ECDSA-P256 signature of the request body)
+///   - DELETE requires the owner fingerprint that matches the original post
+///   - Rate limited: max 10 requests per identity per hour
 ///
 /// Endpoints:
-///   POST /compute/request    — coordinator posts a request
+///   POST /compute/request    — coordinator posts a signed request
 ///   GET  /compute/requests   — volunteers browse active requests
 ///   GET  /compute/stats      — aggregate compute stats
-///   DELETE /compute/request/{id} — coordinator removes a request
+///   DELETE /compute/request/{id}?fingerprint={fp} — owner removes a request
 /// </summary>
 public class ComputeRequestBoard
 {
     private readonly ConcurrentDictionary<string, ComputeRequest> _requests = new();
+    private readonly ConcurrentDictionary<string, RateLimitEntry> _rateLimits = new();
+
+    /// <summary>Max requests per identity per hour.</summary>
+    public int MaxRequestsPerHour { get; set; } = 10;
 
     /// <summary>
-    /// Post a new compute request.
+    /// Post a new compute request with signature verification.
+    /// Returns null if rate limited or signature missing.
+    /// </summary>
+    public (ComputeRequest? request, string? error) PostSigned(ComputeRequest request)
+    {
+        // Require identity
+        if (string.IsNullOrEmpty(request.OwnerFingerprint))
+            return (null, "OwnerFingerprint required");
+
+        if (string.IsNullOrEmpty(request.Signature))
+            return (null, "Signature required — sign the request with your SwarmIdentity");
+
+        if (string.IsNullOrEmpty(request.PublicKey))
+            return (null, "PublicKey required (base64 SPKI)");
+
+        // Verify fingerprint matches public key
+        try
+        {
+            var pubKeyBytes = Convert.FromBase64String(request.PublicKey);
+            var computedFingerprint = Convert.ToHexString(SHA256.HashData(pubKeyBytes)).ToLowerInvariant();
+            if (computedFingerprint != request.OwnerFingerprint.ToLowerInvariant())
+                return (null, "OwnerFingerprint does not match PublicKey");
+        }
+        catch
+        {
+            return (null, "Invalid PublicKey format");
+        }
+
+        // Rate limit per identity
+        var rateKey = request.OwnerFingerprint.ToLowerInvariant();
+        var now = DateTimeOffset.UtcNow;
+        var entry = _rateLimits.GetOrAdd(rateKey, _ => new RateLimitEntry());
+        lock (entry)
+        {
+            // Clean old entries
+            entry.Timestamps.RemoveAll(t => (now - t).TotalHours > 1);
+            if (entry.Timestamps.Count >= MaxRequestsPerHour)
+                return (null, $"Rate limited: max {MaxRequestsPerHour} requests per hour");
+            entry.Timestamps.Add(now);
+        }
+
+        request.Id = Guid.NewGuid().ToString("N");
+        request.PostedAt = now;
+        request.ExpiresAt = now.Add(request.TimeToLive);
+        _requests[request.Id] = request;
+        CleanExpired();
+        return (request, null);
+    }
+
+    /// <summary>
+    /// Post without authentication (legacy, for development only).
     /// </summary>
     public ComputeRequest Post(ComputeRequest request)
     {
@@ -60,7 +119,25 @@ public class ComputeRequestBoard
     }
 
     /// <summary>
-    /// Remove a request.
+    /// Remove a request. Only the owner (matching fingerprint) can delete.
+    /// Returns (success, error).
+    /// </summary>
+    public (bool success, string? error) RemoveAuthenticated(string id, string fingerprint)
+    {
+        if (string.IsNullOrEmpty(fingerprint))
+            return (false, "fingerprint query parameter required");
+
+        if (!_requests.TryGetValue(id, out var request))
+            return (false, "not found");
+
+        if (!string.Equals(request.OwnerFingerprint, fingerprint, StringComparison.OrdinalIgnoreCase))
+            return (false, "forbidden — only the owner can delete this request");
+
+        return (_requests.TryRemove(id, out _), null);
+    }
+
+    /// <summary>
+    /// Remove a request (unauthenticated, legacy).
     /// </summary>
     public bool Remove(string id)
     {
@@ -89,6 +166,14 @@ public class ComputeRequestBoard
 }
 
 /// <summary>
+/// Rate limit tracking per identity.
+/// </summary>
+internal class RateLimitEntry
+{
+    public List<DateTimeOffset> Timestamps { get; } = new();
+}
+
+/// <summary>
 /// A compute request posted to the board.
 /// </summary>
 public class ComputeRequest
@@ -102,8 +187,14 @@ public class ComputeRequest
     /// <summary>What the swarm is computing (e.g., "Phi-4 Inference", "Protein Folding").</summary>
     public string Purpose { get; set; } = "";
 
-    /// <summary>Coordinator's public key fingerprint.</summary>
+    /// <summary>Coordinator's public key fingerprint (SHA-256 of SPKI, hex).</summary>
     public string? OwnerFingerprint { get; set; }
+
+    /// <summary>Coordinator's public key (base64 SPKI) for signature verification.</summary>
+    public string? PublicKey { get; set; }
+
+    /// <summary>Signature of the request payload (base64, ECDSA-P256/SHA-256).</summary>
+    public string? Signature { get; set; }
 
     /// <summary>TFLOPS needed for the workload.</summary>
     public double TflopsNeeded { get; set; }

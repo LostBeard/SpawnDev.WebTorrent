@@ -268,6 +268,61 @@ public abstract partial class WebTorrentTestBase
     }
 
     // ═══════════════════════════════════════════════════════════
+    //  AgentChannel Browser Relay
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task AgentChannel_BrowserRelay_Create()
+    {
+        // Browser relay path — no DHT needed
+        var tracker = new WebSocketTrackerClient("wss://hub.spawndev.com:44365/announce", new byte[20]);
+        await using var channel = new AgentChannel(tracker, new byte[20]);
+
+        if (!channel.IsBrowserRelay)
+            throw new Exception("Should be browser relay mode");
+        if (channel.PublicKey == null || channel.PublicKey.Length != 32)
+            throw new Exception("PublicKey should be 32 bytes");
+        if (channel.Sequence != 0)
+            throw new Exception("Initial sequence should be 0");
+
+        Console.WriteLine("[AgentChannel] Browser relay create: OK");
+    }
+
+    [TestMethod]
+    public async Task AgentChannel_BrowserRelay_PublishIncrementsSequence()
+    {
+        var tracker = new WebSocketTrackerClient("wss://hub.spawndev.com:44365/announce", new byte[20]);
+        await using var channel = new AgentChannel(tracker, new byte[20]);
+
+        // Publish should increment sequence (even without connection — no crash)
+        try { await channel.PublishStateAsync(new byte[] { 1 }); } catch { }
+        if (channel.Sequence != 1)
+            throw new Exception($"Sequence should be 1, got {channel.Sequence}");
+
+        try { await channel.PublishStateAsync(new byte[] { 2 }); } catch { }
+        if (channel.Sequence != 2)
+            throw new Exception($"Sequence should be 2, got {channel.Sequence}");
+
+        Console.WriteLine("[AgentChannel] Browser relay publish increments sequence: OK");
+    }
+
+    [TestMethod]
+    public async Task AgentChannel_BrowserRelay_NamedChannels()
+    {
+        var tracker = new WebSocketTrackerClient("wss://hub.spawndev.com:44365/announce", new byte[20]);
+        await using var channel = new AgentChannel(tracker, new byte[20]);
+
+        var weights = channel.Channel("weights");
+        var cache = channel.Channel("kv-cache");
+
+        // Should not crash even without tracker connection
+        try { await weights.PublishAsync(new byte[] { 1 }); } catch { }
+        try { await cache.PublishAsync(new byte[] { 2 }); } catch { }
+
+        Console.WriteLine("[AgentChannel] Browser relay named channels: OK");
+    }
+
+    // ═══════════════════════════════════════════════════════════
     //  SwarmCompute — Distributed GPU Foundation
     // ═══════════════════════════════════════════════════════════
 

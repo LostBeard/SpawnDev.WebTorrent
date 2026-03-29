@@ -1,3 +1,4 @@
+using SpawnDev.BlazorJS;
 using SpawnDev.WebTorrent.Discovery;
 using SpawnDev.WebTorrent.Storage;
 using SpawnDev.WebTorrent.Torrent;
@@ -9,12 +10,13 @@ namespace SpawnDev.WebTorrent;
 /// Pure C# WebTorrent client. Runs on desktop (.NET) and browser (Blazor WASM).
 /// No JavaScript dependencies. Manages torrents, peers, and piece downloads.
 ///
-/// Usage:
-///   var client = new WebTorrentClient(options);
-///   var torrent = await client.AddAsync(magnetUri);
-///   var data = await torrent.Files[0].ReadAsync(offset, length);
+/// Register as a singleton via DI:
+///   builder.Services.AddSingleton&lt;WebTorrentClient&gt;();
+///
+/// Implements IAsyncBackgroundService — starts with the app via BlazorJSRunAsync().
+/// Automatically handles SW streaming requests for its torrents.
 /// </summary>
-public class WebTorrentClient : IAsyncDisposable
+public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
 {
     private readonly WebTorrentOptions _options;
     private readonly List<TorrentSwarm> _torrents = new();
@@ -75,12 +77,17 @@ public class WebTorrentClient : IAsyncDisposable
     public event Action<TorrentSwarm>? OnTorrentDone;
     public event Action<Exception>? OnError;
 
-    /// <summary>Service worker stream handler for media streaming with seeking.</summary>
+    /// <summary>IAsyncBackgroundService — awaited during app startup.</summary>
+    public Task Ready => _ready ??= InitAsync();
+    private Task? _ready;
+
+    /// <summary>Service worker stream handler (injected via DI, may be null on desktop without DI).</summary>
     public ServiceWorkerStreamHandler? StreamHandler { get; private set; }
 
-    public WebTorrentClient(WebTorrentOptions? options = null)
+    public WebTorrentClient(ServiceWorkerStreamHandler? streamHandler = null, WebTorrentOptions? options = null)
     {
         _options = options ?? new WebTorrentOptions();
+        StreamHandler = streamHandler;
         UploadLimit = _options.UploadLimit;
         DownloadLimit = _options.DownloadLimit;
 
@@ -89,21 +96,31 @@ public class WebTorrentClient : IAsyncDisposable
         _peerId = new byte[20];
         "-SD0110-"u8.CopyTo(_peerId);
         Random.Shared.NextBytes(_peerId.AsSpan(8));
-
-        // Auto-enable service worker streaming in browser
-        if (OperatingSystem.IsBrowser())
-            EnableServiceWorkerStreaming();
     }
 
-    /// <summary>
-    /// Enable service worker streaming for media playback with seeking.
-    /// Automatically called in browser. Listens for SW messages and serves
-    /// torrent piece data via MessageChannel.
-    /// </summary>
-    public void EnableServiceWorkerStreaming()
+    private async Task InitAsync()
     {
-        StreamHandler?.Dispose();
-        StreamHandler = new ServiceWorkerStreamHandler(this);
+        // Register to handle SW streaming requests for our torrents
+        if (StreamHandler != null)
+        {
+            await StreamHandler.Ready;
+            StreamHandler.OnRequest += HandleStreamRequest;
+        }
+    }
+
+    private void HandleStreamRequest(StreamRequest request)
+    {
+        if (request.Handled) return;
+
+        var swarm = _torrents.FirstOrDefault(t =>
+            t.HasMetadata && Convert.ToHexString(t.InfoHash).ToLowerInvariant() == request.InfoHash);
+
+        if (swarm == null || swarm.Files == null || request.FileIndex < 0 || request.FileIndex >= swarm.Files.Length)
+            return;
+
+        var file = swarm.Files[request.FileIndex];
+        var opfsStore = swarm.Store as Storage.AsyncFSChunkStore;
+        request.RespondWithStream(file, swarm.Metadata!, opfsStore);
     }
 
     /// <summary>
@@ -276,7 +293,7 @@ public class WebTorrentClient : IAsyncDisposable
     public static async Task<(WebTorrentClient client, TorrentSwarm swarm)> QuickStartAsync(
         string magnetUri, WebTorrentOptions? options = null)
     {
-        var client = new WebTorrentClient(options);
+        var client = new WebTorrentClient(null, options);
         var swarm = await client.AddAsync(magnetUri);
         return (client, swarm);
     }

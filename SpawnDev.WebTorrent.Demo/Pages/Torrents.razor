@@ -11,6 +11,7 @@
 @using SpawnDev.BlazorJS.JSObjects
 @inject BlazorJSRuntime JS
 @inject IAsyncFS AsyncFS
+@inject WebTorrentClient Client
 @implements IAsyncDisposable
 
 <PageTitle>SpawnDev.WebTorrent Client</PageTitle>
@@ -492,7 +493,7 @@
 
     protected override void OnInitialized()
     {
-        _client = new WebTorrentClient();
+        _client = Client;
         Log($"Client initialized (storage: {(_asyncFs != null ? "OPFS" : "memory")})");
 
         _refreshTimer = new System.Threading.Timer(_ =>
@@ -882,7 +883,7 @@
     private static bool IsPlayable(string ext) => IsVideoFile(ext) || IsAudioFile(ext) || IsImageFile(ext);
     private static string GetMimeType(string ext) => ext switch { ".mp4" => "video/mp4", ".webm" => "video/webm", ".mkv" => "video/x-matroska", ".mp3" => "audio/mpeg", ".ogg" => "audio/ogg", ".flac" => "audio/flac", ".wav" => "audio/wav", ".jpg" or ".jpeg" => "image/jpeg", ".png" => "image/png", ".gif" => "image/gif", ".webp" => "image/webp", _ => "application/octet-stream" };
 
-    public async ValueTask DisposeAsync() { _refreshTimer?.Dispose(); CloseMedia(); if (_client != null) await _client.DisposeAsync(); }
+    public async ValueTask DisposeAsync() { _refreshTimer?.Dispose(); CloseMedia(); }
 
     private class TorrentEntry
     {

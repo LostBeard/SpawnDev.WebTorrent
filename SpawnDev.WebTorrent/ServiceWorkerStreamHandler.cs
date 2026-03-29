@@ -6,16 +6,24 @@ using SpawnDev.WebTorrent.Torrent;
 namespace SpawnDev.WebTorrent;
 
 /// <summary>
-/// Handles service worker streaming requests for torrent data.
-/// Listens for 'webtorrent' messages from the service worker and responds
-/// with piece data via MessageChannel for video/audio streaming with seeking.
+/// Service worker stream handler — DI singleton, IAsyncBackgroundService.
+/// Starts with the app, listens for 'webtorrent' messages from the service worker,
+/// and routes them to registered request handlers.
 ///
-/// Call EnableServiceWorkerStreaming() on your WebTorrentClient to activate.
+/// Registration:
+///   builder.Services.AddSingleton&lt;ServiceWorkerStreamHandler&gt;();
+///
+/// Any service can register to handle requests for specific paths,
+/// or listen to the OnRequest event for custom handling.
 /// </summary>
-public class ServiceWorkerStreamHandler : IDisposable
+public class ServiceWorkerStreamHandler : IAsyncBackgroundService, IDisposable
 {
-    private readonly WebTorrentClient _client;
+    public Task Ready => _ready ??= InitAsync();
+    private Task? _ready;
     private bool _disposed;
+
+    /// <summary>Fired when a streaming request is received from the service worker.</summary>
+    public event Action<StreamRequest>? OnRequest;
 
     private static readonly Dictionary<string, string> MimeTypes = new()
     {
@@ -27,15 +35,14 @@ public class ServiceWorkerStreamHandler : IDisposable
         [".gif"] = "image/gif", [".webp"] = "image/webp",
     };
 
-    public ServiceWorkerStreamHandler(WebTorrentClient client)
+    private Task InitAsync()
     {
-        _client = client;
-
-        if (!OperatingSystem.IsBrowser()) return;
+        if (!OperatingSystem.IsBrowser()) return Task.CompletedTask;
 
         var swContainer = BlazorJSRuntime.JS.Get<ServiceWorkerContainer>("navigator.serviceWorker");
-        if (swContainer == null) return;
+        if (swContainer == null) return Task.CompletedTask;
         swContainer.OnMessage += HandleMessage;
+        return Task.CompletedTask;
     }
 
     private void HandleMessage(MessageEvent msgEvent)
@@ -56,87 +63,35 @@ public class ServiceWorkerStreamHandler : IDisposable
             var port = ports[0];
             ports.Dispose();
 
-            // Parse URL: .../webtorrent/{infoHash}/{fileIndex}
+            // Parse URL
             if (!TryParseStreamUrl(requestUrl, out var infoHash, out var fileIdx))
             {
                 port.PostMessage(new { status = 404, headers = new Dictionary<string, string>(), body = "Not found" });
                 return;
             }
 
-            // Find the torrent
-            var swarm = FindSwarm(infoHash);
-            if (swarm == null || swarm.Files == null || fileIdx < 0 || fileIdx >= swarm.Files.Length)
+            // Create request object and let handlers respond
+            var request = new StreamRequest
             {
-                port.PostMessage(new { status = 404, headers = new Dictionary<string, string>(), body = "Torrent not found" });
-                return;
-            }
-
-            var file = swarm.Files[fileIdx];
-            var totalSize = file.Length;
-            var ext = Path.GetExtension(file.Name).ToLowerInvariant();
-            var contentType = MimeTypes.TryGetValue(ext, out var mime) ? mime : "application/octet-stream";
-
-            // Parse range header
-            long rangeStart = 0;
-            long rangeEnd = totalSize - 1;
-            bool isRange = false;
-            if (!string.IsNullOrEmpty(rangeHeader) && rangeHeader.StartsWith("bytes="))
-            {
-                isRange = true;
-                var parts = rangeHeader.Substring(6).Split('-');
-                if (parts.Length >= 1 && long.TryParse(parts[0], out var rs)) rangeStart = rs;
-                if (parts.Length >= 2 && !string.IsNullOrEmpty(parts[1]) && long.TryParse(parts[1], out var re)) rangeEnd = re;
-                if (rangeEnd >= totalSize) rangeEnd = totalSize - 1;
-            }
-
-            var length = (int)(rangeEnd - rangeStart + 1);
-
-            // Build response headers
-            var responseHeaders = new Dictionary<string, string>
-            {
-                ["Content-Type"] = contentType,
-                ["Accept-Ranges"] = "bytes",
-                ["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0",
-                ["Content-Length"] = length.ToString(),
-            };
-            if (isRange)
-                responseHeaders["Content-Range"] = $"bytes {rangeStart}-{rangeEnd}/{totalSize}";
-
-            int status = isRange ? 206 : 200;
-
-            // Send STREAM response — SW will set up ReadableStream and pull chunks
-            port.PostMessage(new { status, headers = responseHeaders, body = "STREAM", destination });
-
-            // Set up pull-based streaming
-            var opfsStore = swarm.Store as AsyncFSChunkStore;
-            var metadata = swarm.Metadata!;
-            var streamState = new StreamState
-            {
+                Url = requestUrl,
+                InfoHash = infoHash,
+                FileIndex = fileIdx,
+                RangeHeader = rangeHeader,
+                Destination = destination,
                 Port = port,
-                File = file,
-                Metadata = metadata,
-                OpfsStore = opfsStore,
-                Offset = rangeStart,
-                Remaining = length,
             };
-            streamState.Handler = streamState.HandlePull;
-            port.OnMessage += streamState.Handler;
+
+            OnRequest?.Invoke(request);
+
+            if (!request.Handled)
+            {
+                port.PostMessage(new { status = 404, headers = new Dictionary<string, string>(), body = "No handler for this request" });
+            }
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[WebTorrent SW Handler] HandleMessage error: {ex}");
         }
-    }
-
-    private TorrentSwarm? FindSwarm(string infoHashHex)
-    {
-        foreach (var swarm in _client.Torrents)
-        {
-            if (!swarm.HasMetadata) continue;
-            var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
-            if (hash == infoHashHex) return swarm;
-        }
-        return null;
     }
 
     private static bool TryParseStreamUrl(string requestUrl, out string infoHash, out int fileIdx)
@@ -160,8 +115,13 @@ public class ServiceWorkerStreamHandler : IDisposable
     }
 
     /// <summary>
+    /// Get the MIME type for a file extension.
+    /// </summary>
+    public static string GetMimeType(string ext)
+        => MimeTypes.TryGetValue(ext.ToLowerInvariant(), out var mime) ? mime : "application/octet-stream";
+
+    /// <summary>
     /// Get the streaming URL for a torrent file.
-    /// Point a video/audio/img element's src at this URL for streaming with seeking.
     /// </summary>
     public static string GetStreamUrl(TorrentSwarm swarm, int fileIndex)
     {
@@ -195,6 +155,73 @@ public class ServiceWorkerStreamHandler : IDisposable
         {
             Console.Error.WriteLine($"[WebTorrent SW Handler] Dispose error: {ex.Message}");
         }
+    }
+}
+
+/// <summary>
+/// A streaming request from the service worker.
+/// Handlers set Handled = true after responding via the Port.
+/// </summary>
+public class StreamRequest
+{
+    public string Url { get; set; } = "";
+    public string InfoHash { get; set; } = "";
+    public int FileIndex { get; set; }
+    public string? RangeHeader { get; set; }
+    public string Destination { get; set; } = "";
+    public MessagePort Port { get; set; } = null!;
+    public bool Handled { get; set; }
+
+    /// <summary>
+    /// Respond with a STREAM for the given file, supporting range requests.
+    /// Call this from your OnRequest handler.
+    /// </summary>
+    public void RespondWithStream(TorrentFileStream file, TorrentMetadata metadata, AsyncFSChunkStore? opfsStore = null)
+    {
+        Handled = true;
+        var totalSize = file.Length;
+        var ext = Path.GetExtension(file.Name).ToLowerInvariant();
+        var contentType = ServiceWorkerStreamHandler.GetMimeType(ext);
+
+        long rangeStart = 0;
+        long rangeEnd = totalSize - 1;
+        bool isRange = false;
+        if (!string.IsNullOrEmpty(RangeHeader) && RangeHeader.StartsWith("bytes="))
+        {
+            isRange = true;
+            var parts = RangeHeader.Substring(6).Split('-');
+            if (parts.Length >= 1 && long.TryParse(parts[0], out var rs)) rangeStart = rs;
+            if (parts.Length >= 2 && !string.IsNullOrEmpty(parts[1]) && long.TryParse(parts[1], out var re)) rangeEnd = re;
+            if (rangeEnd >= totalSize) rangeEnd = totalSize - 1;
+        }
+
+        var length = (int)(rangeEnd - rangeStart + 1);
+
+        var responseHeaders = new Dictionary<string, string>
+        {
+            ["Content-Type"] = contentType,
+            ["Accept-Ranges"] = "bytes",
+            ["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0",
+            ["Content-Length"] = length.ToString(),
+        };
+        if (isRange)
+            responseHeaders["Content-Range"] = $"bytes {rangeStart}-{rangeEnd}/{totalSize}";
+
+        int status = isRange ? 206 : 200;
+        Port.PostMessage(new { status, headers = responseHeaders, body = "STREAM", destination = Destination });
+
+        // Pull-based chunk streaming
+        var streamState = new StreamState
+        {
+            Port = Port,
+            File = file,
+            Metadata = metadata,
+            OpfsStore = opfsStore,
+            Offset = rangeStart,
+            Remaining = length,
+        };
+        streamState.Handler = streamState.HandlePull;
+        Port.OnMessage += streamState.Handler;
     }
 
     private class StreamState
@@ -232,7 +259,6 @@ public class ServiceWorkerStreamHandler : IDisposable
                     var pieceIdx = (int)(Offset / Metadata.PieceLength);
                     var pieceOffset = (int)(Offset % Metadata.PieceLength);
 
-                    // Zero-copy path: read piece as Uint8Array directly from OPFS
                     if (OpfsStore != null && OpfsStore.SupportsUint8Array)
                     {
                         using var pieceUint8 = await OpfsStore.GetUint8ArrayAsync(pieceIdx);
@@ -248,7 +274,6 @@ public class ServiceWorkerStreamHandler : IDisposable
                         }
                     }
 
-                    // Fallback: read through .NET byte[]
                     var chunk = await File.ReadAsync(Offset, toRead);
                     Offset += chunk.Length;
                     Remaining -= chunk.Length;

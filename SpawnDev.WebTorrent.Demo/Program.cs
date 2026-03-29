@@ -5,6 +5,7 @@ using SpawnDev.AsyncFileSystem;
 using SpawnDev.AsyncFileSystem.BrowserWASM;
 using SpawnDev.BlazorJS;
 using SpawnDev.BlazorJS.Cryptography;
+using SpawnDev.WebTorrent;
 using SpawnDev.WebTorrent.Demo;
 using SpawnDev.WebTorrent.Demo.UnitTests;
 
@@ -27,6 +28,10 @@ else
 
 // Cross-platform persistent file system (OPFS in browser, native on desktop)
 builder.Services.AddSingleton<IAsyncFS, AsyncFSFileSystemDirectoryHandle>();
+
+// WebTorrent services — singletons, start with app via IAsyncBackgroundService
+builder.Services.AddSingleton<ServiceWorkerStreamHandler>();
+builder.Services.AddSingleton<WebTorrentClient>();
 
 builder.Services.AddScoped(sp => new HttpClient { BaseAddress = new Uri(builder.HostEnvironment.BaseAddress) });
 

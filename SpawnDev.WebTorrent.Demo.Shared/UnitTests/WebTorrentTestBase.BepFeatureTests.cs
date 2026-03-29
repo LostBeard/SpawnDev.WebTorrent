@@ -445,4 +445,91 @@ public abstract partial class WebTorrentTestBase
 
         Console.WriteLine("[BEP3] DownloadCoordinator Dispose: OK");
     }
+
+    // ═══════════════════════════════════════════════════════════
+    //  BEP 20 — Peer ID Format
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Bep20_PeerId_Format()
+    {
+        await using var client = new WebTorrentClient();
+        var peerId = client.PeerId;
+
+        // BEP 20: 20 bytes total
+        if (peerId.Length != 20) throw new Exception($"PeerId should be 20 bytes, got {peerId.Length}");
+
+        // Azureus-style: -XX0000- prefix
+        var prefix = System.Text.Encoding.ASCII.GetString(peerId, 0, 8);
+        if (!prefix.StartsWith("-SD")) throw new Exception($"PeerId should start with -SD, got {prefix}");
+        if (prefix != "-SD0110-") throw new Exception($"PeerId prefix: {prefix}");
+
+        // Remaining 12 bytes should be random (not all zero)
+        var randomPart = peerId[8..];
+        if (randomPart.All(b => b == 0)) throw new Exception("Random part should not be all zeros");
+
+        // Two clients should have different peer IDs
+        await using var client2 = new WebTorrentClient();
+        if (client.PeerId.SequenceEqual(client2.PeerId))
+            throw new Exception("Two clients should have different peer IDs");
+
+        Console.WriteLine($"[BEP20] Peer ID format: {prefix}*** OK");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  BEP 27 — Private Torrents
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Bep27_PrivateTorrent_Flag()
+    {
+        var data = new byte[16384];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(data);
+
+        // Create a private torrent
+        var (torrentBytes, metadata) = TorrentCreator.CreateFromBytes("private.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384, IsPrivate = true });
+
+        if (!metadata.IsPrivate) throw new Exception("Metadata should be private");
+
+        // Parse back and verify
+        var parsed = TorrentParser.Parse(torrentBytes);
+        if (!parsed.IsPrivate) throw new Exception("Parsed torrent should be private");
+
+        Console.WriteLine("[BEP27] Private torrent flag: OK");
+    }
+
+    [TestMethod]
+    public async Task Bep27_PublicTorrent_Default()
+    {
+        var data = new byte[16384];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(data);
+
+        // Create a public torrent (default)
+        var (torrentBytes, metadata) = TorrentCreator.CreateFromBytes("public.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        if (metadata.IsPrivate) throw new Exception("Default torrent should not be private");
+
+        Console.WriteLine("[BEP27] Public torrent default: OK");
+    }
+
+    [TestMethod]
+    public async Task Bep27_PrivateAndPublic_DifferentInfoHash()
+    {
+        var data = new byte[16384];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(data);
+
+        var (_, metaPublic) = TorrentCreator.CreateFromBytes("test.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384, IsPrivate = false });
+
+        var (_, metaPrivate) = TorrentCreator.CreateFromBytes("test.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384, IsPrivate = true });
+
+        // Private flag changes the info hash (it's part of the info dict)
+        if (metaPublic.InfoHash.SequenceEqual(metaPrivate.InfoHash))
+            throw new Exception("Private and public should have different info hashes");
+
+        Console.WriteLine("[BEP27] Private/public different info hash: OK");
+    }
 }

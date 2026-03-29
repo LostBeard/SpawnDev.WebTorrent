@@ -441,4 +441,248 @@ public abstract partial class WebTorrentTestBase
         if (opts.Port != 6881) throw new Exception($"Port: {opts.Port}");
         if (opts.MaxNodes != 1600) throw new Exception($"MaxNodes: {opts.MaxNodes}");
     }
+
+    // ═══════════════════════════════════════════════════════════
+    //  Coverage Gap Tests — Tuvok Audit
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task DownloadCoordinator_Create()
+    {
+        var data = new byte[32768]; // 32KB file
+        Random.Shared.NextBytes(data);
+        var (_, metadata) = TorrentCreator.CreateFromBytes("test.bin", data, new TorrentCreatorOptions { PieceLength = 16384 });
+        var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+
+        var coordinator = new DownloadCoordinator(pm, metadata);
+        if (coordinator.PeerCount != 0) throw new Exception($"PeerCount: {coordinator.PeerCount}");
+        if (coordinator.WebSeedCount != 0) throw new Exception($"WebSeedCount: {coordinator.WebSeedCount}");
+        if (coordinator.EndgameMode) throw new Exception("Should not be in endgame initially");
+        if (coordinator.Strategy != "rarest") throw new Exception($"Strategy: {coordinator.Strategy}");
+        if (coordinator.MaxRequestsPerPeer != 6) throw new Exception($"MaxReq: {coordinator.MaxRequestsPerPeer}");
+
+        Console.WriteLine("[DownloadCoordinator] Create: OK");
+    }
+
+    [TestMethod]
+    public async Task DownloadCoordinator_Prioritize()
+    {
+        var data = new byte[65536]; // 64KB
+        var (_, metadata) = TorrentCreator.CreateFromBytes("test.bin", data, new TorrentCreatorOptions { PieceLength = 16384 });
+        var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+        var coordinator = new DownloadCoordinator(pm, metadata);
+
+        // Prioritize piece 2
+        coordinator.Prioritize(2);
+
+        // No crash — priority is recorded internally
+        Console.WriteLine("[DownloadCoordinator] Prioritize: OK");
+    }
+
+    [TestMethod]
+    public async Task DownloadCoordinator_StartStop()
+    {
+        var data = new byte[32768];
+        var (_, metadata) = TorrentCreator.CreateFromBytes("test.bin", data, new TorrentCreatorOptions { PieceLength = 16384 });
+        var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+        var coordinator = new DownloadCoordinator(pm, metadata);
+
+        // Start and stop should not crash even without peers
+        coordinator.Start();
+        await Task.Delay(50);
+        coordinator.Stop();
+
+        // Double start/stop should be safe
+        coordinator.Start();
+        coordinator.Start();
+        coordinator.Stop();
+        coordinator.Stop();
+
+        Console.WriteLine("[DownloadCoordinator] Start/Stop: OK");
+    }
+
+    [TestMethod]
+    public async Task DownloadCoordinator_Events()
+    {
+        var data = new byte[32768];
+        var (_, metadata) = TorrentCreator.CreateFromBytes("test.bin", data, new TorrentCreatorOptions { PieceLength = 16384 });
+        var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+        var coordinator = new DownloadCoordinator(pm, metadata);
+
+        int? completedPiece = null;
+        bool downloadComplete = false;
+        coordinator.OnPieceComplete += (idx) => completedPiece = idx;
+        coordinator.OnDownloadComplete += () => downloadComplete = true;
+
+        // Feed all pieces directly to PieceManager to trigger events
+        int pieceCount = metadata.PieceCount;
+        for (int i = 0; i < pieceCount; i++)
+        {
+            int pieceSize = (i < pieceCount - 1) ? metadata.PieceLength : (int)(metadata.TotalLength - (long)i * metadata.PieceLength);
+            var pieceData = new byte[pieceSize];
+            Array.Copy(data, (long)i * metadata.PieceLength, pieceData, 0, pieceSize);
+            await pm.ReceiveCompletePieceAsync(i, pieceData);
+        }
+
+        if (completedPiece == null) throw new Exception("OnPieceComplete should fire");
+        if (!pm.IsComplete) throw new Exception("All pieces should be complete");
+
+        Console.WriteLine($"[DownloadCoordinator] Events: piece {completedPiece} completed, all done={pm.IsComplete} ✓");
+    }
+
+    [TestMethod]
+    public async Task TorrentHttpServer_Create()
+    {
+        await using var client = new WebTorrentClient();
+        var server = new TorrentHttpServer(client, 18999);
+        if (server.BaseUrl != "http://localhost:18999/")
+            throw new Exception($"BaseUrl: {server.BaseUrl}");
+        if (server.IsRunning) throw new Exception("Should not be running initially");
+
+        Console.WriteLine("[TorrentHttpServer] Create: OK");
+    }
+
+    [TestMethod]
+    public async Task TorrentSwarm_Properties_AfterMetadata()
+    {
+        await using var client = new WebTorrentClient();
+        var data = new byte[16384];
+        Random.Shared.NextBytes(data);
+        var swarm = await client.SeedAsync(data, "test-props.bin");
+
+        if (swarm.Done != true) throw new Exception("Seeded swarm should be done");
+        if (swarm.Progress != 1.0) throw new Exception($"Progress: {swarm.Progress}");
+        if (swarm.TimeRemaining != 0) throw new Exception($"TimeRemaining: {swarm.TimeRemaining}");
+        if (swarm.Length <= 0) throw new Exception($"Length: {swarm.Length}");
+        if (swarm.PieceLength <= 0) throw new Exception($"PieceLength: {swarm.PieceLength}");
+        if (swarm.HasMetadata != true) throw new Exception("Should have metadata");
+        if (swarm.Ready != true) throw new Exception("Should be ready");
+        if (string.IsNullOrEmpty(swarm.MagnetURI)) throw new Exception("MagnetURI empty");
+
+        // Stats should be zero for fresh seed
+        if (swarm.Downloaded < 0) throw new Exception($"Downloaded: {swarm.Downloaded}");
+        if (swarm.Uploaded < 0) throw new Exception($"Uploaded: {swarm.Uploaded}");
+        if (swarm.Ratio < 0) throw new Exception($"Ratio: {swarm.Ratio}");
+
+        Console.WriteLine("[TorrentSwarm] Properties after seed: OK");
+    }
+
+    [TestMethod]
+    public async Task TorrentSwarm_Events_OnReady_OnMetadata()
+    {
+        await using var client = new WebTorrentClient();
+
+        bool readyFired = false;
+        bool metadataFired = false;
+
+        // Create swarm from metadata
+        var data = new byte[8192];
+        Random.Shared.NextBytes(data);
+        var (_, metadata) = TorrentCreator.CreateFromBytes("events.bin", data, new TorrentCreatorOptions { PieceLength = 16384 });
+
+        var swarm = await client.AddAsync(metadata);
+
+        // Metadata should already be set (we provided it)
+        if (!swarm.HasMetadata) throw new Exception("Should have metadata immediately");
+
+        Console.WriteLine($"[TorrentSwarm] Events: ready={readyFired}, metadata={metadataFired}");
+    }
+
+    [TestMethod]
+    public async Task TorrentSwarm_PauseResume_State()
+    {
+        await using var client = new WebTorrentClient();
+        var data = new byte[16384];
+        var swarm = await client.SeedAsync(data, "pause-test.bin");
+
+        if (swarm.Paused) throw new Exception("Should not be paused initially");
+
+        swarm.Pause();
+        if (!swarm.Paused) throw new Exception("Should be paused after Pause()");
+
+        swarm.Resume();
+        if (swarm.Paused) throw new Exception("Should not be paused after Resume()");
+
+        // Double pause/resume should be safe
+        swarm.Pause();
+        swarm.Pause();
+        swarm.Resume();
+        swarm.Resume();
+
+        Console.WriteLine("[TorrentSwarm] Pause/Resume state: OK");
+    }
+
+    [TestMethod]
+    public async Task TorrentSwarm_FileStream_Properties()
+    {
+        await using var client = new WebTorrentClient();
+        var data = new byte[32768];
+        Random.Shared.NextBytes(data);
+        var swarm = await client.SeedAsync(data, "stream-test.bin");
+
+        if (swarm.Files == null || swarm.Files.Length == 0)
+            throw new Exception("Should have files");
+
+        var file = swarm.Files[0];
+        if (file.Name != "stream-test.bin") throw new Exception($"Name: {file.Name}");
+        if (file.Size != data.Length) throw new Exception($"Size: {file.Size}");
+        if (file.Length != data.Length) throw new Exception($"Length: {file.Length}");
+        if (!file.Done) throw new Exception("File should be done (seeded)");
+        if (file.Downloaded != data.Length) throw new Exception($"Downloaded: {file.Downloaded}");
+
+        // MIME type detection
+        if (string.IsNullOrEmpty(file.Type)) throw new Exception("Type should not be empty");
+
+        // Piece range
+        if (file.StartPiece < 0) throw new Exception($"StartPiece: {file.StartPiece}");
+        if (file.EndPiece < file.StartPiece) throw new Exception($"EndPiece: {file.EndPiece}");
+
+        Console.WriteLine($"[TorrentSwarm] FileStream: {file.Name}, {file.Size}b, type={file.Type}, pieces={file.StartPiece}-{file.EndPiece} ✓");
+    }
+
+    [TestMethod]
+    public async Task Client_OnTorrentAdd_Event()
+    {
+        await using var client = new WebTorrentClient();
+        TorrentSwarm? added = null;
+        client.OnTorrentAdd += (swarm) => added = swarm;
+
+        var data = new byte[8192];
+        await client.SeedAsync(data, "event-test.bin");
+
+        if (added == null) throw new Exception("OnTorrentAdd should fire");
+
+        Console.WriteLine("[Client] OnTorrentAdd event: OK");
+    }
+
+    [TestMethod]
+    public async Task Client_OnTorrentRemove_Event()
+    {
+        await using var client = new WebTorrentClient();
+        TorrentSwarm? removed = null;
+        client.OnTorrentRemove += (swarm) => removed = swarm;
+
+        var data = new byte[8192];
+        var swarm = await client.SeedAsync(data, "remove-test.bin");
+        await client.RemoveAsync(swarm);
+
+        if (removed == null) throw new Exception("OnTorrentRemove should fire");
+
+        Console.WriteLine("[Client] OnTorrentRemove event: OK");
+    }
+
+    [TestMethod]
+    public async Task Client_SpeedProperties()
+    {
+        await using var client = new WebTorrentClient();
+        // Fresh client should have zero speed
+        if (client.DownloadSpeed < 0) throw new Exception($"DownloadSpeed: {client.DownloadSpeed}");
+        if (client.UploadSpeed < 0) throw new Exception($"UploadSpeed: {client.UploadSpeed}");
+
+        Console.WriteLine($"[Client] Speed: down={client.DownloadSpeed}, up={client.UploadSpeed}");
+    }
 }

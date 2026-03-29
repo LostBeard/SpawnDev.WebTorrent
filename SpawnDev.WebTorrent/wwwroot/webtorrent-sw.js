@@ -33,14 +33,16 @@ if (typeof window !== 'undefined') {
     }
 
     (async () => {
-        if (window.crossOriginIsolated) {
-            sessionStorage.removeItem('wt-sw-reload');
+        if (!('serviceWorker' in navigator)) {
+            console.warn('[WebTorrent SW] Service workers not supported');
             loadBlazor();
             return;
         }
 
-        if (!('serviceWorker' in navigator)) {
-            console.warn('[WebTorrent SW] Service workers not supported');
+        // Always wait for SW to be ready and controlling before loading Blazor
+        if (window.crossOriginIsolated && navigator.serviceWorker.controller) {
+            sessionStorage.removeItem('wt-sw-reload');
+            await navigator.serviceWorker.ready;
             loadBlazor();
             return;
         }

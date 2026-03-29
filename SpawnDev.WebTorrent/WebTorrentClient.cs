@@ -103,7 +103,6 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
         // Register to handle SW streaming requests for our torrents
         if (StreamHandler != null)
         {
-            await StreamHandler.Ready;
             StreamHandler.OnRequest += HandleStreamRequest;
         }
     }

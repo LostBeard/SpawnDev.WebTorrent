@@ -1092,8 +1092,6 @@ public abstract partial class WebTorrentTestBase
             throw new UnsupportedTestException("Requires browser");
         if (Client == null) throw new UnsupportedTestException("Requires DI WebTorrentClient");
 
-        await Client.Ready;
-
         if (Client.StreamHandler == null)
             throw new Exception("WebTorrentClient.StreamHandler is null — DI not wired");
 

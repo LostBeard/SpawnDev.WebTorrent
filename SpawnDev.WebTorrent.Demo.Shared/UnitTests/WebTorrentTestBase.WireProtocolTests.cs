@@ -201,4 +201,114 @@ public abstract partial class WebTorrentTestBase
         if (!m.ContainsKey("ut_metadata")) throw new Exception("Missing ut_metadata in m");
         if (!m.ContainsKey("ut_pex")) throw new Exception("Missing ut_pex in m");
     }
+
+    // ═══════════════════════════════════════════════════════════
+    //  Wire Protocol — Request / Piece / Have Messages
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Wire_SendRequest_Format()
+    {
+        var captured = new List<byte>();
+        var mock = new MockConnection(captured);
+        var wire = new WireProtocol(mock);
+
+        await wire.SendRequestAsync(7, 16384, 16384);
+
+        // Request: 4-byte length + 1-byte id(6) + 12-byte payload (index, offset, length)
+        if (captured.Count != 17) throw new Exception($"Request should be 17 bytes, got {captured.Count}");
+        // Length prefix = 13
+        if (captured[3] != 13) throw new Exception($"Length should be 13, got {captured[3]}");
+        // Message ID = 6 (Request)
+        if (captured[4] != 6) throw new Exception($"ID should be 6 (Request), got {captured[4]}");
+        // Piece index = 7 (big-endian at offset 5)
+        if (captured[8] != 7) throw new Exception($"Piece index should be 7, got {captured[8]}");
+
+        Console.WriteLine("[Wire] SendRequest format: OK");
+    }
+
+    [TestMethod]
+    public async Task Wire_SendPiece_Format()
+    {
+        var captured = new List<byte>();
+        var mock = new MockConnection(captured);
+        var wire = new WireProtocol(mock);
+
+        var blockData = new byte[] { 0xDE, 0xAD, 0xBE, 0xEF };
+        await wire.SendPieceAsync(3, 0, blockData);
+
+        // Piece: 4-byte length + 1-byte id(7) + 8-byte header (index, offset) + data
+        if (captured.Count != 17) throw new Exception($"Piece should be 17 bytes, got {captured.Count}");
+        // Message ID = 7 (Piece)
+        if (captured[4] != 7) throw new Exception($"ID should be 7 (Piece), got {captured[4]}");
+        // Data at end
+        if (captured[13] != 0xDE || captured[14] != 0xAD || captured[15] != 0xBE || captured[16] != 0xEF)
+            throw new Exception("Piece data mismatch");
+
+        Console.WriteLine("[Wire] SendPiece format: OK");
+    }
+
+    [TestMethod]
+    public async Task Wire_SendHave_Format()
+    {
+        var captured = new List<byte>();
+        var mock = new MockConnection(captured);
+        var wire = new WireProtocol(mock);
+
+        await wire.SendHaveAsync(42);
+
+        // Have: 4-byte length + 1-byte id(4) + 4-byte piece index
+        if (captured.Count != 9) throw new Exception($"Have should be 9 bytes, got {captured.Count}");
+        // Message ID = 4 (Have)
+        if (captured[4] != 4) throw new Exception($"ID should be 4 (Have), got {captured[4]}");
+        // Piece index = 42 (big-endian at offset 5)
+        if (captured[8] != 42) throw new Exception($"Piece index should be 42, got {captured[8]}");
+
+        Console.WriteLine("[Wire] SendHave format: OK");
+    }
+
+    [TestMethod]
+    public async Task Wire_SendHaveAll_Format()
+    {
+        var captured = new List<byte>();
+        var mock = new MockConnection(captured);
+        var wire = new WireProtocol(mock);
+
+        await wire.SendHaveAllAsync();
+
+        // HaveAll: 4-byte length(1) + 1-byte id(0x0E = 14)
+        if (captured.Count != 5) throw new Exception($"HaveAll should be 5 bytes, got {captured.Count}");
+        if (captured[4] != 0x0E) throw new Exception($"ID should be 14 (HaveAll), got {captured[4]}");
+
+        Console.WriteLine("[Wire] SendHaveAll format: OK");
+    }
+
+    [TestMethod]
+    public async Task Wire_SendHaveNone_Format()
+    {
+        var captured = new List<byte>();
+        var mock = new MockConnection(captured);
+        var wire = new WireProtocol(mock);
+
+        await wire.SendHaveNoneAsync();
+
+        // HaveNone: 4-byte length(1) + 1-byte id(0x0F = 15)
+        if (captured.Count != 5) throw new Exception($"HaveNone should be 5 bytes, got {captured.Count}");
+        if (captured[4] != 0x0F) throw new Exception($"ID should be 15 (HaveNone), got {captured[4]}");
+
+        Console.WriteLine("[Wire] SendHaveNone format: OK");
+    }
+
+    [TestMethod]
+    public async Task Wire_MessageSizeLimit()
+    {
+        var mock = new MockConnection(new List<byte>());
+        var wire = new WireProtocol(mock);
+
+        // Verify the max message size is enforced (16MB)
+        if (WireProtocol.MaxMessageSize != 16 * 1024 * 1024)
+            throw new Exception($"MaxMessageSize should be 16MB, got {WireProtocol.MaxMessageSize}");
+
+        Console.WriteLine("[Wire] Message size limit: OK");
+    }
 }

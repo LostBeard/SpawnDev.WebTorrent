@@ -595,12 +595,15 @@ public class TorrentSwarm : IAsyncDisposable
     public void Pause()
     {
         Paused = true;
+        _coordinator?.Stop();
     }
 
-    /// <summary>Resume — allow connecting to new peers.</summary>
+    /// <summary>Resume — allow connecting to new peers and restart download.</summary>
     public void Resume()
     {
         Paused = false;
+        if (HasMetadata && _coordinator != null)
+            _coordinator.Start();
     }
 
     /// <summary>Prioritize a range of pieces.</summary>

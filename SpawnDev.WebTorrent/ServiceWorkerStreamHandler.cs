@@ -181,7 +181,7 @@ public class StreamRequest
     /// Respond with a STREAM for the given file, supporting range requests.
     /// Call this from your OnRequest handler.
     /// </summary>
-    public void RespondWithStream(TorrentFileStream file, TorrentMetadata metadata, AsyncFSChunkStore? opfsStore = null)
+    public void RespondWithStream(TorrentFileStream file)
     {
         Handled = true;
         var totalSize = file.Length;
@@ -221,107 +221,83 @@ public class StreamRequest
         };
 
         // Wire up pull handler FIRST, then Start, then PostMessage (order matters)
-        var streamState = new StreamState
-        {
-            Port = Port,
-            File = file,
-            Metadata = metadata,
-            OpfsStore = opfsStore,
-            Offset = rangeStart,
-            Remaining = length,
-        };
-        streamState.Handler = streamState.HandlePull;
-        Port.OnMessage += streamState.Handler;
+        var stream = file.CreateReadStream(rangeStart);
+        var streamState = new StreamState(Port, stream, length);
+        Port.OnMessage += streamState.HandlePull;
         Port.Start();
         Port.PostMessage(response);
     }
 
     private class StreamState
     {
-        public MessagePort Port { get; set; } = null!;
-        public TorrentFileStream File { get; set; } = null!;
-        public TorrentMetadata Metadata { get; set; } = null!;
-        public AsyncFSChunkStore? OpfsStore { get; set; }
-        public long Offset { get; set; }
-        public int Remaining { get; set; }
-        public Action<MessageEvent>? Handler { get; set; }
+        private readonly MessagePort _port;
+        private readonly Stream _stream;
+        private int _remaining;
         private const int ChunkSize = 65536;
+
+        public StreamState(MessagePort port, Stream stream, int length)
+        {
+            _port = port;
+            _stream = stream;
+            _remaining = length;
+        }
 
         public void HandlePull(MessageEvent pullMsg)
         {
-            // Pull message: { eventType: 'pull', desiredSize: N } or { eventType: 'cancel', desiredSize: 0 }
             using var pullData = pullMsg.GetData<JSObject>();
             var eventType = pullData.JSRef!.Get<string>("eventType");
 
             if (eventType == "cancel" || eventType == "error")
             {
                 Cleanup();
-                pullMsg.Dispose();
                 return;
             }
 
-            if (eventType != "pull")
-            {
-                pullMsg.Dispose();
-                return;
-            }
+            if (eventType != "pull") return;
 
             _ = Task.Run(async () =>
             {
                 try
                 {
-                    if (Remaining <= 0)
+                    if (_remaining <= 0)
                     {
-                        // Send falsy to signal done
-                        Port.PostMessage("");
+                        _port.PostMessage("");
                         Cleanup();
                         return;
                     }
 
-                    var toRead = (int)Math.Min(ChunkSize, Remaining);
-                    var pieceIdx = (int)(Offset / Metadata.PieceLength);
-                    var pieceOffset = (int)(Offset % Metadata.PieceLength);
+                    var toRead = Math.Min(ChunkSize, _remaining);
+                    var buffer = new byte[toRead];
+                    var bytesRead = await _stream.ReadAsync(buffer, 0, toRead);
 
-                    if (OpfsStore != null && OpfsStore.SupportsUint8Array)
+                    if (bytesRead <= 0)
                     {
-                        using var pieceUint8 = await OpfsStore.GetUint8ArrayAsync(pieceIdx);
-                        if (pieceUint8 != null)
-                        {
-                            var available = (int)pieceUint8.Length - pieceOffset;
-                            var sendLen = Math.Min(toRead, available);
-                            using var slice = pieceUint8.Slice(pieceOffset, pieceOffset + sendLen);
-                            Port.PostMessage(slice);
-                            Offset += sendLen;
-                            Remaining -= sendLen;
-                            return;
-                        }
+                        _port.PostMessage("");
+                        Cleanup();
+                        return;
                     }
 
-                    // Fallback: read through .NET byte[]
-                    var chunk = await File.ReadAsync(Offset, toRead);
-                    Offset += chunk.Length;
-                    Remaining -= chunk.Length;
-                    using var uint8 = new Uint8Array(chunk);
-                    Port.PostMessage(uint8);
+                    _remaining -= bytesRead;
+
+                    if (bytesRead < buffer.Length)
+                        buffer = buffer[..bytesRead];
+
+                    using var uint8 = new Uint8Array(buffer);
+                    _port.PostMessage(uint8);
                 }
                 catch (Exception ex)
                 {
                     Console.Error.WriteLine($"[WebTorrent SW Handler] Stream chunk error: {ex}");
-                    Port.PostMessage("");
+                    _port.PostMessage("");
                     Cleanup();
                 }
             });
-
-            pullMsg.Dispose();
         }
 
         private void Cleanup()
         {
-            if (Handler != null)
-            {
-                Port.OnMessage -= Handler;
-                Handler = null;
-            }
+            _port.OnMessage -= HandlePull;
+            _stream.Dispose();
         }
     }
 

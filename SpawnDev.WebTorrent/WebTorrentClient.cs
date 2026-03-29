@@ -118,8 +118,7 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
             return;
 
         var file = swarm.Files[request.FileIndex];
-        var opfsStore = swarm.Store as Storage.AsyncFSChunkStore;
-        request.RespondWithStream(file, swarm.Metadata!, opfsStore);
+        request.RespondWithStream(file);
     }
 
     /// <summary>

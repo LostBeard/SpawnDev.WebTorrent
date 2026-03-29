@@ -538,6 +538,9 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task TorrentHttpServer_Create()
     {
+        if (OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("HttpListener requires desktop");
+
         await using var client = new WebTorrentClient();
         var server = new TorrentHttpServer(client, 18999);
         if (server.BaseUrl != "http://localhost:18999/")

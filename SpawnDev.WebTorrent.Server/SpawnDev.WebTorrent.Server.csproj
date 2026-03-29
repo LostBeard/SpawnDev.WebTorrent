@@ -33,7 +33,7 @@
 
 	<ItemGroup>
 		<ProjectReference Include="..\SpawnDev.WebTorrent\SpawnDev.WebTorrent.csproj" />
-		<FrameworkReference Include="Microsoft.AspNetCore.App" />
+		<FrameworkReference Include="Microsoft.AspNetCore.App" PrivateAssets="all" />
 	</ItemGroup>
 
 </Project>

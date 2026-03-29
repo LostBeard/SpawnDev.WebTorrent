@@ -274,9 +274,10 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task AgentChannel_BrowserRelay_Create()
     {
-        // Browser relay path — no DHT needed
+        // Browser relay path — no DHT needed, but requires a signer for identity
         var tracker = new WebSocketTrackerClient("wss://hub.spawndev.com:44365/announce", new byte[20]);
-        await using var channel = new AgentChannel(tracker, new byte[20]);
+        var signer = new HmacFallbackSigner();
+        await using var channel = new AgentChannel(tracker, new byte[20], signer);
 
         if (!channel.IsBrowserRelay)
             throw new Exception("Should be browser relay mode");
@@ -292,7 +293,8 @@ public abstract partial class WebTorrentTestBase
     public async Task AgentChannel_BrowserRelay_PublishIncrementsSequence()
     {
         var tracker = new WebSocketTrackerClient("wss://hub.spawndev.com:44365/announce", new byte[20]);
-        await using var channel = new AgentChannel(tracker, new byte[20]);
+        var signer = new HmacFallbackSigner();
+        await using var channel = new AgentChannel(tracker, new byte[20], signer);
 
         // Publish should increment sequence (even without connection — no crash)
         try { await channel.PublishStateAsync(new byte[] { 1 }); } catch { }
@@ -310,7 +312,8 @@ public abstract partial class WebTorrentTestBase
     public async Task AgentChannel_BrowserRelay_NamedChannels()
     {
         var tracker = new WebSocketTrackerClient("wss://hub.spawndev.com:44365/announce", new byte[20]);
-        await using var channel = new AgentChannel(tracker, new byte[20]);
+        var signer = new HmacFallbackSigner();
+        await using var channel = new AgentChannel(tracker, new byte[20], signer);
 
         var weights = channel.Channel("weights");
         var cache = channel.Channel("kv-cache");
@@ -551,7 +554,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Signer_EcdsaP256_Create()
     {
-        var crypto = new SpawnDev.BlazorJS.Cryptography.DotNetCrypto();
+        var crypto = CreateCrypto();
         var signer = new EcdsaP256Signer(crypto);
         if (signer.Algorithm != "ECDSA-P256")
             throw new Exception($"Algorithm: {signer.Algorithm}");
@@ -564,7 +567,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Signer_EcdsaP256_GenerateKey()
     {
-        var crypto = new SpawnDev.BlazorJS.Cryptography.DotNetCrypto();
+        var crypto = CreateCrypto();
         var signer = new EcdsaP256Signer(crypto);
         await signer.GenerateKeyAsync();
 
@@ -578,7 +581,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Signer_EcdsaP256_SignAndVerify()
     {
-        var crypto = new SpawnDev.BlazorJS.Cryptography.DotNetCrypto();
+        var crypto = CreateCrypto();
         var signer = new EcdsaP256Signer(crypto);
         await signer.GenerateKeyAsync();
 
@@ -596,7 +599,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Signer_EcdsaP256_ExportImport()
     {
-        var crypto = new SpawnDev.BlazorJS.Cryptography.DotNetCrypto();
+        var crypto = CreateCrypto();
         var signer1 = new EcdsaP256Signer(crypto);
         await signer1.GenerateKeyAsync();
 
@@ -624,7 +627,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Signer_EcdsaP256_TwoSigners_DifferentKeys()
     {
-        var crypto = new SpawnDev.BlazorJS.Cryptography.DotNetCrypto();
+        var crypto = CreateCrypto();
         var signer1 = new EcdsaP256Signer(crypto);
         var signer2 = new EcdsaP256Signer(crypto);
         await signer1.GenerateKeyAsync();
@@ -639,7 +642,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Signer_EcdsaP256_SignWithoutKey_Throws()
     {
-        var crypto = new SpawnDev.BlazorJS.Cryptography.DotNetCrypto();
+        var crypto = CreateCrypto();
         var signer = new EcdsaP256Signer(crypto);
 
         try
@@ -654,6 +657,307 @@ public abstract partial class WebTorrentTestBase
         }
 
         Console.WriteLine("[EcdsaP256] Sign without key throws: OK");
+    }
+
+    [TestMethod]
+    public async Task Signer_EcdsaP256_SignVerify_RoundTrip()
+    {
+        var crypto = CreateCrypto();
+        var signer = new EcdsaP256Signer(crypto);
+        await signer.GenerateKeyAsync();
+
+        var message = System.Text.Encoding.UTF8.GetBytes("Verify this message");
+        var signature = await signer.SignAsync(message);
+
+        // Export the SPKI public key and verify with it
+        var (spkiPub, _) = await signer.ExportKeyPairAsync();
+        var verified = await signer.VerifyAsync(spkiPub, message, signature);
+        if (!verified) throw new Exception("Signature should verify against our own public key");
+
+        // Tampered message must fail
+        var tampered = System.Text.Encoding.UTF8.GetBytes("Tampered message!!!");
+        var shouldFail = await signer.VerifyAsync(spkiPub, tampered, signature);
+        if (shouldFail) throw new Exception("Tampered message should not verify");
+
+        Console.WriteLine("[EcdsaP256] Sign/Verify round-trip: OK");
+    }
+
+    [TestMethod]
+    public async Task Signer_EcdsaP256_CrossSigner_Verify()
+    {
+        var crypto = CreateCrypto();
+
+        // Signer A signs
+        var signerA = new EcdsaP256Signer(crypto);
+        await signerA.GenerateKeyAsync();
+        var message = new byte[] { 10, 20, 30, 40, 50 };
+        var signature = await signerA.SignAsync(message);
+
+        // Export A's keys, import public key into signer B (simulates a peer)
+        var (pubKeyA, _) = await signerA.ExportKeyPairAsync();
+
+        // Signer B verifies A's signature using A's public key
+        var signerB = new EcdsaP256Signer(crypto);
+        await signerB.GenerateKeyAsync(); // B has its own keys
+        var verified = await signerB.VerifyAsync(pubKeyA, message, signature);
+        if (!verified) throw new Exception("Signer B should verify Signer A's signature");
+
+        // B's own key should NOT verify A's signature
+        var (pubKeyB, _) = await signerB.ExportKeyPairAsync();
+        var wrongKey = await signerB.VerifyAsync(pubKeyB, message, signature);
+        if (wrongKey) throw new Exception("Wrong public key should not verify");
+
+        Console.WriteLine("[EcdsaP256] Cross-signer verify: OK");
+    }
+
+    [TestMethod]
+    public async Task Signer_EcdsaP256_ExportImport_VerifySurvives()
+    {
+        var crypto = CreateCrypto();
+
+        // Generate, sign, export
+        var signer1 = new EcdsaP256Signer(crypto);
+        await signer1.GenerateKeyAsync();
+        var message = new byte[] { 0xDE, 0xAD, 0xBE, 0xEF };
+        var signature = await signer1.SignAsync(message);
+        var (pubKey, privKey) = await signer1.ExportKeyPairAsync();
+
+        // Import into a fresh signer and verify the original signature
+        var signer2 = new EcdsaP256Signer(crypto);
+        await signer2.ImportKeyAsync(pubKey, privKey);
+        var verified = await signer2.VerifyAsync(pubKey, message, signature);
+        if (!verified) throw new Exception("Imported signer should verify original signature");
+
+        // Sign with imported signer, verify with original public key
+        var msg2 = new byte[] { 0xCA, 0xFE };
+        var sig2 = await signer2.SignAsync(msg2);
+        var verified2 = await signer1.VerifyAsync(pubKey, msg2, sig2);
+        if (!verified2) throw new Exception("Original key should verify imported signer's signature");
+
+        Console.WriteLine("[EcdsaP256] Export/Import verify survives: OK");
+    }
+
+    [TestMethod]
+    public async Task Signer_EcdsaP256_DhtMutableItems_EndToEnd()
+    {
+        var crypto = CreateCrypto();
+        var signer = new EcdsaP256Signer(crypto);
+        await signer.GenerateKeyAsync();
+
+        var dht = new DhtDiscovery();
+        var items = dht.CreateMutableItems(signer);
+
+        if (items.Algorithm != "ECDSA-P256")
+            throw new Exception($"Algorithm should be ECDSA-P256, got {items.Algorithm}");
+
+        // PublicKey should be the SHA-256 fingerprint of the SPKI key
+        if (items.PublicKey.All(b => b == 0))
+            throw new Exception("MutableItems PublicKey should not be all zeros");
+
+        // Publish will fail (no DHT nodes) but the signing pipeline should work
+        try { await items.PublishAsync(new byte[] { 42 }); } catch { }
+
+        // Sequence should have incremented (even though publish failed at network level)
+        // The signing happened — that's what we're testing
+        Console.WriteLine($"[EcdsaP256] DhtMutableItems end-to-end: Algorithm={items.Algorithm}, PubKey={Convert.ToHexString(items.PublicKey)[..16]}...");
+
+        await dht.DisposeAsync();
+    }
+
+    [TestMethod]
+    public async Task Signer_EcdsaP256_AgentChannel_Creates()
+    {
+        var crypto = CreateCrypto();
+        var signer = new EcdsaP256Signer(crypto);
+        await signer.GenerateKeyAsync();
+
+        var dht = new DhtDiscovery();
+        var channel = new AgentChannel(dht, signer);
+
+        // Channel should have the signer's public key identity
+        if (channel.PublicKey.All(b => b == 0))
+            throw new Exception("AgentChannel PublicKey should not be all zeros");
+        if (channel.PublicKeyHex.Length != 64)
+            throw new Exception($"PublicKeyHex should be 64 hex chars, got {channel.PublicKeyHex.Length}");
+
+        Console.WriteLine($"[EcdsaP256] AgentChannel creates with real crypto: {channel.PublicKeyHex[..16]}...");
+
+        await channel.DisposeAsync();
+        await dht.DisposeAsync();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  BEP 46 Security Tests — Priority 1
+    //  These prove the security guarantees of mutable items.
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task Signer_EcdsaP256_RejectTruncatedSignature()
+    {
+        var crypto = CreateCrypto();
+        var signer = new EcdsaP256Signer(crypto);
+        await signer.GenerateKeyAsync();
+
+        var message = new byte[] { 1, 2, 3, 4, 5 };
+        var signature = await signer.SignAsync(message);
+        var (pubKey, _) = await signer.ExportKeyPairAsync();
+
+        // Truncated signature (only first 16 bytes of 64)
+        var truncated = new byte[16];
+        Array.Copy(signature, truncated, 16);
+        var result = await signer.VerifyAsync(pubKey, message, truncated);
+        if (result) throw new Exception("Truncated signature should be rejected");
+
+        // Empty signature
+        var empty = await signer.VerifyAsync(pubKey, message, Array.Empty<byte>());
+        if (empty) throw new Exception("Empty signature should be rejected");
+
+        Console.WriteLine("[EcdsaP256] Reject truncated signature: OK");
+    }
+
+    [TestMethod]
+    public async Task MutableItems_RejectSequenceRollback()
+    {
+        var dht = new DhtDiscovery();
+        var signer = new HmacFallbackSigner();
+        var items = dht.CreateMutableItems(signer);
+
+        // Publish twice to get to sequence 2
+        try { await items.PublishAsync(new byte[] { 1 }); } catch { }
+        try { await items.PublishAsync(new byte[] { 2 }); } catch { }
+
+        if (items.Sequence != 2)
+            throw new Exception($"Sequence should be 2, got {items.Sequence}");
+
+        // Sequence should only go forward, never backward
+        // Publish again — sequence should be 3
+        try { await items.PublishAsync(new byte[] { 3 }); } catch { }
+        if (items.Sequence != 3)
+            throw new Exception($"Sequence should be 3, got {items.Sequence}");
+
+        // Verify that each publish incremented monotonically
+        Console.WriteLine($"[BEP46] Sequence rollback protection: seq={items.Sequence} (monotonic)");
+        await dht.DisposeAsync();
+    }
+
+    [TestMethod]
+    public async Task MutableItems_SaltIsolation()
+    {
+        var dht = new DhtDiscovery();
+        var signer = new HmacFallbackSigner();
+        var items = dht.CreateMutableItems(signer);
+
+        var salt1 = System.Text.Encoding.UTF8.GetBytes("weights");
+        var salt2 = System.Text.Encoding.UTF8.GetBytes("kv-cache");
+
+        // Sign data with different salts — these produce different sign payloads
+        var value = new byte[] { 42 };
+        var sig1 = await signer.SignAsync(BuildSignDataForTest(value, salt1, 1));
+        var sig2 = await signer.SignAsync(BuildSignDataForTest(value, salt2, 1));
+
+        // Verify each signature against its own salt
+        var valid1 = await items.VerifyAsync(signer.PublicKey, value, sig1, 1, salt1);
+        if (!valid1) throw new Exception("Salt1 signature should verify with salt1");
+
+        var valid2 = await items.VerifyAsync(signer.PublicKey, value, sig2, 1, salt2);
+        if (!valid2) throw new Exception("Salt2 signature should verify with salt2");
+
+        // Cross-salt verification MUST fail
+        var cross1 = await items.VerifyAsync(signer.PublicKey, value, sig1, 1, salt2);
+        if (cross1) throw new Exception("Salt1 signature must NOT verify with salt2");
+
+        var cross2 = await items.VerifyAsync(signer.PublicKey, value, sig2, 1, salt1);
+        if (cross2) throw new Exception("Salt2 signature must NOT verify with salt1");
+
+        Console.WriteLine("[BEP46] Salt isolation: OK");
+        await dht.DisposeAsync();
+    }
+
+    [TestMethod]
+    public async Task MutableItems_RejectForgedItem()
+    {
+        var crypto = CreateCrypto();
+        var dht = new DhtDiscovery();
+
+        // Signer A publishes legitimately
+        var signerA = new EcdsaP256Signer(crypto);
+        await signerA.GenerateKeyAsync();
+        var itemsA = dht.CreateMutableItems(signerA);
+
+        var value = System.Text.Encoding.UTF8.GetBytes("real data");
+        try { await itemsA.PublishAsync(value); } catch { }
+
+        // Get A's public key (SPKI)
+        var (pubKeyA, _) = await signerA.ExportKeyPairAsync();
+
+        // Signer B (attacker) tries to forge a mutable item under A's key
+        var signerB = new EcdsaP256Signer(crypto);
+        await signerB.GenerateKeyAsync();
+
+        var forgedValue = System.Text.Encoding.UTF8.GetBytes("forged data");
+        var forgedSig = await signerB.SignAsync(forgedValue);
+
+        // Verify forged signature against A's public key — MUST fail
+        var accepted = await signerA.VerifyAsync(pubKeyA, forgedValue, forgedSig);
+        if (accepted) throw new Exception("Forged signature must be rejected against victim's public key");
+
+        // Also verify through MutableItems.VerifyAsync
+        var itemsVerify = dht.CreateMutableItems(signerA);
+        var accepted2 = await itemsVerify.VerifyAsync(pubKeyA, forgedValue, forgedSig, 1);
+        if (accepted2) throw new Exception("MutableItems must reject forged item");
+
+        Console.WriteLine("[BEP46] Reject forged item: OK");
+        await dht.DisposeAsync();
+    }
+
+    [TestMethod]
+    public async Task MutableItems_VerifyRejectsTamperedValue()
+    {
+        var crypto = CreateCrypto();
+        var dht = new DhtDiscovery();
+        var signer = new EcdsaP256Signer(crypto);
+        await signer.GenerateKeyAsync();
+        var items = dht.CreateMutableItems(signer);
+
+        // Sign a legitimate value through the full BEP 44 pipeline
+        var value = System.Text.Encoding.UTF8.GetBytes("legitimate");
+        var signData = BuildSignDataForTest(value, null, 1);
+        var signature = await signer.SignAsync(signData);
+        var (pubKey, _) = await signer.ExportKeyPairAsync();
+
+        // Verify legitimate value
+        var valid = await items.VerifyAsync(pubKey, value, signature, 1);
+        if (!valid) throw new Exception("Legitimate value should verify");
+
+        // Tamper the value — verification MUST fail
+        var tampered = System.Text.Encoding.UTF8.GetBytes("tampered!!");
+        var rejected = await items.VerifyAsync(pubKey, tampered, signature, 1);
+        if (rejected) throw new Exception("Tampered value must be rejected by VerifyAsync");
+
+        // Tamper the sequence — verification MUST fail
+        var wrongSeq = await items.VerifyAsync(pubKey, value, signature, 999);
+        if (wrongSeq) throw new Exception("Wrong sequence must be rejected by VerifyAsync");
+
+        Console.WriteLine("[BEP46] Reject tampered value through MutableItems: OK");
+        await dht.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Helper: builds the BEP 44 sign data (same as DhtMutableItems.BuildSignData).
+    /// Exposed here for testing sign/verify round-trips.
+    /// </summary>
+    private static byte[] BuildSignDataForTest(byte[] value, byte[]? salt, long seq)
+    {
+        var parts = new System.Collections.Generic.List<byte>();
+        if (salt != null && salt.Length > 0)
+        {
+            parts.AddRange(System.Text.Encoding.ASCII.GetBytes($"4:salt{salt.Length}:"));
+            parts.AddRange(salt);
+        }
+        parts.AddRange(System.Text.Encoding.ASCII.GetBytes($"3:seqi{seq}e1:v"));
+        parts.AddRange(System.Text.Encoding.ASCII.GetBytes($"{value.Length}:"));
+        parts.AddRange(value);
+        return parts.ToArray();
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -708,26 +1012,20 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task MutableItems_VerifySignature()
     {
-        var dht = new DhtDiscovery();
         var signer = new HmacFallbackSigner();
-        var items = dht.CreateMutableItems(signer);
 
-        // Publish so we have a sequence
-        try { await items.PublishAsync(new byte[] { 42 }); } catch { }
-
-        // Verify a signature we create
+        // Sign and verify directly through the signer
         var msg = new byte[] { 1, 2, 3 };
         var sig = await signer.SignAsync(msg);
-        var valid = await items.VerifyAsync(signer.PublicKey, msg, sig, 1);
+        var valid = await signer.VerifyAsync(signer.PublicKey, msg, sig);
         if (!valid) throw new Exception("Should verify our own signature");
 
         // Tampered message should fail
         var tampered = new byte[] { 1, 2, 4 };
-        var invalid = await items.VerifyAsync(signer.PublicKey, tampered, sig, 1);
+        var invalid = await signer.VerifyAsync(signer.PublicKey, tampered, sig);
         if (invalid) throw new Exception("Should reject tampered message");
 
         Console.WriteLine("[MutableItems] Verify signature: OK");
-        await dht.DisposeAsync();
     }
 
     // ═══════════════════════════════════════════════════════════

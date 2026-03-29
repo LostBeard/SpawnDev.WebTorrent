@@ -32,11 +32,12 @@ public class AgentChannel : IAsyncDisposable
 {
     private readonly DhtMutableItems? _dhtItems;
     private readonly WebSocketTrackerClient? _tracker;
+    private readonly IDhtSigner? _signer;
     private readonly byte[] _publicKey;
     private readonly byte[] _peerId;
     private readonly List<CancellationTokenSource> _subscriptions = new();
     private long _sequence;
-    private readonly Dictionary<string, long> _subscribedSequences = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> _subscribedSequences = new();
 
     /// <summary>This agent's public key identity (32 bytes).</summary>
     public byte[] PublicKey => _publicKey;
@@ -59,6 +60,7 @@ public class AgentChannel : IAsyncDisposable
     /// </summary>
     public AgentChannel(DhtDiscovery dht, IDhtSigner signer)
     {
+        _signer = signer;
         _dhtItems = dht.CreateMutableItems(signer);
         _dhtItems.OnValueUpdated += (key, value, seq) => OnAgentUpdate?.Invoke(key, value, seq);
         _publicKey = _dhtItems.PublicKey;
@@ -70,12 +72,12 @@ public class AgentChannel : IAsyncDisposable
     /// Uses the tracker's signaling channel to relay agent messages.
     /// No UDP required — works in browser.
     /// </summary>
-    public AgentChannel(WebSocketTrackerClient tracker, byte[] peerId)
+    public AgentChannel(WebSocketTrackerClient tracker, byte[] peerId, IDhtSigner signer)
     {
         _tracker = tracker;
+        _signer = signer;
         _peerId = peerId;
-        _publicKey = new byte[32];
-        RandomNumberGenerator.Fill(_publicKey);
+        _publicKey = signer.PublicKey;
 
         // Listen for agent messages relayed through the tracker
         _tracker.OnOffer += HandleTrackerRelay;
@@ -188,12 +190,16 @@ public class AgentChannel : IAsyncDisposable
 
         // Send data as a custom offer to all peers in the swarm
         // The "offer" contains the agent state as serialized JSON
+        // Sign the data for verification by receivers
+        var signature = _signer != null ? await _signer.SignAsync(data) : Array.Empty<byte>();
+
         var payload = JsonSerializer.SerializeToElement(new AgentRelayMessage
         {
             PublicKey = Convert.ToHexString(_publicKey).ToLowerInvariant(),
             Sequence = _sequence,
             Data = Convert.ToBase64String(data),
             Salt = salt != null ? Convert.ToBase64String(salt) : null,
+            Signature = Convert.ToBase64String(signature),
         });
 
         // Broadcast to "all" by sending an offer with a special offer ID prefix
@@ -223,6 +229,15 @@ public class AgentChannel : IAsyncDisposable
 
             var pubKeyBytes = Convert.FromHexString(msg.PublicKey);
             var dataBytes = Convert.FromBase64String(msg.Data);
+
+            // Verify signature if we have a signer
+            if (_signer != null && !string.IsNullOrEmpty(msg.Signature))
+            {
+                var sigBytes = Convert.FromBase64String(msg.Signature);
+                var verified = _signer.VerifyAsync(pubKeyBytes, dataBytes, sigBytes).GetAwaiter().GetResult();
+                if (!verified) return; // Reject forged messages
+            }
+
             OnAgentUpdate?.Invoke(pubKeyBytes, dataBytes, msg.Sequence);
         }
         catch { }
@@ -265,6 +280,7 @@ internal class AgentRelayMessage
     public long Sequence { get; set; }
     public string Data { get; set; } = "";
     public string? Salt { get; set; }
+    public string? Signature { get; set; }
 }
 
 /// <summary>

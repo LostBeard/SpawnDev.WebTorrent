@@ -33,6 +33,7 @@ public class HttpTrackerClient : IDiscovery
     public async Task StartAsync(byte[] infoHash, int port, CancellationToken ct = default)
     {
         _currentInfoHash = infoHash;
+        _httpClient?.Dispose();
         _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
 
         try

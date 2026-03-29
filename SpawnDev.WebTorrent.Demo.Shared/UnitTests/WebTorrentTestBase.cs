@@ -1,4 +1,5 @@
 using SpawnDev.BlazorJS;
+using SpawnDev.BlazorJS.Cryptography;
 using SpawnDev.UnitTesting;
 using SpawnDev.WebTorrent.ModelDelivery;
 using SpawnDev.WebTorrent.Storage;
@@ -19,6 +20,17 @@ public abstract partial class WebTorrentTestBase
     /// Null on desktop (tests that need it should check OperatingSystem.IsBrowser()).
     /// </summary>
     protected BlazorJSRuntime? JS { get; set; }
+
+    /// <summary>
+    /// Creates the platform-appropriate IPortableCrypto implementation.
+    /// Browser: BrowserWASMCrypto (SubtleCrypto). Desktop: DotNetCrypto.
+    /// </summary>
+    protected IPortableCrypto CreateCrypto()
+    {
+        if (OperatingSystem.IsBrowser())
+            return new BrowserWASMCrypto(JS!);
+        return new DotNetCrypto();
+    }
 
     // ═══════════════════════════════════════════════════════════
     //  Bencode Tests

@@ -24,6 +24,9 @@ public class ModelTorrentClient : IAsyncDisposable
     private readonly ModelTorrentOptions _options;
     private readonly HttpClient _httpClient;
 
+    /// <summary>Fired for diagnostic log messages.</summary>
+    public event Action<string>? OnLog;
+
     public ModelTorrentClient(ModelTorrentOptions? options = null)
     {
         _options = options ?? new ModelTorrentOptions();
@@ -81,7 +84,10 @@ public class ModelTorrentClient : IAsyncDisposable
                 if (resp.IsSuccessStatusCode || resp.StatusCode == System.Net.HttpStatusCode.PartialContent)
                     pieceData = await resp.Content.ReadAsByteArrayAsync(ct);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"Piece {i} download failed: {ex.Message}");
+            }
             if (pieceData != null)
             {
                 // Use ReceiveCompletePieceAsync — web seed delivers entire pieces,

@@ -11,14 +11,17 @@ namespace SpawnDev.WebTorrent.Torrent;
 /// This is the engine that makes TorrentFileStream.ReadAsync work —
 /// when a file read requests a piece, the coordinator prioritizes it.
 /// </summary>
-public class DownloadCoordinator
+public class DownloadCoordinator : IDisposable
 {
     private readonly PieceManager _pieceManager;
     private readonly TorrentMetadata _metadata;
     private readonly List<WebSeedConnection> _webSeeds = new();
     private readonly List<ActivePeer> _activePeers = new();
+    private readonly object _peersLock = new();
+    private readonly object _seedsLock = new();
     private readonly SemaphoreSlim _updateLock = new(1);
     private CancellationTokenSource? _cts;
+    private bool _disposed;
 
     /// <summary>Pieces that are high-priority (requested by file reads).</summary>
     private readonly HashSet<int> _priorityPieces = new();
@@ -39,10 +42,10 @@ public class DownloadCoordinator
     public string Strategy { get; set; } = "rarest";
 
     /// <summary>Number of configured web seeds.</summary>
-    public int WebSeedCount => _webSeeds.Count;
+    public int WebSeedCount { get { lock (_seedsLock) return _webSeeds.Count; } }
 
     /// <summary>Number of active peers.</summary>
-    public int PeerCount => _activePeers.Count;
+    public int PeerCount { get { lock (_peersLock) return _activePeers.Count; } }
 
     // Events
     public event Action<int>? OnPieceComplete;
@@ -61,7 +64,7 @@ public class DownloadCoordinator
     {
         var seed = new WebSeedConnection(httpClient, url, _metadata);
         seed.OnLog += (msg) => OnLog?.Invoke(msg);
-        _webSeeds.Add(seed);
+        lock (_seedsLock) _webSeeds.Add(seed);
     }
 
     /// <summary>Add an active peer with its wire protocol and bitfield.</summary>
@@ -83,7 +86,13 @@ public class DownloadCoordinator
         wire.OnChoke += () => peer.IsChoked = true;
         wire.OnUnchoke += () => peer.IsChoked = false;
 
-        _activePeers.Add(peer);
+        lock (_peersLock) _activePeers.Add(peer);
+    }
+
+    /// <summary>Remove a disconnected peer.</summary>
+    public void RemovePeer(WireProtocol wire)
+    {
+        lock (_peersLock) _activePeers.RemoveAll(p => p.Wire == wire);
     }
 
     /// <summary>Request a specific piece with high priority (for file read).</summary>
@@ -115,8 +124,14 @@ public class DownloadCoordinator
             await _updateLock.WaitAsync(ct);
             try
             {
+                // Snapshot collections for safe iteration
+                ActivePeer[] peers;
+                lock (_peersLock) peers = _activePeers.ToArray();
+                WebSeedConnection[] seeds;
+                lock (_seedsLock) seeds = _webSeeds.ToArray();
+
                 // 1. Request from peers
-                foreach (var peer in _activePeers)
+                foreach (var peer in peers)
                 {
                     if (peer.IsChoked || peer.OutstandingRequests.Count >= MaxRequestsPerPeer)
                         continue;
@@ -140,29 +155,29 @@ public class DownloadCoordinator
                 }
 
                 // 2. Web seed downloads
-                if (_webSeeds.Count > 0)
+                if (seeds.Length > 0)
                 {
                     // Priority pieces first (from file read requests)
                     foreach (var priorityPiece in _priorityPieces.ToArray())
                     {
                         if (_pieceManager.Bitfield[priorityPiece]) continue;
 
-                        bool peerHasIt = _activePeers.Any(p => !p.IsChoked
+                        bool peerHasIt = peers.Any(p => !p.IsChoked
                             && p.Bitfield.Length > priorityPiece && p.Bitfield[priorityPiece]);
 
                         if (!peerHasIt)
-                            await DownloadFromWebSeed(priorityPiece, ct);
+                            await DownloadFromWebSeed(priorityPiece, seeds, ct);
                     }
 
                     // When no peers are available, proactively download via web seeds
-                    bool hasPeers = _activePeers.Any(p => !p.IsChoked);
+                    bool hasPeers = peers.Any(p => !p.IsChoked);
                     if (!hasPeers)
                     {
                         for (int i = 0; i < _pieceManager.PieceCount; i++)
                         {
                             if (!_pieceManager.Bitfield[i])
                             {
-                                await DownloadFromWebSeed(i, ct);
+                                await DownloadFromWebSeed(i, seeds, ct);
                                 break; // one piece per tick to stay responsive
                             }
                         }
@@ -175,7 +190,7 @@ public class DownloadCoordinator
 
                 // 3. Endgame mode — when few pieces remain, request from ALL peers
                 int remaining = _pieceManager.PieceCount - _pieceManager.CompletedCount;
-                if (remaining > 0 && remaining <= EndgameThreshold && _activePeers.Count > 1)
+                if (remaining > 0 && remaining <= EndgameThreshold && peers.Length > 1)
                 {
                     if (!EndgameMode)
                     {
@@ -186,7 +201,7 @@ public class DownloadCoordinator
                     for (int i = 0; i < _pieceManager.PieceCount; i++)
                     {
                         if (_pieceManager.Bitfield[i]) continue;
-                        foreach (var peer in _activePeers)
+                        foreach (var peer in peers)
                         {
                             if (!peer.IsChoked && peer.Bitfield.Length > i && peer.Bitfield[i])
                                 await RequestBlocksFromPeer(peer, i);
@@ -223,9 +238,9 @@ public class DownloadCoordinator
         }
     }
 
-    private async Task DownloadFromWebSeed(int pieceIndex, CancellationToken ct)
+    private async Task DownloadFromWebSeed(int pieceIndex, WebSeedConnection[] seeds, CancellationToken ct)
     {
-        foreach (var seed in _webSeeds)
+        foreach (var seed in seeds)
         {
             if (!seed.IsAvailable) continue;
 
@@ -262,10 +277,21 @@ public class DownloadCoordinator
             OnDownloadComplete?.Invoke();
 
         // Send Have to all peers
-        foreach (var peer in _activePeers)
+        ActivePeer[] peers;
+        lock (_peersLock) peers = _activePeers.ToArray();
+        foreach (var peer in peers)
         {
             _ = peer.Wire.SendHaveAsync(pieceIndex);
         }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _cts?.Cancel();
+        _cts?.Dispose();
+        _updateLock.Dispose();
     }
 }
 

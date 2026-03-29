@@ -745,4 +745,314 @@ public abstract partial class WebTorrentTestBase
 
         Console.WriteLine("[MemoryChunkStore] Multiple chunks + clear: OK");
     }
+
+    // ═══════════════════════════════════════════════════════════
+    //  Random Access Streaming — TorrentFileStream.ReadAsync
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task RandomAccess_ReadEntireFile()
+    {
+        // Create a 64KB file split into 4 x 16KB pieces
+        var data = new byte[65536];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 251); // prime pattern
+
+        var (torrentBytes, metadata) = TorrentCreator.CreateFromBytes("random.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        await using var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+
+        // Store all 4 pieces
+        for (int i = 0; i < 4; i++)
+        {
+            var pieceData = data[(i * 16384)..((i + 1) * 16384)];
+            await pm.ReceiveCompletePieceAsync(i, pieceData);
+        }
+
+        // Create a TorrentSwarm-like file stream setup
+        var file = metadata.Files[0];
+
+        // Read entire file
+        var result = new byte[data.Length];
+        int offset = 0;
+        while (offset < data.Length)
+        {
+            int pieceIdx = offset / metadata.PieceLength;
+            int pieceOffset = offset % metadata.PieceLength;
+            int toRead = Math.Min(metadata.PieceLength - pieceOffset, data.Length - offset);
+            var piece = await store.GetAsync(pieceIdx, pieceOffset, toRead);
+            if (piece == null) throw new Exception($"Piece {pieceIdx} missing");
+            System.Array.Copy(piece, 0, result, offset, piece.Length);
+            offset += piece.Length;
+        }
+
+        if (!result.SequenceEqual(data))
+            throw new Exception("Full read data mismatch");
+
+        Console.WriteLine("[RandomAccess] Read entire file: OK");
+    }
+
+    [TestMethod]
+    public async Task RandomAccess_ReadMiddleRange()
+    {
+        var data = new byte[65536];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 251);
+
+        var (_, metadata) = TorrentCreator.CreateFromBytes("random.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        await using var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+        for (int i = 0; i < 4; i++)
+            await pm.ReceiveCompletePieceAsync(i, data[(i * 16384)..((i + 1) * 16384)]);
+
+        // Read from middle of piece 1 into piece 2 (cross-piece boundary)
+        int rangeStart = 20000; // in piece 1 (offset 3616 into piece 1)
+        int rangeLen = 10000;   // crosses into piece 2
+        var expected = data[rangeStart..(rangeStart + rangeLen)];
+
+        var result = new byte[rangeLen];
+        int remaining = rangeLen;
+        int resultOffset = 0;
+        long readPos = rangeStart;
+        while (remaining > 0)
+        {
+            int pieceIdx = (int)(readPos / metadata.PieceLength);
+            int pieceOffset = (int)(readPos % metadata.PieceLength);
+            int toRead = Math.Min(metadata.PieceLength - pieceOffset, remaining);
+            var chunk = await store.GetAsync(pieceIdx, pieceOffset, toRead);
+            if (chunk == null) throw new Exception($"Piece {pieceIdx} missing for range read");
+            System.Array.Copy(chunk, 0, result, resultOffset, chunk.Length);
+            resultOffset += chunk.Length;
+            readPos += chunk.Length;
+            remaining -= chunk.Length;
+        }
+
+        if (!result.SequenceEqual(expected))
+            throw new Exception("Cross-piece range read data mismatch");
+
+        Console.WriteLine("[RandomAccess] Read middle range (cross-piece): OK");
+    }
+
+    [TestMethod]
+    public async Task RandomAccess_ReadLastByte()
+    {
+        var data = new byte[65536];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 251);
+
+        var (_, metadata) = TorrentCreator.CreateFromBytes("random.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        await using var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+        for (int i = 0; i < 4; i++)
+            await pm.ReceiveCompletePieceAsync(i, data[(i * 16384)..((i + 1) * 16384)]);
+
+        // Read just the last byte
+        int lastOffset = data.Length - 1;
+        int pieceIdx = lastOffset / metadata.PieceLength;
+        int pieceOffset = lastOffset % metadata.PieceLength;
+        var chunk = await store.GetAsync(pieceIdx, pieceOffset, 1);
+        if (chunk == null || chunk.Length != 1) throw new Exception("Last byte read failed");
+        if (chunk[0] != data[lastOffset]) throw new Exception($"Last byte: expected {data[lastOffset]}, got {chunk[0]}");
+
+        Console.WriteLine("[RandomAccess] Read last byte: OK");
+    }
+
+    [TestMethod]
+    public async Task RandomAccess_ReadFirstByte()
+    {
+        var data = new byte[65536];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 251);
+
+        var (_, metadata) = TorrentCreator.CreateFromBytes("random.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        await using var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+        for (int i = 0; i < 4; i++)
+            await pm.ReceiveCompletePieceAsync(i, data[(i * 16384)..((i + 1) * 16384)]);
+
+        // Read just the first byte
+        var chunk = await store.GetAsync(0, 0, 1);
+        if (chunk == null || chunk.Length != 1) throw new Exception("First byte read failed");
+        if (chunk[0] != data[0]) throw new Exception($"First byte: expected {data[0]}, got {chunk[0]}");
+
+        Console.WriteLine("[RandomAccess] Read first byte: OK");
+    }
+
+    [TestMethod]
+    public async Task RandomAccess_ReadExactPieceBoundary()
+    {
+        var data = new byte[65536];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 251);
+
+        var (_, metadata) = TorrentCreator.CreateFromBytes("random.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        await using var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+        for (int i = 0; i < 4; i++)
+            await pm.ReceiveCompletePieceAsync(i, data[(i * 16384)..((i + 1) * 16384)]);
+
+        // Read exactly one piece starting at piece boundary
+        var chunk = await store.GetAsync(2); // piece 2 = bytes 32768..49151
+        if (chunk == null) throw new Exception("Piece 2 read failed");
+        var expected = data[32768..49152];
+        if (!chunk.SequenceEqual(expected))
+            throw new Exception("Exact piece boundary read mismatch");
+
+        Console.WriteLine("[RandomAccess] Read exact piece boundary: OK");
+    }
+
+    [TestMethod]
+    public async Task RandomAccess_MultipleSmallReads()
+    {
+        var data = new byte[65536];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 251);
+
+        var (_, metadata) = TorrentCreator.CreateFromBytes("random.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        await using var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+        for (int i = 0; i < 4; i++)
+            await pm.ReceiveCompletePieceAsync(i, data[(i * 16384)..((i + 1) * 16384)]);
+
+        // Read 100 bytes at 100 random offsets and verify each
+        var rng = new Random(42); // deterministic seed
+        for (int trial = 0; trial < 100; trial++)
+        {
+            int offset = rng.Next(0, data.Length - 100);
+            int length = rng.Next(1, 101);
+            if (offset + length > data.Length) length = data.Length - offset;
+
+            var expected = data[offset..(offset + length)];
+
+            // Read crossing piece boundaries
+            var result = new byte[length];
+            int rem = length;
+            int rOff = 0;
+            long rPos = offset;
+            while (rem > 0)
+            {
+                int pIdx = (int)(rPos / metadata.PieceLength);
+                int pOff = (int)(rPos % metadata.PieceLength);
+                int toRead = Math.Min(metadata.PieceLength - pOff, rem);
+                var c = await store.GetAsync(pIdx, pOff, toRead);
+                if (c == null) throw new Exception($"Trial {trial}: piece {pIdx} missing");
+                System.Array.Copy(c, 0, result, rOff, c.Length);
+                rOff += c.Length;
+                rPos += c.Length;
+                rem -= c.Length;
+            }
+
+            if (!result.SequenceEqual(expected))
+                throw new Exception($"Trial {trial}: mismatch at offset {offset} length {length}");
+        }
+
+        Console.WriteLine("[RandomAccess] 100 random reads verified: OK");
+    }
+
+    [TestMethod]
+    public async Task RandomAccess_PartialDownload_ReadDownloadedPiece()
+    {
+        // 1MB file, 16KB pieces = 64 pieces. Only download pieces 0, 10, 63.
+        var data = new byte[1048576];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)((i * 7 + 13) % 251);
+
+        var (_, metadata) = TorrentCreator.CreateFromBytes("large.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        await using var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+
+        // Only store 3 out of 64 pieces
+        int[] downloadedPieces = { 0, 10, 63 };
+        foreach (var pi in downloadedPieces)
+        {
+            int start = pi * 16384;
+            int end = Math.Min(start + 16384, data.Length);
+            await pm.ReceiveCompletePieceAsync(pi, data[start..end]);
+        }
+
+        // Read from a downloaded piece (piece 10) — should succeed
+        int p10Start = 10 * 16384;
+        var chunk = await store.GetAsync(10, 0, 100);
+        if (chunk == null) throw new Exception("Downloaded piece 10 should be readable");
+        var expected = data[p10Start..(p10Start + 100)];
+        if (!chunk.SequenceEqual(expected))
+            throw new Exception("Piece 10 data mismatch");
+
+        // Read from an undownloaded piece (piece 5) — should return null
+        var missing = await store.GetAsync(5, 0, 100);
+        if (missing != null) throw new Exception("Undownloaded piece 5 should return null");
+
+        // Read last piece (piece 63, may be shorter than 16384)
+        var lastPiece = await store.GetAsync(63);
+        if (lastPiece == null) throw new Exception("Downloaded piece 63 should be readable");
+        int lastPieceStart = 63 * 16384;
+        int lastPieceLen = data.Length - lastPieceStart;
+        var expectedLast = data[lastPieceStart..(lastPieceStart + lastPieceLen)];
+        if (!lastPiece.SequenceEqual(expectedLast))
+            throw new Exception("Last piece data mismatch");
+
+        // Verify bitfield reflects partial download
+        if (!pm.Bitfield[0] || !pm.Bitfield[10] || !pm.Bitfield[63])
+            throw new Exception("Downloaded pieces should be in bitfield");
+        if (pm.Bitfield[5] || pm.Bitfield[30])
+            throw new Exception("Undownloaded pieces should not be in bitfield");
+        if (pm.CompletedCount != 3)
+            throw new Exception($"Should have 3 completed, got {pm.CompletedCount}");
+
+        Console.WriteLine($"[RandomAccess] Partial download (3/{metadata.PieceCount} pieces): OK");
+    }
+
+    [TestMethod]
+    public async Task RandomAccess_LargeFile_CrossPieceBoundary()
+    {
+        // 256KB file, 16KB pieces = 16 pieces. Download all.
+        var data = new byte[262144];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)((i * 3 + 7) % 253);
+
+        var (_, metadata) = TorrentCreator.CreateFromBytes("large2.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        await using var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+        for (int i = 0; i < metadata.PieceCount; i++)
+        {
+            int start = i * 16384;
+            int end = Math.Min(start + 16384, data.Length);
+            await pm.ReceiveCompletePieceAsync(i, data[start..end]);
+        }
+
+        // Read 50KB starting at offset 100000 — crosses pieces 6, 7, 8
+        int rangeStart = 100000;
+        int rangeLen = 51200;
+        var expected = data[rangeStart..(rangeStart + rangeLen)];
+
+        var result = new byte[rangeLen];
+        int rem = rangeLen;
+        int rOff = 0;
+        long rPos = rangeStart;
+        while (rem > 0)
+        {
+            int pIdx = (int)(rPos / metadata.PieceLength);
+            int pOff = (int)(rPos % metadata.PieceLength);
+            int toRead = Math.Min(metadata.PieceLength - pOff, rem);
+            var c = await store.GetAsync(pIdx, pOff, toRead);
+            if (c == null) throw new Exception($"Piece {pIdx} missing for cross-piece read");
+            System.Array.Copy(c, 0, result, rOff, c.Length);
+            rOff += c.Length;
+            rPos += c.Length;
+            rem -= c.Length;
+        }
+
+        if (!result.SequenceEqual(expected))
+            throw new Exception("Large file cross-piece read mismatch");
+
+        Console.WriteLine($"[RandomAccess] Large file cross-piece (50KB across 3 pieces): OK");
+    }
 }

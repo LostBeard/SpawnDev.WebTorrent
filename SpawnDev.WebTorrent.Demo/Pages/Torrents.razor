@@ -856,132 +856,13 @@
         Log($"Exported: {fileName}");
     }
 
-    // ── Media via Service Worker streaming ──
-    // Protocol: SW posts request → we respond with {status, headers, body:'STREAM'}
-    // → SW pulls chunks via port.postMessage(true) → we send Uint8Array chunks → null = done
-
-    protected override async Task OnAfterRenderAsync(bool firstRender)
-    {
-        if (firstRender && OperatingSystem.IsBrowser())
-        {
-            // Listen for service worker messages requesting torrent data
-            using var swContainer = JS.Get<ServiceWorkerContainer>("navigator.serviceWorker");
-            if (swContainer != null)
-            {
-                swContainer.OnMessage += HandleStreamRequest;
-            }
-        }
-    }
-
-    private void HandleStreamRequest(MessageEvent msgEvent)
-    {
-        try
-        {
-            using var data = msgEvent.GetData<JSObject>();
-            var msgType = data.JSRef!.Get<string?>("type");
-            if (msgType != "webtorrent") return;
-
-            var requestUrl = data.JSRef!.Get<string>("url") ?? "";
-            var method = data.JSRef!.Get<string>("method") ?? "GET";
-            using var headersObj = data.JSRef!.Get<JSObject?>("headers");
-            var rangeHeader = headersObj?.JSRef?.Get<string?>("range");
-            var destination = data.JSRef!.Get<string?>("destination") ?? "";
-
-            var ports = msgEvent.Ports;
-            if (ports == null || ports.Length == 0) { ports?.Dispose(); return; }
-            var port = ports[0];
-            ports.Dispose();
-
-            // Parse URL: .../webtorrent/{infoHash}/{fileIndex}
-            var url = new Uri(requestUrl);
-            var segments = url.AbsolutePath.Split('/').Where(s => !string.IsNullOrEmpty(s)).ToArray();
-            var wtIdx = System.Array.IndexOf(segments, "webtorrent");
-            if (wtIdx < 0 || wtIdx + 2 >= segments.Length) { port.PostMessage(new { status = 404, headers = new Dictionary<string, string>(), body = "Not found" }); return; }
-
-            var infoHash = segments[wtIdx + 1];
-            var fileIdx = int.TryParse(segments[wtIdx + 2], out var fi) ? fi : -1;
-
-            var entry = _torrents.FirstOrDefault(t => t.InfoHashFull == infoHash);
-            if (entry == null || !entry.HasMetadata || entry.Swarm.Files == null || fileIdx < 0 || fileIdx >= entry.Swarm.Files.Length)
-            {
-                port.PostMessage(new { status = 404, headers = new Dictionary<string, string>(), body = "Not found" });
-                return;
-            }
-
-            var metadata = entry.Swarm.Metadata!;
-            var file = entry.Swarm.Files[fileIdx];
-            var totalSize = file.Length;
-            var contentType = GetMimeType(System.IO.Path.GetExtension(file.Name).ToLowerInvariant());
-
-            // Parse range header
-            long rangeStart = 0;
-            long rangeEnd = totalSize - 1;
-            bool isRange = false;
-            if (!string.IsNullOrEmpty(rangeHeader) && rangeHeader.StartsWith("bytes="))
-            {
-                isRange = true;
-                var rangeParts = rangeHeader.Substring(6).Split('-');
-                if (rangeParts.Length >= 1 && long.TryParse(rangeParts[0], out var rs)) rangeStart = rs;
-                if (rangeParts.Length >= 2 && !string.IsNullOrEmpty(rangeParts[1]) && long.TryParse(rangeParts[1], out var re)) rangeEnd = re;
-                if (rangeEnd >= totalSize) rangeEnd = totalSize - 1;
-            }
-
-            var length = (int)(rangeEnd - rangeStart + 1);
-
-            // Build response headers
-            var responseHeaders = new Dictionary<string, string>
-            {
-                ["Content-Type"] = contentType,
-                ["Accept-Ranges"] = "bytes",
-                ["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0",
-                ["Content-Length"] = length.ToString(),
-            };
-            if (isRange)
-            {
-                responseHeaders["Content-Range"] = $"bytes {rangeStart}-{rangeEnd}/{totalSize}";
-            }
-
-            int status = isRange ? 206 : 200;
-
-            // Send STREAM response — SW will set up ReadableStream and pull chunks
-            port.PostMessage(new { status, headers = responseHeaders, body = "STREAM", destination });
-
-            // Handle pull requests from SW
-            var offset = rangeStart;
-            var remaining = length;
-            var chunkSize = 65536; // 64KB chunks
-
-            // Check if the store supports zero-copy Uint8Array reads (OPFS)
-            var opfsStore = entry.Swarm.Store as AsyncFSChunkStore;
-
-            // Set up pull-based streaming with proper cleanup
-            var streamState = new StreamState
-            {
-                Port = port,
-                File = file,
-                Metadata = metadata,
-                OpfsStore = opfsStore,
-                Offset = rangeStart,
-                Remaining = length,
-            };
-            streamState.Handler = streamState.HandlePull;
-            port.OnMessage += streamState.Handler;
-        }
-        catch (Exception ex)
-        {
-            Log($"Stream handler error: {ex.Message}");
-        }
-    }
-
     private async Task OpenMedia(TorrentFileStream file, string ext)
     {
         _mediaFileName = file.Name; _mediaType = IsVideoFile(ext) ? "video" : IsAudioFile(ext) ? "audio" : "image";
         _mediaOpen = true; _mediaLoading = false;
 
         // Use service worker streaming URL — supports range requests for seeking
-        var entry = _selectedTorrent!;
-        var fileIdx = System.Array.IndexOf(entry.Swarm.Files!, file);
-        _mediaBlobUrl = $"/webtorrent/{entry.InfoHashFull}/{fileIdx}";
+        _mediaBlobUrl = ServiceWorkerStreamHandler.GetStreamUrl(_selectedTorrent!.Swarm, file);
 
         StateHasChanged();
     }

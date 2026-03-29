@@ -75,6 +75,9 @@ public class WebTorrentClient : IAsyncDisposable
     public event Action<TorrentSwarm>? OnTorrentDone;
     public event Action<Exception>? OnError;
 
+    /// <summary>Service worker stream handler for media streaming with seeking.</summary>
+    public ServiceWorkerStreamHandler? StreamHandler { get; private set; }
+
     public WebTorrentClient(WebTorrentOptions? options = null)
     {
         _options = options ?? new WebTorrentOptions();
@@ -86,6 +89,21 @@ public class WebTorrentClient : IAsyncDisposable
         _peerId = new byte[20];
         "-SD0110-"u8.CopyTo(_peerId);
         Random.Shared.NextBytes(_peerId.AsSpan(8));
+
+        // Auto-enable service worker streaming in browser
+        if (OperatingSystem.IsBrowser())
+            EnableServiceWorkerStreaming();
+    }
+
+    /// <summary>
+    /// Enable service worker streaming for media playback with seeking.
+    /// Automatically called in browser. Listens for SW messages and serves
+    /// torrent piece data via MessageChannel.
+    /// </summary>
+    public void EnableServiceWorkerStreaming()
+    {
+        StreamHandler?.Dispose();
+        StreamHandler = new ServiceWorkerStreamHandler(this);
     }
 
     /// <summary>

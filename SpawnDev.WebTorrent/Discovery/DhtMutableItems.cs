@@ -1,6 +1,5 @@
 using System.Security.Cryptography;
 using System.Text;
-using SpawnDev.BlazorJS.Cryptography;
 
 namespace SpawnDev.WebTorrent.Discovery;
 
@@ -8,8 +7,9 @@ namespace SpawnDev.WebTorrent.Discovery;
 /// BEP 46: Updating Torrents via DHT Mutable Items.
 /// Publish and retrieve signed mutable data in the DHT.
 ///
-/// Uses ed25519 key pairs for signing. The public key hash determines
-/// where in the DHT the item is stored. Sequence numbers prevent rollback.
+/// Uses IDhtSigner for cryptographic signing (ECDSA-P256, Ed25519, etc).
+/// The public key hash determines where in the DHT the item is stored.
+/// Sequence numbers prevent rollback.
 ///
 /// Use cases:
 /// - Live model weight updates (publish new info hash under same key)
@@ -18,61 +18,35 @@ namespace SpawnDev.WebTorrent.Discovery;
 /// - Dynamic torrent feeds that update over time
 ///
 /// Protocol:
-///   put: { "v": value, "k": public_key, "seq": sequence, "sig": ed25519_signature, "salt": optional }
+///   put: { "v": value, "k": public_key, "seq": sequence, "sig": signature, "salt": optional }
 ///   get: { "target": sha1(public_key + salt) } → returns latest value
 /// </summary>
 public class DhtMutableItems
 {
     private readonly DhtDiscovery _dht;
-    private readonly byte[] _publicKey;
-    private readonly byte[] _privateKey;
+    private readonly IDhtSigner _signer;
     private long _sequence;
-    private IPortableCrypto? _crypto;
-    private PortableECDSAKey? _ecdsaKey;
 
-    /// <summary>Our ed25519 public key (32 bytes).</summary>
-    public byte[] PublicKey => _publicKey;
+    /// <summary>Our public key identity (from the signer).</summary>
+    public byte[] PublicKey => _signer.PublicKey;
 
     /// <summary>Current sequence number.</summary>
     public long Sequence => _sequence;
+
+    /// <summary>The signing algorithm in use.</summary>
+    public string Algorithm => _signer.Algorithm;
 
     /// <summary>Event fired when a subscribed key has a new value.</summary>
     public event Action<byte[], byte[], long>? OnValueUpdated; // publicKey, value, sequence
 
     /// <summary>
-    /// Create a mutable items handler with a new random ed25519 key pair.
+    /// Create a mutable items handler with the given signer.
+    /// The signer must have its key generated/imported before use.
     /// </summary>
-    public DhtMutableItems(DhtDiscovery dht)
+    public DhtMutableItems(DhtDiscovery dht, IDhtSigner signer)
     {
         _dht = dht;
-
-        // Generate ed25519 key pair
-        _privateKey = new byte[64];
-        _publicKey = new byte[32];
-        GenerateEd25519KeyPair(_privateKey, _publicKey);
-    }
-
-    /// <summary>
-    /// Create with an existing key pair (for persistent identity).
-    /// </summary>
-    public DhtMutableItems(DhtDiscovery dht, byte[] privateKey, byte[] publicKey)
-    {
-        _dht = dht;
-        _privateKey = privateKey;
-        _publicKey = publicKey;
-    }
-
-    /// <summary>
-    /// Initialize with SpawnDev.BlazorJS.Cryptography for real cross-platform ECDSA signing.
-    /// Call this after construction to enable proper cryptographic signatures.
-    /// </summary>
-    public async Task InitCryptoAsync(IPortableCrypto crypto)
-    {
-        _crypto = crypto;
-        _ecdsaKey = await crypto.GenerateECDSAKey("P-256", extractable: true);
-        var pubKeyBytes = await crypto.ExportPublicKeySpki(_ecdsaKey);
-        // Use first 32 bytes of SPKI as our "public key" identity
-        Array.Copy(SHA256.HashData(pubKeyBytes), _publicKey, 32);
+        _signer = signer;
     }
 
     /// <summary>
@@ -88,17 +62,17 @@ public class DhtMutableItems
         _sequence++;
 
         var signData = BuildSignData(value, salt, _sequence);
-        var signature = await SignDataAsync(signData);
+        var signature = await _signer.SignAsync(signData);
 
         // Find nodes close to the target and send put requests
-        var target = ComputeTarget(_publicKey, salt);
+        var target = ComputeTarget(_signer.PublicKey, salt);
         var closest = _dht._routingTable.GetClosest(target, 8);
 
         foreach (var node in closest)
         {
             try
             {
-                var putMsg = BuildPutMessage(value, _publicKey, signature, _sequence, salt);
+                var putMsg = BuildPutMessage(value, _signer.PublicKey, signature, _sequence, salt);
                 await _dht.SendKrpcAsync(node.EndPoint, putMsg, ct);
             }
             catch { }
@@ -119,7 +93,7 @@ public class DhtMutableItems
     /// <summary>
     /// Look up the latest mutable item for a public key.
     /// </summary>
-    /// <param name="publicKey">The publisher's ed25519 public key (32 bytes).</param>
+    /// <param name="publicKey">The publisher's public key.</param>
     /// <param name="salt">Optional salt.</param>
     /// <returns>The value and sequence number, or null if not found.</returns>
     public async Task<(byte[] value, long sequence)?> GetAsync(byte[] publicKey, byte[]? salt = null,
@@ -170,6 +144,17 @@ public class DhtMutableItems
         }
     }
 
+    /// <summary>
+    /// Verify a signature on a received mutable item.
+    /// Uses the signer's VerifyAsync for real cryptographic verification.
+    /// </summary>
+    public async Task<bool> VerifyAsync(byte[] publicKey, byte[] value, byte[] signature,
+        long seq, byte[]? salt = null)
+    {
+        var signData = BuildSignData(value, salt, seq);
+        return await _signer.VerifyAsync(publicKey, signData, signature);
+    }
+
     // ── BEP 44/46 Message Builders ──
 
     private static byte[] ComputeTarget(byte[] publicKey, byte[]? salt)
@@ -211,8 +196,8 @@ public class DhtMutableItems
         buf.AddRange(Encoding.ASCII.GetBytes("2:id20:"));
         buf.AddRange(_dht._nodeId);
 
-        // k (public key, 32 bytes)
-        buf.AddRange(Encoding.ASCII.GetBytes("1:k32:"));
+        // k (public key)
+        buf.AddRange(Encoding.ASCII.GetBytes($"1:k{publicKey.Length}:"));
         buf.AddRange(publicKey);
 
         // salt (optional)
@@ -225,11 +210,12 @@ public class DhtMutableItems
         // seq
         buf.AddRange(Encoding.ASCII.GetBytes($"3:seqi{seq}e"));
 
-        // sig (64 bytes)
-        buf.AddRange(Encoding.ASCII.GetBytes("3:sig64:"));
+        // sig
+        buf.AddRange(Encoding.ASCII.GetBytes($"3:sig{signature.Length}:"));
         buf.AddRange(signature);
 
-        // token (would come from a prior get response — simplified for now)
+        // token — should come from a prior get response
+        // TODO: Cache tokens from get responses per-node for proper DHT interaction
         buf.AddRange(Encoding.ASCII.GetBytes("5:token1:x"));
 
         // v (value)
@@ -255,49 +241,5 @@ public class DhtMutableItems
         buf.AddRange(txId);
         buf.AddRange(Encoding.ASCII.GetBytes("1:y1:qe"));
         return buf.ToArray();
-    }
-
-    // ── Ed25519 ──
-
-    private static void GenerateEd25519KeyPair(byte[] privateKey, byte[] publicKey)
-    {
-        // Use .NET's built-in Ed25519 if available, otherwise fill with random
-        // (Real ed25519 requires a proper crypto library)
-        try
-        {
-            // .NET 10 has System.Security.Cryptography.Ed25519
-            RandomNumberGenerator.Fill(privateKey.AsSpan(0, 32)); // seed
-            // Derive public key from seed (simplified — real impl uses Ed25519 point multiplication)
-            SHA256.HashData(privateKey.AsSpan(0, 32)).CopyTo(publicKey.AsSpan());
-        }
-        catch
-        {
-            RandomNumberGenerator.Fill(privateKey);
-            RandomNumberGenerator.Fill(publicKey);
-        }
-    }
-
-    private async Task<byte[]> SignDataAsync(byte[] message)
-    {
-        // Use SpawnDev.BlazorJS.Cryptography if available (real ECDSA, cross-platform)
-        if (_crypto != null && _ecdsaKey != null)
-        {
-            var sig = await _crypto.Sign(_ecdsaKey, message, "SHA-256");
-            // Pad/truncate to 64 bytes for wire format compatibility
-            var result = new byte[64];
-            Array.Copy(sig, result, Math.Min(sig.Length, 64));
-            return result;
-        }
-
-        // Fallback: HMAC-SHA512 placeholder (64 bytes)
-        using var hmac = new HMACSHA512(_privateKey);
-        return hmac.ComputeHash(message);
-    }
-
-    private async Task<bool> VerifyDataAsync(byte[] publicKey, byte[] message, byte[] signature)
-    {
-        // With real crypto, we'd verify the ECDSA signature
-        // For now, accept any 64-byte signature
-        return signature.Length >= 64;
     }
 }

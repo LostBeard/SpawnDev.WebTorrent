@@ -343,15 +343,10 @@ public class DhtDiscovery : IDiscovery
     }
 
     /// <summary>
-    /// Create a BEP 46 mutable items handler with a new identity.
-    /// Enables publishing and subscribing to mutable data in the DHT.
+    /// Create a BEP 46 mutable items handler with the given signer.
+    /// The signer must have its key generated/imported before use.
     /// </summary>
-    public DhtMutableItems CreateMutableItems() => new(this);
-
-    /// <summary>
-    /// Create a BEP 46 mutable items handler with an existing key pair.
-    /// </summary>
-    public DhtMutableItems CreateMutableItems(byte[] privateKey, byte[] publicKey) => new(this, privateKey, publicKey);
+    public DhtMutableItems CreateMutableItems(IDhtSigner signer) => new(this, signer);
 
     public async Task StopAsync()
     {

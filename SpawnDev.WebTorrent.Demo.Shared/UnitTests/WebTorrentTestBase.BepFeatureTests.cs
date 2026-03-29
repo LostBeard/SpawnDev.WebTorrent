@@ -251,8 +251,8 @@ public abstract partial class WebTorrentTestBase
     {
         // Two different public keys should produce different targets
         var dht = new DhtDiscovery();
-        var items1 = dht.CreateMutableItems();
-        var items2 = dht.CreateMutableItems();
+        var items1 = dht.CreateMutableItems(new HmacFallbackSigner());
+        var items2 = dht.CreateMutableItems(new HmacFallbackSigner());
 
         if (items1.PublicKey.SequenceEqual(items2.PublicKey))
             throw new Exception("Different items should have different public keys");

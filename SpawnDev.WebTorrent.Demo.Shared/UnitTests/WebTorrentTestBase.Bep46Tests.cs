@@ -99,7 +99,7 @@ public abstract partial class WebTorrentTestBase
     public async Task MutableItems_PublishIncrementsSequence()
     {
         var dht = new DhtDiscovery();
-        var items = dht.CreateMutableItems();
+        var items = dht.CreateMutableItems(new HmacFallbackSigner());
 
         if (items.Sequence != 0) throw new Exception("Should start at 0");
 
@@ -119,7 +119,7 @@ public abstract partial class WebTorrentTestBase
     public async Task MutableItems_PublishInfoHash()
     {
         var dht = new DhtDiscovery();
-        var items = dht.CreateMutableItems();
+        var items = dht.CreateMutableItems(new HmacFallbackSigner());
 
         var infoHash = new byte[20];
         Random.Shared.NextBytes(infoHash);
@@ -140,7 +140,7 @@ public abstract partial class WebTorrentTestBase
     public async Task MutableItems_ValueTooLarge()
     {
         var dht = new DhtDiscovery();
-        var items = dht.CreateMutableItems();
+        var items = dht.CreateMutableItems(new HmacFallbackSigner());
 
         bool threw = false;
         try { await items.PublishAsync(new byte[1001]); }
@@ -154,7 +154,7 @@ public abstract partial class WebTorrentTestBase
     public async Task MutableItems_MaxValueSize()
     {
         var dht = new DhtDiscovery();
-        var items = dht.CreateMutableItems();
+        var items = dht.CreateMutableItems(new HmacFallbackSigner());
 
         // Exactly 1000 bytes should be OK
         try { await items.PublishAsync(new byte[1000]); } catch { }
@@ -171,7 +171,7 @@ public abstract partial class WebTorrentTestBase
     public async Task AgentChannel_Create()
     {
         var dht = new DhtDiscovery();
-        await using var channel = new AgentChannel(dht);
+        await using var channel = new AgentChannel(dht, new HmacFallbackSigner());
 
         if (channel.PublicKey == null || channel.PublicKey.Length != 32)
             throw new Exception("PublicKey should be 32 bytes");
@@ -189,7 +189,7 @@ public abstract partial class WebTorrentTestBase
     public async Task AgentChannel_PublishState()
     {
         var dht = new DhtDiscovery();
-        await using var channel = new AgentChannel(dht);
+        await using var channel = new AgentChannel(dht, new HmacFallbackSigner());
 
         // Should not crash (DHT not started, will fail silently)
         try { await channel.PublishStateAsync(new byte[] { 0x42 }); } catch { }
@@ -202,7 +202,7 @@ public abstract partial class WebTorrentTestBase
     public async Task AgentChannel_PublishTorrent()
     {
         var dht = new DhtDiscovery();
-        await using var channel = new AgentChannel(dht);
+        await using var channel = new AgentChannel(dht, new HmacFallbackSigner());
 
         var infoHash = new byte[20];
         Random.Shared.NextBytes(infoHash);
@@ -217,7 +217,7 @@ public abstract partial class WebTorrentTestBase
     public async Task AgentChannel_NamedChannels()
     {
         var dht = new DhtDiscovery();
-        await using var channel = new AgentChannel(dht);
+        await using var channel = new AgentChannel(dht, new HmacFallbackSigner());
 
         var weights = channel.Channel("weights");
         var cache = channel.Channel("kv-cache");
@@ -235,7 +235,7 @@ public abstract partial class WebTorrentTestBase
     public async Task AgentChannel_EventWiring()
     {
         var dht = new DhtDiscovery();
-        await using var channel = new AgentChannel(dht);
+        await using var channel = new AgentChannel(dht, new HmacFallbackSigner());
 
         byte[]? receivedKey = null;
         byte[]? receivedValue = null;
@@ -258,8 +258,8 @@ public abstract partial class WebTorrentTestBase
     public async Task AgentChannel_TwoAgents_DifferentKeys()
     {
         var dht = new DhtDiscovery();
-        await using var agent1 = new AgentChannel(dht);
-        await using var agent2 = new AgentChannel(dht);
+        await using var agent1 = new AgentChannel(dht, new HmacFallbackSigner());
+        await using var agent2 = new AgentChannel(dht, new HmacFallbackSigner());
 
         if (agent1.PublicKeyHex == agent2.PublicKeyHex)
             throw new Exception("Two agents should have different keys");
@@ -276,7 +276,7 @@ public abstract partial class WebTorrentTestBase
     {
         await using var client = new WebTorrentClient();
         var dht = new DhtDiscovery();
-        await using var swarm = new SwarmCompute(client, dht);
+        await using var swarm = new SwarmCompute(client, dht, new HmacFallbackSigner());
 
         if (swarm.PublicKey == null || swarm.PublicKey.Length != 32)
             throw new Exception("PublicKey should be 32 bytes");
@@ -290,7 +290,7 @@ public abstract partial class WebTorrentTestBase
     {
         await using var client = new WebTorrentClient();
         var dht = new DhtDiscovery();
-        await using var swarm = new SwarmCompute(client, dht);
+        await using var swarm = new SwarmCompute(client, dht, new HmacFallbackSigner());
 
         var taskData = System.Text.Encoding.UTF8.GetBytes("kernel:matmul;size:1024");
         var inputData = new byte[16384];
@@ -310,7 +310,7 @@ public abstract partial class WebTorrentTestBase
     {
         await using var client = new WebTorrentClient();
         var dht = new DhtDiscovery();
-        await using var swarm = new SwarmCompute(client, dht);
+        await using var swarm = new SwarmCompute(client, dht, new HmacFallbackSigner());
 
         var task = await swarm.PublishTaskAsync(System.Text.Encoding.UTF8.GetBytes("reduce:sum"));
         if (task.InputInfoHash != null) throw new Exception("No input = no hash");
@@ -322,7 +322,7 @@ public abstract partial class WebTorrentTestBase
     {
         await using var client = new WebTorrentClient();
         var dht = new DhtDiscovery();
-        await using var swarm = new SwarmCompute(client, dht);
+        await using var swarm = new SwarmCompute(client, dht, new HmacFallbackSigner());
 
         SwarmWorker? joined = null;
         swarm.OnWorkerJoined += (w) => joined = w;

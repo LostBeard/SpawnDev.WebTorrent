@@ -53,10 +53,10 @@ public class SwarmCompute : IAsyncDisposable
     /// <summary>Fired when all workers complete a task.</summary>
     public event Action<SwarmTask>? OnTaskComplete;
 
-    public SwarmCompute(WebTorrentClient torrentClient, DhtDiscovery dht)
+    public SwarmCompute(WebTorrentClient torrentClient, DhtDiscovery dht, IDhtSigner signer)
     {
         _torrentClient = torrentClient;
-        _agentChannel = new AgentChannel(dht);
+        _agentChannel = new AgentChannel(dht, signer);
 
         // Listen for worker announcements
         var workers = _agentChannel.Channel("workers");

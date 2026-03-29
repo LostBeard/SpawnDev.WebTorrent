@@ -478,7 +478,7 @@ public abstract partial class WebTorrentTestBase
     public async Task Bep46_MutableItems_Create()
     {
         var dht = new DhtDiscovery();
-        var items = dht.CreateMutableItems();
+        var items = dht.CreateMutableItems(new HmacFallbackSigner());
 
         if (items.PublicKey == null || items.PublicKey.Length != 32)
             throw new Exception($"Public key should be 32 bytes, got {items.PublicKey?.Length}");
@@ -497,9 +497,10 @@ public abstract partial class WebTorrentTestBase
         Random.Shared.NextBytes(privateKey);
         Random.Shared.NextBytes(publicKey);
 
-        var items = dht.CreateMutableItems(privateKey, publicKey);
+        var signer = new HmacFallbackSigner(privateKey, publicKey);
+        var items = dht.CreateMutableItems(signer);
 
-        if (!items.PublicKey.SequenceEqual(publicKey))
+        if (!items.PublicKey.SequenceEqual(signer.PublicKey))
             throw new Exception("Public key should match provided key");
 
         await dht.DisposeAsync();
@@ -509,7 +510,7 @@ public abstract partial class WebTorrentTestBase
     public async Task Bep46_MutableItems_SequenceIncrement()
     {
         var dht = new DhtDiscovery();
-        var items = dht.CreateMutableItems();
+        var items = dht.CreateMutableItems(new HmacFallbackSigner());
 
         // PublishAsync increments sequence
         // (won't actually send since DHT isn't started, but sequence should increment)
@@ -522,7 +523,7 @@ public abstract partial class WebTorrentTestBase
     public async Task Bep46_MutableItems_EventSubscription()
     {
         var dht = new DhtDiscovery();
-        var items = dht.CreateMutableItems();
+        var items = dht.CreateMutableItems(new HmacFallbackSigner());
 
         byte[]? receivedKey = null;
         byte[]? receivedValue = null;

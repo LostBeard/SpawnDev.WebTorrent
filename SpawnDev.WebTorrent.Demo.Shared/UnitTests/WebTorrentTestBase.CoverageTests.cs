@@ -298,7 +298,7 @@ public abstract partial class WebTorrentTestBase
     public async Task MutableItems_WithSalt()
     {
         var dht = new DhtDiscovery();
-        var items = dht.CreateMutableItems();
+        var items = dht.CreateMutableItems(new HmacFallbackSigner());
 
         // Publish with salt — should not throw
         try { await items.PublishAsync(new byte[] { 1 }, System.Text.Encoding.UTF8.GetBytes("my-channel")); }
@@ -311,7 +311,7 @@ public abstract partial class WebTorrentTestBase
     public async Task MutableItems_PublicKeyStable()
     {
         var dht = new DhtDiscovery();
-        var items = dht.CreateMutableItems();
+        var items = dht.CreateMutableItems(new HmacFallbackSigner());
 
         var key1 = items.PublicKey.ToArray();
         // Publish should not change the public key

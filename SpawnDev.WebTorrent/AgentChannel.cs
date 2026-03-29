@@ -1,4 +1,3 @@
-using SpawnDev.BlazorJS.Cryptography;
 using SpawnDev.WebTorrent.Discovery;
 
 namespace SpawnDev.WebTorrent;
@@ -14,7 +13,9 @@ namespace SpawnDev.WebTorrent;
 ///
 /// Usage:
 ///   // Desktop (DHT)
-///   var channel = new AgentChannel(dht);
+///   var signer = new EcdsaP256Signer(crypto);
+///   await signer.GenerateKeyAsync();
+///   var channel = new AgentChannel(dht, signer);
 ///
 ///   // Browser (tracker relay)
 ///   var channel = new AgentChannel(trackerClient, peerId);
@@ -32,8 +33,6 @@ public class AgentChannel : IAsyncDisposable
     private readonly byte[] _peerId;
     private readonly List<CancellationTokenSource> _subscriptions = new();
     private long _sequence;
-    private IPortableCrypto? _crypto;
-    private PortableECDSAKey? _ecdsaKey;
 
     /// <summary>This agent's public key identity (32 bytes).</summary>
     public byte[] PublicKey => _publicKey;
@@ -49,16 +48,14 @@ public class AgentChannel : IAsyncDisposable
 
     /// <summary>
     /// Create an agent channel backed by DHT (desktop — BEP 46 over UDP).
+    /// The signer must have its key generated/imported before construction.
     /// </summary>
-    public AgentChannel(DhtDiscovery dht, IPortableCrypto? crypto = null)
+    public AgentChannel(DhtDiscovery dht, IDhtSigner signer)
     {
-        _dhtItems = dht.CreateMutableItems();
+        _dhtItems = dht.CreateMutableItems(signer);
         _dhtItems.OnValueUpdated += (key, value, seq) => OnAgentUpdate?.Invoke(key, value, seq);
         _publicKey = _dhtItems.PublicKey;
         _peerId = new byte[20];
-
-        if (crypto != null)
-            _ = InitAsync(crypto);
     }
 
     /// <summary>
@@ -82,17 +79,6 @@ public class AgentChannel : IAsyncDisposable
         _publicKey = new byte[32];
         System.Security.Cryptography.RandomNumberGenerator.Fill(_publicKey);
         _peerId = new byte[20];
-    }
-
-    /// <summary>
-    /// Initialize with real cryptographic signing (works browser + desktop).
-    /// </summary>
-    public async Task InitAsync(IPortableCrypto crypto)
-    {
-        _crypto = crypto;
-        _ecdsaKey = await crypto.GenerateECDSAKey("P-256", extractable: true);
-        var pubKeyBytes = await crypto.ExportPublicKeySpki(_ecdsaKey);
-        System.Security.Cryptography.SHA256.HashData(pubKeyBytes).CopyTo(_publicKey.AsSpan());
     }
 
     /// <summary>

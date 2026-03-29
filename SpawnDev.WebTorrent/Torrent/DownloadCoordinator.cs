@@ -276,11 +276,14 @@ public class DownloadCoordinator : IDisposable
         if (_pieceManager.IsComplete)
             OnDownloadComplete?.Invoke();
 
-        // Send Have to all peers
+        // Send Have to all peers + cancel duplicate endgame requests
         ActivePeer[] peers;
         lock (_peersLock) peers = _activePeers.ToArray();
         foreach (var peer in peers)
         {
+            // Cancel outstanding requests for this completed piece (endgame cleanup)
+            peer.OutstandingRequests.RemoveAll(r => r.piece == pieceIndex);
+
             _ = peer.Wire.SendHaveAsync(pieceIndex);
         }
     }

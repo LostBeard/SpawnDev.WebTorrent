@@ -863,7 +863,7 @@
         _mediaOpen = true; _mediaLoading = false;
 
         // Use service worker streaming URL — supports range requests for seeking
-        _mediaBlobUrl = ServiceWorkerStreamHandler.GetStreamUrl(_selectedTorrent!.Swarm, file);
+        _mediaBlobUrl = file.StreamURL;
 
         StateHasChanged();
     }

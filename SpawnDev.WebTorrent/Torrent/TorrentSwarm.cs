@@ -793,6 +793,23 @@ public class TorrentFileStream
     /// <summary>Check if a piece index contains data from this file.</summary>
     public bool Includes(int pieceIndex) => pieceIndex >= _file.StartPiece && pieceIndex <= _file.EndPiece;
 
+    /// <summary>
+    /// Get the streaming URL for this file (served by the service worker).
+    /// Point a video/audio/img element's src at this URL for streaming with seeking.
+    /// Requires ServiceWorkerStreamHandler to be registered.
+    /// </summary>
+    public string StreamURL => ServiceWorkerStreamHandler.GetStreamUrl(_swarm, this);
+
+    /// <summary>
+    /// Set the src of an HTML media element to this file's streaming URL.
+    /// Supports streaming, seeking, and all browser codecs.
+    /// Requires ServiceWorkerStreamHandler to be registered.
+    /// </summary>
+    public void StreamTo(BlazorJS.JSObjects.HTMLMediaElement elem)
+    {
+        elem.Src = StreamURL;
+    }
+
     /// <summary>Get the entire file as a byte array (blocks until complete).</summary>
     public Task<byte[]> GetArrayBufferAsync(CancellationToken ct = default)
         => ReadAsync(0, (int)Length, ct);

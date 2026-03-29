@@ -206,7 +206,7 @@ public class HuggingFaceProxyOptions
     /// <summary>Tracker URLs to include in generated .torrent files.</summary>
     public string[] TrackerUrls { get; set; } = new[]
     {
-        "wss://tracker.webtorrent.dev",
+        "wss://hub.spawndev.com:44365/announce",
     };
 }
 

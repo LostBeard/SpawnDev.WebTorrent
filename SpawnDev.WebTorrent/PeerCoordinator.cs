@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using SpawnDev.WebTorrent.Discovery;
 using SpawnDev.WebTorrent.Transports;
 using SpawnDev.WebTorrent.Wire;
@@ -20,7 +21,7 @@ public class PeerCoordinator : IAsyncDisposable
     private readonly WebTorrentClient _client;
     private readonly IWebRtcTransport _webRtc;
     private readonly List<WebSocketTrackerClient> _trackers = new();
-    private readonly Dictionary<string, ConnectedPeer> _peers = new();
+    private readonly ConcurrentDictionary<string, ConnectedPeer> _peers = new();
     private readonly byte[] _infoHash;
 
     public int PeerCount => _peers.Count;
@@ -134,7 +135,7 @@ public class PeerCoordinator : IAsyncDisposable
             }
             finally
             {
-                _peers.Remove(peer.PeerId);
+                _peers.TryRemove(peer.PeerId, out _);
                 OnPeerDisconnected?.Invoke(peer);
             }
         });

@@ -61,17 +61,25 @@ public class TorrentTracker
 
     private async Task HandlePeerMessages(TrackerPeer peer)
     {
-        var buffer = new byte[4096];
+        var buffer = new byte[16384];
 
         while (peer.WebSocket.State == WebSocketState.Open)
         {
-            var result = await peer.WebSocket.ReceiveAsync(buffer, CancellationToken.None);
+            var received = new MemoryStream();
+            WebSocketReceiveResult result;
+            do
+            {
+                result = await peer.WebSocket.ReceiveAsync(buffer, CancellationToken.None);
+                if (result.MessageType == WebSocketMessageType.Close) break;
+                received.Write(buffer, 0, result.Count);
+            } while (!result.EndOfMessage);
+
             if (result.MessageType == WebSocketMessageType.Close) break;
             if (result.MessageType != WebSocketMessageType.Text) continue;
 
             try
             {
-                var json = System.Text.Encoding.UTF8.GetString(buffer, 0, result.Count);
+                var json = System.Text.Encoding.UTF8.GetString(received.GetBuffer(), 0, (int)received.Length);
                 var msg = JsonSerializer.Deserialize<TrackerMessage>(json);
                 if (msg == null) continue;
 

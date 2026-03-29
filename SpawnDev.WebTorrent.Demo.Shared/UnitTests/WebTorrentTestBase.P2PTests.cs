@@ -510,7 +510,7 @@ public abstract partial class WebTorrentTestBase
         // Try adding a tracker
         try
         {
-            await coordinator.AddTrackerAsync("wss://tracker.webtorrent.dev");
+            await coordinator.AddTrackerAsync("wss://hub.spawndev.com:44365/announce");
         }
         catch (Exception ex)
         {

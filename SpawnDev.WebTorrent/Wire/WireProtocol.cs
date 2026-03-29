@@ -227,6 +227,16 @@ public class WireProtocol : IAsyncDisposable
         await _connection.SendAsync(frame);
     }
 
+    /// <summary>Send a BEP 10 extension message (msgId=20, extId, payload).</summary>
+    public Task SendExtensionMessageAsync(int extensionId, byte[] payload)
+    {
+        var msg = new byte[2 + payload.Length];
+        msg[0] = 20; // BEP 10 extended message
+        msg[1] = (byte)extensionId;
+        Array.Copy(payload, 0, msg, 2, payload.Length);
+        return SendFramedAsync(msg);
+    }
+
     /// <summary>Send a keep-alive (4 zero bytes).</summary>
     public Task SendKeepAliveAsync()
         => _connection.SendAsync(new byte[4]);

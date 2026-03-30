@@ -100,18 +100,27 @@ public static class TorrentParser
         if (info.TryGetValue("private", out var priv) && priv is long privVal)
             metadata.IsPrivate = privVal != 0;
 
+        // Total length — parse BEFORE pieces so auto-detection can use it
+        long totalLength = 0;
+        if (info.TryGetValue("length", out var lengthVal) && lengthVal is long singleLen)
+            totalLength = singleLen;
+        else if (info.TryGetValue("files", out var filesVal) && filesVal is List<object> filesList)
+            totalLength = filesList.OfType<Dictionary<string, object>>()
+                .Sum(f => f.TryGetValue("length", out var fl) && fl is long flen ? flen : 0);
+
         // Pieces (concatenated hashes: 20 bytes each for SHA-1, 32 bytes for SHA-256)
         if (info.TryGetValue("pieces", out var pieces) && pieces is byte[] piecesBytes)
         {
-            // Auto-detect hash size: if total length is divisible by 32 but not 20,
-            // or piece count matches 32-byte hashes, use SHA-256.
-            // For ambiguous cases (divisible by both), check piece length to determine count.
+            // Auto-detect hash size from piece count match
             int hashSize = 20; // default SHA-1
             if (piecesBytes.Length % 32 == 0 && piecesBytes.Length % 20 != 0)
-                hashSize = 32;
-            else if (piecesBytes.Length % 32 == 0 && piecesBytes.Length % 20 == 0 && metadata.PieceLength > 0 && metadata.TotalLength > 0)
             {
-                int expectedCount = (int)((metadata.TotalLength + metadata.PieceLength - 1) / metadata.PieceLength);
+                hashSize = 32;
+            }
+            else if (piecesBytes.Length % 32 == 0 && piecesBytes.Length % 20 == 0
+                && metadata.PieceLength > 0 && totalLength > 0)
+            {
+                int expectedCount = (int)((totalLength + metadata.PieceLength - 1) / metadata.PieceLength);
                 if (piecesBytes.Length / 32 == expectedCount)
                     hashSize = 32;
             }

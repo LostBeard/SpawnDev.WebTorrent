@@ -159,10 +159,12 @@ public abstract partial class WebTorrentTestBase
         if (parsed.PieceHashes.Length != 4)
             throw new Exception($"Expected 4 piece hashes, got {parsed.PieceHashes.Length}");
 
-        // Verify first piece hash matches SHA1 of first 16384 bytes
-        var expectedHash = SHA1.HashData(data.AsSpan(0, 16384));
+        // Verify first piece hash matches the algorithm used (SHA-256 default, SHA-1 legacy)
+        var expectedHash = parsed.PieceHashAlgorithm == "SHA-256"
+            ? SHA256.HashData(data.AsSpan(0, 16384))
+            : SHA1.HashData(data.AsSpan(0, 16384));
         if (!parsed.PieceHashes[0].SequenceEqual(expectedHash))
-            throw new Exception("First piece hash mismatch");
+            throw new Exception($"First piece hash mismatch (algorithm={parsed.PieceHashAlgorithm})");
     }
 
     [TestMethod]

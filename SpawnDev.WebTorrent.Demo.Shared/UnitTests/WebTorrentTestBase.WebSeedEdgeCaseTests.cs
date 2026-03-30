@@ -22,7 +22,7 @@ public abstract partial class WebTorrentTestBase
         var ws = new WebSeedConnection(new HttpClient(), "https://example.com/files/", meta);
         if (!ws.IsAvailable) throw new Exception("Should be available initially");
         if (ws.FailureCount != 0) throw new Exception($"FailureCount: {ws.FailureCount}");
-        if (ws.MaxConcurrent != 4) throw new Exception($"MaxConcurrent: {ws.MaxConcurrent}");
+        if (ws.MaxConcurrent != 8) throw new Exception($"MaxConcurrent: {ws.MaxConcurrent}");
     }
 
     [TestMethod]

@@ -24,6 +24,10 @@ public abstract partial class WebTorrentTestBase
 
     private static HttpClient CreateTestHttpClient(int timeoutSeconds = 10)
     {
+        // Browser: HttpClientHandler not supported, browser handles certs
+        if (OperatingSystem.IsBrowser())
+            return new HttpClient { Timeout = TimeSpan.FromSeconds(timeoutSeconds) };
+        // Desktop: accept dev certs
         var handler = new HttpClientHandler
         {
             ServerCertificateCustomValidationCallback = (_, _, _, _) => true
@@ -33,7 +37,24 @@ public abstract partial class WebTorrentTestBase
 
     private static async Task<bool> IsServerAvailableAsync()
     {
-        // Try localhost first — probe HTTP port (no cert issues), use HTTPS for actual requests
+        // Browser: skip local server probe (mixed content blocks it), go straight to production
+        if (OperatingSystem.IsBrowser())
+        {
+            try
+            {
+                using var http = CreateTestHttpClient(5);
+                var response = await http.GetAsync(ProductionServerUrl);
+                if (response.IsSuccessStatusCode)
+                {
+                    _useProductionServer = true;
+                    return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        // Desktop: try localhost first, fall back to production
         try
         {
             using var http = CreateTestHttpClient(2);
@@ -46,7 +67,6 @@ public abstract partial class WebTorrentTestBase
         }
         catch { }
 
-        // Fall back to production server
         try
         {
             using var http = CreateTestHttpClient(5);

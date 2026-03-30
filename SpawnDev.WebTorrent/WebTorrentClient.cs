@@ -164,13 +164,14 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
             //await _asyncFs.CreateDirectory(TorrentStateDir);
             if (!await _asyncFs.DirectoryExists(TorrentStateDir)) { Console.WriteLine("[WebTorrent] RestoreTorrents: no state directory"); return; }
 
-            var files = await _asyncFs.GetFiles(TorrentStateDir);
-            foreach (var file in files)
+            var fileNames = await _asyncFs.GetFiles(TorrentStateDir);
+            foreach (var fileName in fileNames)
             {
-                if (!file.EndsWith(".torrent")) continue;
+                if (!fileName.EndsWith(".torrent")) continue;
+                var filePath = $"{TorrentStateDir}/{fileName}";
                 try
                 {
-                    var torrentBytes = await _asyncFs.ReadBytes(file);
+                    var torrentBytes = await _asyncFs.ReadBytes(filePath);
                     if (torrentBytes == null || torrentBytes.Length == 0) continue;
 
                     var metadata = Torrent.TorrentParser.Parse(torrentBytes);
@@ -185,7 +186,7 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
                 }
                 catch (Exception ex)
                 {
-                    Console.Error.WriteLine($"[WebTorrent] Failed to restore {file}: {ex.Message}");
+                    Console.Error.WriteLine($"[WebTorrent] Failed to restore {filePath}: {ex.Message}");
                 }
             }
         }

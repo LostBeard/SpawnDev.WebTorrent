@@ -17,18 +17,27 @@ public abstract partial class WebTorrentTestBase
         return _useProductionServer ? ProductionServerUrl : LocalServerUrl;
     }
 
-    private const string LocalServerUrl = "http://localhost:5561";
+    private const string LocalServerUrl = "https://localhost:5560";
+    private const string LocalServerProbeUrl = "http://localhost:5561"; // HTTP probe (cert-free)
     private const string ProductionServerUrl = "https://hub.spawndev.com:44365";
     private static bool _useProductionServer = false;
 
+    private static HttpClient CreateTestHttpClient(int timeoutSeconds = 10)
+    {
+        var handler = new HttpClientHandler
+        {
+            ServerCertificateCustomValidationCallback = (_, _, _, _) => true
+        };
+        return new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(timeoutSeconds) };
+    }
+
     private static async Task<bool> IsServerAvailableAsync()
     {
-        // Try localhost first
+        // Try localhost first — probe HTTP port (no cert issues), use HTTPS for actual requests
         try
         {
-            using var http = new HttpClient();
-            http.Timeout = TimeSpan.FromSeconds(2);
-            var response = await http.GetAsync(LocalServerUrl);
+            using var http = CreateTestHttpClient(2);
+            var response = await http.GetAsync(LocalServerProbeUrl);
             if (response.IsSuccessStatusCode)
             {
                 _useProductionServer = false;
@@ -40,8 +49,7 @@ public abstract partial class WebTorrentTestBase
         // Fall back to production server
         try
         {
-            using var http = new HttpClient();
-            http.Timeout = TimeSpan.FromSeconds(5);
+            using var http = CreateTestHttpClient(5);
             var response = await http.GetAsync(ProductionServerUrl);
             if (response.IsSuccessStatusCode)
             {

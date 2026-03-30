@@ -9,20 +9,29 @@ if (!builder.Environment.IsProduction())
     builder.WebHost.UseUrls("https://localhost:5560", "http://localhost:5561");
 
 // Enable WebSockets for tracker
-builder.Services.AddSingleton(new TorrentTracker(new TrackerOptions
-{
-    AnnounceInterval = 120,
-    MaxPeersPerAnnounce = 50,
-}));
+// Configuration from appsettings.json (falls back to defaults if not present)
+var config = builder.Configuration;
 
-builder.Services.AddSingleton(new WebSeedServer("seed-data"));
+var trackerOptions = new TrackerOptions
+{
+    AnnounceInterval = config.GetValue("Tracker:AnnounceInterval", 120),
+    MaxPeersPerAnnounce = config.GetValue("Tracker:MaxPeersPerAnnounce", 50),
+};
+builder.Services.AddSingleton(new TorrentTracker(trackerOptions));
+
+builder.Services.AddSingleton(new WebSeedServer(config.GetValue("WebSeed:Directory", "seed-data")!));
 builder.Services.AddSingleton(new ComputeRequestBoard());
 
-builder.Services.AddSingleton(new HuggingFaceProxy(new HuggingFaceProxyOptions
+var hfOptions = new HuggingFaceProxyOptions
 {
-    CacheDirectory = "hf-cache",
-    TrackerUrls = new[] { "wss://hub.spawndev.com:44365/announce" },
-}));
+    CacheDirectories = config.GetSection("HuggingFace:CacheDirectories").Get<string[]>()
+        ?? new[] { config.GetValue("HuggingFace:CacheDirectory", "hf-cache")! },
+    TrackerUrls = config.GetSection("HuggingFace:TrackerUrls").Get<string[]>()
+        ?? new[] { "wss://hub.spawndev.com:44365/announce" },
+    MaxCacheSizeBytes = config.GetValue("HuggingFace:MaxCacheSizeBytes", 0L),
+    MinFreeDiskSpaceBytes = config.GetValue("HuggingFace:MinFreeDiskSpaceBytes", 2L * 1024 * 1024 * 1024),
+};
+builder.Services.AddSingleton(new HuggingFaceProxy(hfOptions));
 
 // CORS for browser clients
 builder.Services.AddCors(options =>

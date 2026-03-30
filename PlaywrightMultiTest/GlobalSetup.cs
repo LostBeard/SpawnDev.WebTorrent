@@ -87,7 +87,10 @@ namespace PlaywrightMultiTest
             _serverProcess.BeginErrorReadLine();
 
             // Wait for the server to be ready (check HTTP port)
-            using var http = new HttpClient();
+            using var http = new HttpClient(new HttpClientHandler
+            {
+                ServerCertificateCustomValidationCallback = (_, _, _, _) => true
+            });
 
             for (int i = 0; i < 30; i++) // up to 30 seconds
             {

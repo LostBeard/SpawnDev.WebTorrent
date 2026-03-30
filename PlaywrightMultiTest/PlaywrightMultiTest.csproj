@@ -10,9 +10,9 @@
 	</PropertyGroup>
 
 	<ItemGroup>
-	  <Content Include="assets\testcert.pfx">
-	    <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-	  </Content>
+		<Content Include="assets\testcert.pfx">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Content>
 	</ItemGroup>
 
 	<ItemGroup>
@@ -24,9 +24,8 @@
 		<PackageReference Include="NUnit.Analyzers" Version="4.7.0" />
 		<PackageReference Include="NUnit3TestAdapter" Version="5.0.0" />
 		<PackageReference Include="Microsoft.CodeAnalysis" Version="4.13.0" PrivateAssets="All" />
-		<ProjectReference Include="..\..\..\SpawnDev.UnitTesting\SpawnDev.UnitTesting\SpawnDev.UnitTesting.Blazor\SpawnDev.UnitTesting.Blazor.csproj" />
 		<FrameworkReference Include="Microsoft.AspNetCore.App" />
-		
+		<PackageReference Include="SpawnDev.UnitTesting" Version="2.5.0" />
 	</ItemGroup>
 
 	<ItemGroup>
@@ -37,8 +36,8 @@
 	</ItemGroup>
 
 	<ItemGroup>
-	  <Folder Include="TestResults\" />
-	  <Folder Include="WGSLDumps\" />
+		<Folder Include="TestResults\" />
+		<Folder Include="WGSLDumps\" />
 	</ItemGroup>
 
 </Project>

@@ -8,9 +8,4 @@
   <Project Path="SpawnDev.WebTorrent.WpfDemo\SpawnDev.WebTorrent.WpfDemo.csproj" />
   <Project Path="SpawnDev.WebTorrent.TestPeer\SpawnDev.WebTorrent.TestPeer.csproj" />
   <Project Path="PlaywrightMultiTest\PlaywrightMultiTest.csproj" />
-  <Folder Name="/SpawnDev.UnitTesting/">
-    <Project Path="..\..\SpawnDev.UnitTesting\SpawnDev.UnitTesting\SpawnDev.UnitTesting\SpawnDev.UnitTesting.csproj" />
-    <Project Path="..\..\SpawnDev.UnitTesting\SpawnDev.UnitTesting\SpawnDev.UnitTesting.Blazor\SpawnDev.UnitTesting.Blazor.csproj" />
-    <Project Path="..\..\SpawnDev.UnitTesting\SpawnDev.UnitTesting\SpawnDev.UnitTesting.Desktop\SpawnDev.UnitTesting.Desktop.csproj" />
-  </Folder>
 </Solution>

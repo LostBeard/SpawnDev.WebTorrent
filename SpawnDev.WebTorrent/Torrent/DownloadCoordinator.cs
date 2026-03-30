@@ -171,16 +171,21 @@ public class DownloadCoordinator : IDisposable
 
                     // When no peers are available, proactively download via web seeds
                     bool hasPeers = peers.Any(p => !p.IsChoked);
-                    if (!hasPeers)
+                    if (!hasPeers && seeds.Length > 0)
                     {
-                        for (int i = 0; i < _pieceManager.PieceCount; i++)
+                        // Download multiple pieces concurrently from web seeds
+                        var webSeedTasks = new List<Task>();
+                        int maxConcurrent = seeds.Max(s => s.MaxConcurrent);
+                        for (int i = 0; i < _pieceManager.PieceCount && webSeedTasks.Count < maxConcurrent; i++)
                         {
                             if (!_pieceManager.Bitfield[i])
                             {
-                                await DownloadFromWebSeed(i, seeds, ct);
-                                break; // one piece per tick to stay responsive
+                                var pieceIdx = i;
+                                webSeedTasks.Add(DownloadFromWebSeed(pieceIdx, seeds, ct));
                             }
                         }
+                        if (webSeedTasks.Count > 0)
+                            await Task.WhenAll(webSeedTasks);
                     }
                     else
                     {

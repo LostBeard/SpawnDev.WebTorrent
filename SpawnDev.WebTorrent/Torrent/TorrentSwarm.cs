@@ -185,20 +185,33 @@ public class TorrentSwarm : IAsyncDisposable
     }
 
     /// <summary>Initialize from magnet URI or info hash string.</summary>
-    public Task InitializeAsync(string magnetOrInfoHash)
+    public async Task InitializeAsync(string magnetOrInfoHash)
     {
         if (magnetOrInfoHash.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase))
         {
-            var uri = new Uri(magnetOrInfoHash);
-            var query = System.Web.HttpUtility.ParseQueryString(uri.Query.Length > 0 ? uri.Query : magnetOrInfoHash.Substring(magnetOrInfoHash.IndexOf('?')));
+            var parsed = TorrentParser.ParseMagnet(magnetOrInfoHash);
+            InfoHash = parsed.InfoHash;
 
-            var xt = query["xt"];
-            if (xt != null && xt.StartsWith("urn:btih:"))
+            // If magnet has xs= (exact source), fetch full .torrent metadata from it
+            if (parsed.ExactSource != null)
             {
-                var hashStr = xt.Substring("urn:btih:".Length);
-                InfoHash = hashStr.Length == 40
-                    ? Convert.FromHexString(hashStr)
-                    : throw new ArgumentException($"Invalid info hash length: {hashStr.Length}");
+                try
+                {
+                    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+                    var torrentBytes = await http.GetByteArrayAsync(parsed.ExactSource);
+                    var fullMetadata = TorrentParser.Parse(torrentBytes);
+                    SetMetadata(fullMetadata);
+                }
+                catch (Exception ex)
+                {
+                    OnLog?.Invoke($"xs= fetch failed: {ex.Message} — will rely on peers for metadata");
+                }
+            }
+            else
+            {
+                // Store web seeds and trackers for when metadata arrives via peers
+                _pendingUrlList = parsed.UrlList;
+                _pendingTrackers = parsed.AnnounceList.SelectMany(a => a).ToArray();
             }
         }
         else if (magnetOrInfoHash.Length == 40)
@@ -209,9 +222,10 @@ public class TorrentSwarm : IAsyncDisposable
         {
             throw new ArgumentException("Expected magnet URI or 40-char hex info hash");
         }
-
-        return Task.CompletedTask;
     }
+
+    private string[]? _pendingUrlList;
+    private string[]? _pendingTrackers;
 
     /// <summary>Set metadata (from .torrent file parse or ut_metadata exchange).</summary>
     public void SetMetadata(TorrentMetadata metadata)

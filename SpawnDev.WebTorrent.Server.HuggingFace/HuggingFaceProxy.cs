@@ -275,8 +275,10 @@ public class HuggingFaceProxy
         var metadata = TorrentParser.Parse(torrentBytes);
         var trackers = string.Join("", _options.TrackerUrls.Select(t => $"&tr={Uri.EscapeDataString(t)}"));
         var webSeeds = $"&ws={Uri.EscapeDataString(BuildWebSeedUrl($"{serverBaseUrl}/hf/{repoId}", filePath))}";
+        // xs= (exact source) lets the client fetch the full .torrent directly — no peers needed for metadata
+        var exactSource = $"&xs={Uri.EscapeDataString($"{serverBaseUrl}/torrent/{repoId}/{filePath}")}";
 
-        return $"magnet:?xt=urn:btih:{metadata.InfoHashHex}&dn={Uri.EscapeDataString(metadata.Name)}{trackers}{webSeeds}";
+        return $"magnet:?xt=urn:btih:{metadata.InfoHashHex}&dn={Uri.EscapeDataString(metadata.Name)}{trackers}{webSeeds}{exactSource}";
     }
 
     /// <summary>
@@ -296,7 +298,8 @@ public class HuggingFaceProxy
             var metadata = TorrentParser.Parse(torrentBytes);
             var trackers = string.Join("", _options.TrackerUrls.Select(t => $"&tr={Uri.EscapeDataString(t)}"));
             var webSeeds = $"&ws={Uri.EscapeDataString(BuildWebSeedUrl($"{serverBaseUrl}/hf/{repoId}", filePath))}";
-            var magnetUri = $"magnet:?xt=urn:btih:{metadata.InfoHashHex}&dn={Uri.EscapeDataString(metadata.Name)}{trackers}{webSeeds}";
+            var exactSource = $"&xs={Uri.EscapeDataString($"{serverBaseUrl}/torrent/{repoId}/{filePath}")}";
+            var magnetUri = $"magnet:?xt=urn:btih:{metadata.InfoHashHex}&dn={Uri.EscapeDataString(metadata.Name)}{trackers}{webSeeds}{exactSource}";
 
             return new ModelRequestResult
             {

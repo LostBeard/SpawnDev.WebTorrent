@@ -173,10 +173,10 @@ public class DownloadCoordinator : IDisposable
                     bool hasPeers = peers.Any(p => !p.IsChoked);
                     if (!hasPeers && seeds.Length > 0)
                     {
-                        // Download multiple pieces concurrently from web seeds
+                        // Fire all missing pieces as concurrent downloads
+                        // WebSeedConnection.MaxConcurrent limits per-seed parallelism internally
                         var webSeedTasks = new List<Task>();
-                        int maxConcurrent = seeds.Max(s => s.MaxConcurrent);
-                        for (int i = 0; i < _pieceManager.PieceCount && webSeedTasks.Count < maxConcurrent; i++)
+                        for (int i = 0; i < _pieceManager.PieceCount; i++)
                         {
                             if (!_pieceManager.Bitfield[i])
                             {

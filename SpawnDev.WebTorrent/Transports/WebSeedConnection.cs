@@ -11,8 +11,9 @@ public class WebSeedConnection
 
     public bool IsAvailable { get; private set; } = true;
     public int FailureCount { get; private set; }
-    public int MaxConcurrent { get; set; } = 4;
+    public int MaxConcurrent { get; set; } = 8;
     private int _activeRequests;
+    private readonly SemaphoreSlim _concurrencyLimiter;
     private DateTime _backoffUntil = DateTime.MinValue;
 
     /// <summary>Diagnostic log event.</summary>
@@ -23,6 +24,7 @@ public class WebSeedConnection
         _httpClient = httpClient;
         _baseUrl = baseUrl.TrimEnd('/');
         _metadata = metadata;
+        _concurrencyLimiter = new SemaphoreSlim(MaxConcurrent, MaxConcurrent);
     }
 
     public async Task<byte[]?> DownloadPieceAsync(int pieceIndex, CancellationToken ct = default)
@@ -35,11 +37,11 @@ public class WebSeedConnection
             OnLog?.Invoke("Web seed recovered from backoff");
         }
 
-        if (!IsAvailable || _activeRequests >= MaxConcurrent) return null;
+        if (!IsAvailable) return null;
 
+        await _concurrencyLimiter.WaitAsync(ct);
         try
         {
-            Interlocked.Increment(ref _activeRequests);
 
             long pieceStart = (long)pieceIndex * _metadata.PieceLength;
             int pieceLength = (pieceIndex == _metadata.PieceCount - 1)
@@ -149,7 +151,7 @@ public class WebSeedConnection
         }
         finally
         {
-            Interlocked.Decrement(ref _activeRequests);
+            _concurrencyLimiter.Release();
         }
     }
 

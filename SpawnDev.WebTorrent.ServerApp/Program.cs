@@ -42,7 +42,7 @@ app.UseCors();
 app.MapGet("/", () => new
 {
     name = "SpawnDev.WebTorrent.Server",
-    version = "2.0.0-rc1",
+    version = "2.0.0-rc2",
     endpoints = new
     {
         tracker = "/announce (WebSocket)",

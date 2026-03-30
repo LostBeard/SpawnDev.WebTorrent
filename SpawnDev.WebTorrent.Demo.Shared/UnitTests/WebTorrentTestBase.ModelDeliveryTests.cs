@@ -377,4 +377,176 @@ public abstract partial class WebTorrentTestBase
             await client.RemoveAsync(swarm, destroyStore: true);
         }
     }
+
+    [TestMethod(Timeout = 120000)]
+    public async Task ModelDelivery_AddPaused_NoDownloadUntilAccess()
+    {
+        if (!await IsServerAvailableAsync())
+            throw new UnsupportedTestException("Server not available");
+
+        var serverUrl = GetTestServerUrl();
+        using var http = CreateTestHttpClient(30);
+
+        var torrentBytes = await http.GetByteArrayAsync(
+            $"{serverUrl}/torrent/Xenova/distilgpt2/tokenizer.json");
+        var metadata = TorrentParser.Parse(torrentBytes);
+
+        // Add torrent PAUSED — should not download anything
+        var client = GetOrCreateClient();
+        var swarm = await client.AddAsync(metadata, new AddTorrentOptions { Paused = true });
+        try
+        {
+            // Verify it's paused
+            if (!swarm.Paused)
+                throw new Exception("Torrent should be paused");
+
+            // Metadata and files should be available even when paused
+            if (swarm.Files.Length == 0)
+                throw new Exception("Files should be available when paused");
+
+            // No pieces should be downloaded
+            await Task.Delay(500); // give it a moment to NOT download
+            int downloadedPieces = swarm.Bitfield?.Count(b => b) ?? 0;
+            if (downloadedPieces > 0)
+                throw new Exception($"Paused torrent downloaded {downloadedPieces} pieces — should be 0");
+
+            Console.WriteLine($"[ModelDelivery] Added paused: {metadata.Name}, {swarm.Files.Length} files, 0 pieces downloaded — correct");
+        }
+        finally
+        {
+            await client.RemoveAsync(swarm, destroyStore: true);
+        }
+    }
+
+    [TestMethod(Timeout = 120000)]
+    public async Task ModelDelivery_PausedAutoResumes_OnRead()
+    {
+        if (!await IsServerAvailableAsync())
+            throw new UnsupportedTestException("Server not available");
+
+        var serverUrl = GetTestServerUrl();
+        using var http = CreateTestHttpClient(30);
+
+        var torrentBytes = await http.GetByteArrayAsync(
+            $"{serverUrl}/torrent/Xenova/distilgpt2/tokenizer.json");
+        var metadata = TorrentParser.Parse(torrentBytes);
+
+        // Add torrent PAUSED
+        var client = GetOrCreateClient();
+        var swarm = await client.AddAsync(metadata, new AddTorrentOptions { Paused = true });
+        try
+        {
+            if (!swarm.Paused)
+                throw new Exception("Should start paused");
+
+            // Start download coordinator (needed for web seed downloads)
+            // but keep the swarm paused
+            swarm.StartDownload();
+            swarm.Pause();
+
+            // Now read from the file — should auto-resume and fetch the needed piece
+            var file = swarm.Files[0];
+            var data = await file.ReadAsync(0, 64);
+
+            // Should have auto-resumed
+            if (swarm.Paused)
+                throw new Exception("Should have auto-resumed when reading missing piece");
+
+            if (data.Length != 64)
+                throw new Exception($"Expected 64 bytes, got {data.Length}");
+
+            // Verify data matches direct HTTP download
+            var directData = await http.GetByteArrayAsync(
+                $"{serverUrl}/hf/Xenova/distilgpt2/tokenizer.json");
+
+            for (int i = 0; i < 64; i++)
+            {
+                if (data[i] != directData[i])
+                    throw new Exception($"Data mismatch at byte {i}: torrent={data[i]:X2} direct={directData[i]:X2}");
+            }
+
+            Console.WriteLine($"[ModelDelivery] Paused auto-resume: read 64 bytes, verified against direct HTTP — correct");
+        }
+        finally
+        {
+            await client.RemoveAsync(swarm, destroyStore: true);
+        }
+    }
+
+    [TestMethod(Timeout = 120000)]
+    public async Task ModelDelivery_AddPaused_BrowseContents()
+    {
+        if (!await IsServerAvailableAsync())
+            throw new UnsupportedTestException("Server not available");
+
+        var serverUrl = GetTestServerUrl();
+        using var http = CreateTestHttpClient(30);
+
+        var torrentBytes = await http.GetByteArrayAsync(
+            $"{serverUrl}/torrent/Xenova/distilgpt2/tokenizer.json");
+        var metadata = TorrentParser.Parse(torrentBytes);
+
+        var client = GetOrCreateClient();
+        var swarm = await client.AddAsync(metadata, new AddTorrentOptions { Paused = true });
+        try
+        {
+            // Should be able to browse torrent contents without downloading
+            if (!swarm.HasMetadata)
+                throw new Exception("Metadata should be available");
+            if (string.IsNullOrEmpty(swarm.Metadata?.Name))
+                throw new Exception("Name should be available");
+            if (swarm.Files.Length == 0)
+                throw new Exception("Files should be browseable");
+
+            var file = swarm.Files[0];
+            if (file.Length == 0)
+                throw new Exception("File length should be known");
+            if (string.IsNullOrEmpty(file.Name))
+                throw new Exception("File name should be known");
+
+            // Progress should be 0
+            if (file.Progress != 0)
+                throw new Exception($"Progress should be 0, got {file.Progress}");
+
+            Console.WriteLine($"[ModelDelivery] Browse paused: name={swarm.Metadata!.Name}, " +
+                $"file={file.Name}, size={file.Length:N0}, progress={file.Progress:P0} — all available without downloading");
+        }
+        finally
+        {
+            await client.RemoveAsync(swarm, destroyStore: true);
+        }
+    }
+
+    [TestMethod(Timeout = 60000)]
+    public async Task ModelDelivery_CreateFromUrl_AddsWebSeed()
+    {
+        // Test CreateFromUrlAsync with a small file
+        if (!await IsServerAvailableAsync())
+            throw new UnsupportedTestException("Server not available");
+
+        var serverUrl = GetTestServerUrl();
+        var fileUrl = $"{serverUrl}/hf/Xenova/distilgpt2/tokenizer.json";
+
+        var (torrentBytes, metadata) = await TorrentCreator.CreateFromUrlAsync(fileUrl,
+            new TorrentCreatorOptions { Trackers = new[] { "wss://hub.spawndev.com:44365/announce" } });
+
+        if (metadata.PieceHashes.Length == 0)
+            throw new Exception("No piece hashes");
+        if (metadata.TotalLength == 0)
+            throw new Exception("TotalLength is 0");
+        if (metadata.PieceHashAlgorithm != "SHA-256")
+            throw new Exception($"Expected SHA-256, got {metadata.PieceHashAlgorithm}");
+
+        // Verify the original URL was added as a web seed
+        if (metadata.UrlList.Length == 0)
+            throw new Exception("No web seeds — original URL should be added");
+
+        // Parse round-trip
+        var parsed = TorrentParser.Parse(torrentBytes);
+        if (parsed.PieceHashes.Length != metadata.PieceHashes.Length)
+            throw new Exception("Round-trip piece count mismatch");
+
+        Console.WriteLine($"[ModelDelivery] CreateFromUrl: {metadata.Name}, {metadata.TotalLength:N0} bytes, " +
+            $"{metadata.PieceHashes.Length} pieces, {metadata.UrlList.Length} web seeds, algorithm={metadata.PieceHashAlgorithm}");
+    }
 }

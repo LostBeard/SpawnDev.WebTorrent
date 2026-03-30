@@ -9,9 +9,10 @@ namespace SpawnDev.WebTorrent.Demo.UnitTests;
 /// </summary>
 public class BrowserTests : WebTorrentTestBase
 {
-    public BrowserTests(BlazorJSRuntime js, WebTorrentClient client)
+    public BrowserTests(BlazorJSRuntime js, WebTorrentClient client, SpawnDev.AsyncFileSystem.IAsyncFS asyncFs)
     {
         JS = js;
         Client = client;
+        AsyncFs = asyncFs;
     }
 }

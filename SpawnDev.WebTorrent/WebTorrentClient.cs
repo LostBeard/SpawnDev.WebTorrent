@@ -105,6 +105,7 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
 
     private async Task InitAsync()
     {
+        if (_asyncFs is  IAsyncBackgroundService asyncBackgroundService) await asyncBackgroundService.Ready;
         // Register to handle SW streaming requests for our torrents
         if (StreamHandler != null)
         {
@@ -160,6 +161,7 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
         if (_asyncFs == null) { Console.WriteLine("[WebTorrent] RestoreTorrents skipped: _asyncFs is null"); return; }
         try
         {
+            //await _asyncFs.CreateDirectory(TorrentStateDir);
             if (!await _asyncFs.DirectoryExists(TorrentStateDir)) { Console.WriteLine("[WebTorrent] RestoreTorrents: no state directory"); return; }
 
             var files = await _asyncFs.GetFiles(TorrentStateDir);
@@ -285,7 +287,11 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
 
     private void WireSwarmEvents(TorrentSwarm swarm)
     {
-        swarm.OnReady += () => OnTorrentReady?.Invoke(swarm);
+        swarm.OnReady += () =>
+        {
+            OnTorrentReady?.Invoke(swarm);
+            _ = SaveTorrentStateAsync(swarm);
+        };
         swarm.OnDone += () => OnTorrentDone?.Invoke(swarm);
         swarm.OnError += (ex) => OnError?.Invoke(ex);
     }

@@ -23,10 +23,13 @@ public abstract partial class WebTorrentTestBase
 
     /// <summary>
     /// DI singleton WebTorrentClient. Available in browser tests.
-    /// Use this instead of creating new WebTorrentClient() for tests that need
-    /// the service worker stream handler.
     /// </summary>
     protected WebTorrentClient? Client { get; set; }
+
+    /// <summary>
+    /// DI singleton IAsyncFS (OPFS in browser). Available in browser tests.
+    /// </summary>
+    protected SpawnDev.AsyncFileSystem.IAsyncFS? AsyncFs { get; set; }
 
     /// <summary>
     /// Creates the platform-appropriate IPortableCrypto implementation.

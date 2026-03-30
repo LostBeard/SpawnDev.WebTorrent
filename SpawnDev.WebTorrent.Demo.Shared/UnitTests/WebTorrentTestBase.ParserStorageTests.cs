@@ -1063,6 +1063,73 @@ public abstract partial class WebTorrentTestBase
     // ═══════════════════════════════════════════════════════════
 
     [TestMethod]
+    public async Task Persistence_SaveAndRestore()
+    {
+        if (!OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("Requires browser");
+        if (Client == null || AsyncFs == null)
+            throw new UnsupportedTestException("Requires DI WebTorrentClient + IAsyncFS");
+
+        // Seed a torrent via the DI singleton
+        var data = new byte[16384];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 199);
+        var swarm = await Client.SeedAsync(data, "persist-test.bin",
+            new TorrentCreatorOptions { PieceLength = 16384 });
+        var hash = swarm.InfoHashHex;
+
+        // Verify state file was saved to OPFS
+        var statePath = $"webtorrent/_state/{hash}.torrent";
+        var exists = await AsyncFs.FileExists(statePath);
+        if (!exists)
+            throw new Exception($"State file not saved: {statePath}");
+
+        var stateBytes = await AsyncFs.ReadBytes(statePath);
+        if (stateBytes == null || stateBytes.Length == 0)
+            throw new Exception("State file is empty");
+
+        // Verify we can parse it back
+        var restored = Torrent.TorrentParser.Parse(stateBytes);
+        if (restored.InfoHashHex != hash)
+            throw new Exception($"Restored hash mismatch: {restored.InfoHashHex} != {hash}");
+
+        // Clean up
+        await Client.RemoveAsync(swarm);
+
+        // Verify state file was removed
+        var existsAfter = await AsyncFs.FileExists(statePath);
+        if (existsAfter)
+            throw new Exception("State file should be removed after RemoveAsync");
+
+        // Now save a NEW torrent and verify it would be found by RestoreTorrentsAsync
+        var data2 = new byte[16384];
+        for (int i = 0; i < data2.Length; i++) data2[i] = (byte)(i % 173);
+        var swarm2 = await Client.SeedAsync(data2, "persist-test2.bin",
+            new TorrentCreatorOptions { PieceLength = 16384 });
+        var hash2 = swarm2.InfoHashHex;
+
+        // Verify state directory has the file
+        var files = await AsyncFs.GetFiles("webtorrent/_state");
+        var hasFile = files.Any(f => f.Contains(hash2));
+        if (!hasFile)
+            throw new Exception($"State file for {hash2[..8]} not found in _state directory. Files: {string.Join(", ", files)}");
+
+        await Client.RemoveAsync(swarm2);
+
+        Console.WriteLine($"[Persistence] Save/restore cycle verified: {hash[..8]}...");
+    }
+
+    [TestMethod]
+    public async Task Persistence_AsyncFsInjected()
+    {
+        if (!OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("Requires browser");
+        if (AsyncFs == null)
+            throw new Exception("IAsyncFS not available via DI");
+
+        Console.WriteLine($"[Persistence] IAsyncFS injected: {AsyncFs.GetType().Name}");
+    }
+
+    [TestMethod]
     public async Task ServiceWorker_HealthCheck()
     {
         if (!OperatingSystem.IsBrowser())

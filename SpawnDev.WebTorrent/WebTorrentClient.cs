@@ -116,14 +116,20 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
         await RestoreTorrentsAsync();
     }
 
-    /// <summary>Save a torrent's .torrent bytes so it persists across page reloads.</summary>
-    private async Task SaveTorrentStateAsync(TorrentSwarm swarm)
+    /// <summary>Persisted torrent state (saved alongside .torrent bytes).</summary>
+    private class TorrentState
     {
-        if (_asyncFs == null) { Console.WriteLine("[WebTorrent] SaveTorrentState skipped: _asyncFs is null"); return; }
-        if (!swarm.HasMetadata) { Console.WriteLine("[WebTorrent] SaveTorrentState skipped: no metadata"); return; }
+        public bool Paused { get; set; }
+    }
+
+    /// <summary>Save torrent bytes + operational state to OPFS.</summary>
+    internal async Task SaveTorrentStateAsync(TorrentSwarm swarm)
+    {
+        if (_asyncFs == null) return;
+        if (!swarm.HasMetadata) return;
         try
         {
-            var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
+            var hash = swarm.InfoHashHex;
             var torrentBytes = swarm.Metadata!.OriginalTorrentBytes;
             if (torrentBytes == null || torrentBytes.Length == 0) return;
 
@@ -131,6 +137,10 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
                 await _asyncFs.CreateDirectory(TorrentStateDir);
 
             await _asyncFs.Write($"{TorrentStateDir}/{hash}.torrent", torrentBytes);
+
+            var state = new TorrentState { Paused = swarm.Paused };
+            var stateJson = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(state);
+            await _asyncFs.Write($"{TorrentStateDir}/{hash}.json", stateJson);
         }
         catch (Exception ex)
         {
@@ -144,10 +154,11 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
         if (_asyncFs == null) return;
         try
         {
-            var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
-            var path = $"{TorrentStateDir}/{hash}.torrent";
-            if (await _asyncFs.FileExists(path))
-                await _asyncFs.Remove(path);
+            var hash = swarm.InfoHashHex;
+            var torrentPath = $"{TorrentStateDir}/{hash}.torrent";
+            var statePath = $"{TorrentStateDir}/{hash}.json";
+            if (await _asyncFs.FileExists(torrentPath)) await _asyncFs.Remove(torrentPath);
+            if (await _asyncFs.FileExists(statePath)) await _asyncFs.Remove(statePath);
         }
         catch (Exception ex)
         {
@@ -181,17 +192,29 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
                     if (_torrents.Any(t => Convert.ToHexString(t.InfoHash).ToLowerInvariant() == hash))
                         continue;
 
+                    // Read operational state if available
+                    var stateJsonPath = $"{TorrentStateDir}/{hash}.json";
+                    TorrentState? state = null;
+                    if (await _asyncFs.FileExists(stateJsonPath))
+                    {
+                        try
+                        {
+                            var stateBytes = await _asyncFs.ReadBytes(stateJsonPath);
+                            if (stateBytes != null && stateBytes.Length > 0)
+                                state = System.Text.Json.JsonSerializer.Deserialize<TorrentState>(stateBytes);
+                        }
+                        catch { }
+                    }
+
                     var swarm = await AddAsync(metadata, new AddTorrentOptions { AsyncFileSystem = _asyncFs });
 
-                    // Restore web seeds from metadata
-                    foreach (var ws in metadata.UrlList)
-                        swarm.AddWebSeed(ws.TrimEnd('/'));
-
-                    // Resume download if not complete
-                    if (!swarm.Done)
+                    // Apply saved state
+                    if (state?.Paused == true)
+                        swarm.Pause();
+                    else if (!swarm.Done)
                         swarm.StartDownload();
 
-                    Console.WriteLine($"[WebTorrent] Restored: {metadata.Name} ({hash[..8]}...) progress={swarm.Progress:P0}");
+                    Console.WriteLine($"[WebTorrent] Restored: {metadata.Name} ({hash[..8]}...) progress={swarm.Progress:P0} paused={swarm.Paused}");
                 }
                 catch (Exception ex)
                 {
@@ -302,6 +325,7 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
             OnTorrentReady?.Invoke(swarm);
             _ = SaveTorrentStateAsync(swarm);
         };
+        swarm.OnStateChanged += () => _ = SaveTorrentStateAsync(swarm);
         swarm.OnDone += () => OnTorrentDone?.Invoke(swarm);
         swarm.OnError += (ex) => OnError?.Invoke(ex);
     }

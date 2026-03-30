@@ -697,6 +697,7 @@ public class TorrentSwarm : IAsyncDisposable
     {
         Paused = true;
         _coordinator?.Stop();
+        OnStateChanged?.Invoke();
     }
 
     /// <summary>Resume — allow connecting to new peers and restart download.</summary>
@@ -705,7 +706,11 @@ public class TorrentSwarm : IAsyncDisposable
         Paused = false;
         if (HasMetadata && _coordinator != null)
             _coordinator.Start();
+        OnStateChanged?.Invoke();
     }
+
+    /// <summary>Fired when paused/resumed or other operational state changes that should be persisted.</summary>
+    public event Action? OnStateChanged;
 
     /// <summary>Prioritize a range of pieces.</summary>
     public void Select(int startPiece, int endPiece, int priority = 1)

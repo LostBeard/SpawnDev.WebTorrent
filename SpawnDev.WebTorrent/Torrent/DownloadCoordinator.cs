@@ -16,6 +16,7 @@ public class DownloadCoordinator : IDisposable
     private readonly PieceManager _pieceManager;
     private readonly TorrentMetadata _metadata;
     private readonly List<WebSeedConnection> _webSeeds = new();
+    private Task? _bulkDownloadTask;
     private readonly List<ActivePeer> _activePeers = new();
     private readonly object _peersLock = new();
     private readonly object _seedsLock = new();
@@ -169,11 +170,20 @@ public class DownloadCoordinator : IDisposable
                             await DownloadFromWebSeed(priorityPiece, seeds, ct);
                     }
 
-                    // When no peers are available, download via web seeds in bulk
+                    // When no peers are available, start background bulk stream + serve priority pieces
                     bool hasPeers = peers.Any(p => !p.IsChoked);
                     if (!hasPeers && seeds.Length > 0)
                     {
-                        await DownloadBulkFromWebSeed(seeds, ct);
+                        // Start bulk stream in background (fills cache sequentially)
+                        if (_bulkDownloadTask == null || _bulkDownloadTask.IsCompleted)
+                            _bulkDownloadTask = DownloadBulkFromWebSeed(seeds, ct);
+
+                        // Serve any priority pieces via individual range requests (seeking)
+                        foreach (var priorityPiece in _priorityPieces.ToArray())
+                        {
+                            if (!_pieceManager.Bitfield[priorityPiece])
+                                await DownloadFromWebSeed(priorityPiece, seeds, ct);
+                        }
                     }
                     else
                     {

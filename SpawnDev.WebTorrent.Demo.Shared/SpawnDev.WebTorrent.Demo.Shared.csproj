@@ -7,9 +7,12 @@
 	</PropertyGroup>
 
 	<ItemGroup>
+		<PackageReference Include="SpawnDev.UnitTesting.Blazor" Version="2.5.0" />
+	</ItemGroup>
+
+	<ItemGroup>
 		<ProjectReference Include="..\SpawnDev.WebTorrent\SpawnDev.WebTorrent.csproj" />
 		<ProjectReference Include="..\SpawnDev.WebTorrent.Server\SpawnDev.WebTorrent.Server.csproj" />
-		<ProjectReference Include="..\..\..\SpawnDev.UnitTesting\SpawnDev.UnitTesting\SpawnDev.UnitTesting.Blazor\SpawnDev.UnitTesting.Blazor.csproj" />
 	</ItemGroup>
 
 </Project>

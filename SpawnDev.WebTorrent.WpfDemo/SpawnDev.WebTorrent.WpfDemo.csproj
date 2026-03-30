@@ -10,9 +10,12 @@
 	</PropertyGroup>
 
 	<ItemGroup>
+		<PackageReference Include="SpawnDev.UnitTesting.Desktop" Version="2.5.0" />
+	</ItemGroup>
+
+	<ItemGroup>
 		<ProjectReference Include="..\SpawnDev.WebTorrent\SpawnDev.WebTorrent.csproj" />
 		<ProjectReference Include="..\SpawnDev.WebTorrent.Demo.Shared\SpawnDev.WebTorrent.Demo.Shared.csproj" />
-		<ProjectReference Include="..\..\..\SpawnDev.UnitTesting\SpawnDev.UnitTesting\SpawnDev.UnitTesting.Desktop\SpawnDev.UnitTesting.Desktop.csproj" />
 	</ItemGroup>
 
 </Project>

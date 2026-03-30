@@ -169,23 +169,11 @@ public class DownloadCoordinator : IDisposable
                             await DownloadFromWebSeed(priorityPiece, seeds, ct);
                     }
 
-                    // When no peers are available, proactively download via web seeds
+                    // When no peers are available, download via web seeds in bulk
                     bool hasPeers = peers.Any(p => !p.IsChoked);
                     if (!hasPeers && seeds.Length > 0)
                     {
-                        // Fire all missing pieces as concurrent downloads
-                        // WebSeedConnection.MaxConcurrent limits per-seed parallelism internally
-                        var webSeedTasks = new List<Task>();
-                        for (int i = 0; i < _pieceManager.PieceCount; i++)
-                        {
-                            if (!_pieceManager.Bitfield[i])
-                            {
-                                var pieceIdx = i;
-                                webSeedTasks.Add(DownloadFromWebSeed(pieceIdx, seeds, ct));
-                            }
-                        }
-                        if (webSeedTasks.Count > 0)
-                            await Task.WhenAll(webSeedTasks);
+                        await DownloadBulkFromWebSeed(seeds, ct);
                     }
                     else
                     {
@@ -240,6 +228,65 @@ public class DownloadCoordinator : IDisposable
 
             peer.OutstandingRequests.Add((pieceIndex, offset, length));
             await peer.Wire.SendRequestAsync(pieceIndex, offset, length);
+        }
+    }
+
+    /// <summary>
+    /// Download all missing pieces via web seed in large bulk requests.
+    /// Groups consecutive missing pieces into chunks (~4MB each) and downloads
+    /// each chunk in a single HTTP range request, then splits into pieces and
+    /// verifies SHA-1 hashes locally. Minimizes HTTP request count.
+    /// </summary>
+    private async Task DownloadBulkFromWebSeed(WebSeedConnection[] seeds, CancellationToken ct)
+    {
+        // Find runs of consecutive missing pieces
+        int i = 0;
+        while (i < _pieceManager.PieceCount && !ct.IsCancellationRequested)
+        {
+            // Skip completed pieces
+            if (_pieceManager.Bitfield[i]) { i++; continue; }
+
+            // Find end of consecutive missing run
+            int runStart = i;
+            int maxPiecesPerRequest = 16; // ~4MB per request at 256KB pieces
+            while (i < _pieceManager.PieceCount && !_pieceManager.Bitfield[i]
+                && (i - runStart) < maxPiecesPerRequest)
+                i++;
+            int runEnd = i; // exclusive
+            int runCount = runEnd - runStart;
+
+            // Download the entire run in one HTTP request
+            long byteStart = (long)runStart * _metadata.PieceLength;
+            long byteEnd = runEnd < _metadata.PieceCount
+                ? (long)runEnd * _metadata.PieceLength - 1
+                : _metadata.TotalLength - 1;
+
+            byte[]? bulkData = null;
+            foreach (var seed in seeds)
+            {
+                if (!seed.IsAvailable) continue;
+                bulkData = await seed.DownloadRangeAsync(
+                    _metadata.Files.Length == 1 ? _metadata.Name : _metadata.Files[0].Path,
+                    byteStart, byteEnd, ct);
+                if (bulkData != null) break;
+            }
+
+            if (bulkData == null) continue;
+
+            // Split into individual pieces and verify each
+            for (int p = runStart; p < runEnd; p++)
+            {
+                int offsetInBulk = (p - runStart) * _metadata.PieceLength;
+                int pieceLen = (p == _metadata.PieceCount - 1)
+                    ? (int)(_metadata.TotalLength - (long)p * _metadata.PieceLength)
+                    : _metadata.PieceLength;
+
+                if (offsetInBulk + pieceLen > bulkData.Length) break;
+
+                var pieceData = new byte[pieceLen];
+                Array.Copy(bulkData, offsetInBulk, pieceData, 0, pieceLen);
+                await _pieceManager.ReceiveCompletePieceAsync(p, pieceData);
+            }
         }
     }
 

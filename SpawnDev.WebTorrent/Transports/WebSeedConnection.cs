@@ -7,6 +7,7 @@ public class WebSeedConnection
 {
     private readonly HttpClient _httpClient;
     private readonly string _baseUrl;
+    public string BaseUrl => _baseUrl;
     private readonly Torrent.TorrentMetadata _metadata;
 
     public bool IsAvailable { get; private set; } = true;

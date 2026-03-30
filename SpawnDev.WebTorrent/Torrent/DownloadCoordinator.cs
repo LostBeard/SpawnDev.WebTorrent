@@ -240,35 +240,15 @@ public class DownloadCoordinator : IDisposable
     {
         if (_metadata.Files.Length == 1)
         {
-            // Single file — one HTTP request for the whole thing
+            // Single file — stream download, verify each piece as it arrives
             var fileName = _metadata.Files[0].Path.Contains('/')
                 ? _metadata.Files[0].Path : _metadata.Name;
 
-            byte[]? fileData = null;
             foreach (var seed in seeds)
             {
                 if (!seed.IsAvailable) continue;
-                fileData = await seed.DownloadRangeAsync(fileName, 0, _metadata.TotalLength - 1, ct);
-                if (fileData != null) break;
-            }
-
-            if (fileData == null) return;
-
-            // Split into pieces and verify SHA-1 locally
-            for (int p = 0; p < _metadata.PieceCount; p++)
-            {
-                if (_pieceManager.Bitfield[p]) continue; // already have it
-
-                int offset = p * _metadata.PieceLength;
-                int pieceLen = (p == _metadata.PieceCount - 1)
-                    ? (int)(_metadata.TotalLength - (long)p * _metadata.PieceLength)
-                    : _metadata.PieceLength;
-
-                if (offset + pieceLen > fileData.Length) break;
-
-                var pieceData = new byte[pieceLen];
-                Array.Copy(fileData, offset, pieceData, 0, pieceLen);
-                await _pieceManager.ReceiveCompletePieceAsync(p, pieceData);
+                if (await StreamDownloadAndVerify(seed, fileName, ct))
+                    return; // success
             }
         }
         else
@@ -281,6 +261,67 @@ public class DownloadCoordinator : IDisposable
                     await DownloadFromWebSeed(i, seeds, ct);
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Stream a single-file download, verifying each piece as its bytes arrive.
+    /// No buffering the entire file — reads pieceLength bytes at a time from the HTTP stream.
+    /// </summary>
+    private async Task<bool> StreamDownloadAndVerify(WebSeedConnection seed, string fileName, CancellationToken ct)
+    {
+        try
+        {
+            var url = $"{seed.BaseUrl}/{fileName}";
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+
+            if (!response.IsSuccessStatusCode) return false;
+
+            using var stream = await response.Content.ReadAsStreamAsync(ct);
+
+            for (int p = 0; p < _metadata.PieceCount; p++)
+            {
+                int pieceLen = (p == _metadata.PieceCount - 1)
+                    ? (int)(_metadata.TotalLength - (long)p * _metadata.PieceLength)
+                    : _metadata.PieceLength;
+
+                if (_pieceManager.Bitfield[p])
+                {
+                    // Already have this piece — skip its bytes in the stream
+                    int skipped = 0;
+                    var skipBuf = new byte[Math.Min(pieceLen, 65536)];
+                    while (skipped < pieceLen)
+                    {
+                        int toSkip = Math.Min(skipBuf.Length, pieceLen - skipped);
+                        int read = await stream.ReadAsync(skipBuf.AsMemory(0, toSkip), ct);
+                        if (read == 0) return false;
+                        skipped += read;
+                    }
+                    continue;
+                }
+
+                // Read exactly one piece worth of bytes
+                var pieceData = new byte[pieceLen];
+                int filled = 0;
+                while (filled < pieceLen)
+                {
+                    int read = await stream.ReadAsync(pieceData.AsMemory(filled, pieceLen - filled), ct);
+                    if (read == 0) return false; // unexpected end of stream
+                    filled += read;
+                }
+
+                // Verify and store immediately — don't wait for the rest of the file
+                await _pieceManager.ReceiveCompletePieceAsync(p, pieceData);
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            OnLog?.Invoke($"Stream download failed: {ex.Message}");
+            return false;
         }
     }
 

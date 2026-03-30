@@ -229,14 +229,81 @@ public class TorrentSwarm : IAsyncDisposable
         // Create file stream abstractions
         Files = metadata.Files.Select(f => new TorrentFileStream(this, f, _store)).ToArray();
 
+        // Add web seeds from metadata
+        foreach (var ws in metadata.UrlList)
+            AddWebSeed(ws.TrimEnd('/'));
+
         // Add any already-connected peers to the coordinator
         foreach (var peer in _peers)
         {
             _coordinator.AddPeer(peer.Wire, peer.PeerBitfield);
         }
 
+        // Auto-connect to trackers from metadata
+        _ = ConnectTrackersFromMetadataAsync();
+
         OnMetadata?.Invoke();
         OnReady?.Invoke();
+    }
+
+    /// <summary>
+    /// Connect to all trackers listed in the torrent metadata.
+    /// Creates PeerCoordinator + WebRtcTransport for WebSocket trackers.
+    /// </summary>
+    private async Task ConnectTrackersFromMetadataAsync()
+    {
+        if (Metadata == null) return;
+
+        var wsTrackers = new List<string>();
+        var httpTrackers = new List<string>();
+
+        foreach (var tier in Metadata.AnnounceList)
+        {
+            foreach (var url in tier)
+            {
+                if (url.StartsWith("wss://") || url.StartsWith("ws://")) wsTrackers.Add(url);
+                else if (url.StartsWith("http://") || url.StartsWith("https://")) httpTrackers.Add(url);
+            }
+        }
+
+        // WebSocket trackers — need WebRTC transport for browser P2P
+        if (wsTrackers.Count > 0 && OperatingSystem.IsBrowser())
+        {
+            try
+            {
+                var webRtc = new Transports.WebRtcTransport();
+                var coordinator = new PeerCoordinator(_client, InfoHash, webRtc);
+                coordinator.OnPeerConnected += (peer) =>
+                {
+                    _ = AddConnectedPeerAsync(peer.Wire, new PeerInfo { Address = peer.PeerId, Source = "webrtc" });
+                };
+
+                foreach (var url in wsTrackers)
+                {
+                    try { await coordinator.AddTrackerAsync(url); }
+                    catch (Exception ex) { OnLog?.Invoke($"Tracker {url} failed: {ex.Message}"); }
+                }
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"WebRTC tracker setup failed: {ex.Message}");
+            }
+        }
+
+        // HTTP trackers — peer discovery (desktop)
+        foreach (var url in httpTrackers)
+        {
+            try
+            {
+                var tracker = new Discovery.HttpTrackerClient(url, _client.PeerId);
+                tracker.OnPeer += (peer) => AddPeer(peer);
+                await tracker.StartAsync(InfoHash, 0);
+            }
+            catch (Exception ex)
+            {
+                OnLog?.Invoke($"HTTP tracker {url} failed: {ex.Message}");
+            }
+        }
     }
 
     /// <summary>Add a discovered peer and initiate connection.</summary>

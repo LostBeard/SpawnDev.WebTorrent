@@ -182,7 +182,16 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
                         continue;
 
                     var swarm = await AddAsync(metadata, new AddTorrentOptions { AsyncFileSystem = _asyncFs });
-                    Console.WriteLine($"[WebTorrent] Restored: {metadata.Name} ({hash[..8]}...)");
+
+                    // Restore web seeds from metadata
+                    foreach (var ws in metadata.UrlList)
+                        swarm.AddWebSeed(ws.TrimEnd('/'));
+
+                    // Resume download if not complete
+                    if (!swarm.Done)
+                        swarm.StartDownload();
+
+                    Console.WriteLine($"[WebTorrent] Restored: {metadata.Name} ({hash[..8]}...) progress={swarm.Progress:P0}");
                 }
                 catch (Exception ex)
                 {

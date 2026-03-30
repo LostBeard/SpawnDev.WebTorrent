@@ -992,8 +992,9 @@ public class TorrentFileStream
 
     /// <summary>
     /// Read bytes from this file at a specific offset.
-    /// Blocks until the requested pieces are available.
-    /// This is the key API for ML model weight streaming.
+    /// If the torrent is paused and the requested pieces aren't available,
+    /// automatically resumes downloading for this file's pieces.
+    /// This is the key API for ML model weight streaming and media playback.
     /// </summary>
     public async Task<byte[]> ReadAsync(long offset, int length, CancellationToken ct = default)
     {
@@ -1012,12 +1013,21 @@ public class TorrentFileStream
 
             // Wait for this piece to be available
             var bitfield = _swarm.Bitfield;
-            while (bitfield != null && !bitfield[pieceIndex])
+            if (bitfield != null && !bitfield[pieceIndex])
             {
+                // Auto-resume if paused — the stream accessor needs data
+                if (_swarm.Paused)
+                    _swarm.Resume();
+
                 // Signal the coordinator to prioritize this piece
                 _swarm.Coordinator?.Prioritize(pieceIndex);
-                await Task.Delay(10, ct);
-                bitfield = _swarm.Bitfield;
+
+                while (!bitfield[pieceIndex])
+                {
+                    await Task.Delay(10, ct);
+                    bitfield = _swarm.Bitfield;
+                    if (bitfield == null) break;
+                }
             }
 
             var pieceData = await _store.GetAsync(pieceIndex, pieceOffset, bytesInPiece, ct);

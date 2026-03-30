@@ -248,10 +248,12 @@ public class HuggingFaceProxy
             {
                 Name = System.IO.Path.GetFileName(filePath),
                 Trackers = _options.TrackerUrls,
+                // BEP 17: web seed URL is the base directory — client appends /{torrentName}
+                // e.g., base = /hf/Xenova/distilgpt2 + name = tokenizer.json → /hf/Xenova/distilgpt2/tokenizer.json
                 WebSeeds = new[]
                 {
-                    $"{serverBaseUrl}/hf/{repoId}/{filePath}",
-                    $"https://huggingface.co/{repoId}/resolve/main/{filePath}",
+                    $"{serverBaseUrl}/hf/{repoId}/{GetDirectoryPart(filePath)}",
+                    $"https://huggingface.co/{repoId}/resolve/main/{GetDirectoryPart(filePath)}",
                 },
                 Comment = $"HuggingFace model: {repoId}/{filePath}",
                 CreatedBy = "SpawnDev.WebTorrent.Server.HuggingFace",
@@ -272,7 +274,7 @@ public class HuggingFaceProxy
 
         var metadata = TorrentParser.Parse(torrentBytes);
         var trackers = string.Join("", _options.TrackerUrls.Select(t => $"&tr={Uri.EscapeDataString(t)}"));
-        var webSeeds = $"&ws={Uri.EscapeDataString($"{serverBaseUrl}/hf/{repoId}/{filePath}")}";
+        var webSeeds = $"&ws={Uri.EscapeDataString($"{serverBaseUrl}/hf/{repoId}/{GetDirectoryPart(filePath)}")}";
 
         return $"magnet:?xt=urn:btih:{metadata.InfoHashHex}&dn={Uri.EscapeDataString(metadata.Name)}{trackers}{webSeeds}";
     }
@@ -293,7 +295,7 @@ public class HuggingFaceProxy
         {
             var metadata = TorrentParser.Parse(torrentBytes);
             var trackers = string.Join("", _options.TrackerUrls.Select(t => $"&tr={Uri.EscapeDataString(t)}"));
-            var webSeeds = $"&ws={Uri.EscapeDataString($"{serverBaseUrl}/hf/{repoId}/{filePath}")}";
+            var webSeeds = $"&ws={Uri.EscapeDataString($"{serverBaseUrl}/hf/{repoId}/{GetDirectoryPart(filePath)}")}";
             var magnetUri = $"magnet:?xt=urn:btih:{metadata.InfoHashHex}&dn={Uri.EscapeDataString(metadata.Name)}{trackers}{webSeeds}";
 
             return new ModelRequestResult
@@ -389,6 +391,13 @@ public class HuggingFaceProxy
 
         context.Response.ContentLength = fileInfo.Length;
         await context.Response.SendFileAsync(localPath);
+    }
+
+    /// <summary>Get directory portion of a file path, or empty string if no directory.</summary>
+    internal static string GetDirectoryPart(string filePath)
+    {
+        var lastSlash = filePath.LastIndexOf('/');
+        return lastSlash >= 0 ? filePath[..lastSlash] : "";
     }
 
     /// <summary>
@@ -539,7 +548,7 @@ public static class HuggingFaceProxyExtensions
                 magnetUri,
                 repoId,
                 filePath,
-                webSeed = $"{serverUrl}/hf/{repoId}/{filePath}",
+                webSeed = $"{serverUrl}/hf/{repoId}/{HuggingFaceProxy.GetDirectoryPart(filePath)}",
             });
         });
 

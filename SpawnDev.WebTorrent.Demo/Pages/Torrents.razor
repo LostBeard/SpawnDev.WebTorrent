@@ -67,16 +67,16 @@
         @* ── Sidebar (categories) ── *@
         <div class="qb-sidebar">
             <div class="qb-sidebar-item @(_filterStatus == "" ? "active" : "")" @onclick='() => _filterStatus = ""'>
-                <span>All</span><span class="qb-count">@_torrents.Count</span>
+                <span>All</span><span class="qb-count">@AllTorrents.Count</span>
             </div>
             <div class="qb-sidebar-item @(_filterStatus == "downloading" ? "active" : "")" @onclick='() => _filterStatus = "downloading"'>
-                <span>Downloading</span><span class="qb-count">@_torrents.Count(t => !t.IsDone && t.HasMetadata)</span>
+                <span>Downloading</span><span class="qb-count">@AllTorrents.Count(t => !t.Done && t.HasMetadata)</span>
             </div>
             <div class="qb-sidebar-item @(_filterStatus == "seeding" ? "active" : "")" @onclick='() => _filterStatus = "seeding"'>
-                <span>Seeding</span><span class="qb-count">@_torrents.Count(t => t.IsDone)</span>
+                <span>Seeding</span><span class="qb-count">@AllTorrents.Count(t => t.Done)</span>
             </div>
             <div class="qb-sidebar-item @(_filterStatus == "paused" ? "active" : "")" @onclick='() => _filterStatus = "paused"'>
-                <span>Paused</span><span class="qb-count">@_torrents.Count(t => t.Swarm.Paused)</span>
+                <span>Paused</span><span class="qb-count">@AllTorrents.Count(t => t.Paused)</span>
             </div>
         </div>
 
@@ -115,33 +115,33 @@
                                 var entry = e;
                                 var progress = entry.Progress;
                                 var isSelected = _selectedTorrent == entry;
-                                <tr class="@(isSelected ? "selected" : "") @(entry.Swarm.Paused ? "paused" : "")"
+                                <tr class="@(isSelected ? "selected" : "") @(entry.Paused ? "paused" : "")"
                                     @onclick="() => SelectTorrent(entry)"
                                     @oncontextmenu="(e) => ShowContextMenu(entry, e)" @oncontextmenu:preventDefault>
                                     <td class="qb-col-status">
-                                        <span class="qb-status-dot @entry.StatusClass"></span>
+                                        <span class="qb-status-dot @StatusCss(entry)"></span>
                                     </td>
-                                    <td class="qb-col-name">@entry.DisplayName</td>
-                                    <td class="qb-col-size">@entry.SizeText</td>
+                                    <td class="qb-col-name">@entry.Name</td>
+                                    <td class="qb-col-size">@SizeText(entry)</td>
                                     <td class="qb-col-progress">
                                         <div class="qb-progress">
-                                            <div class="qb-progress-fill @(entry.IsDone ? "done" : "")" style="width:@((progress*100).ToString("F1"))%"></div>
+                                            <div class="qb-progress-fill @(entry.Done ? "done" : "")" style="width:@((progress*100).ToString("F1"))%"></div>
                                             <span class="qb-progress-label">@((progress*100).ToString("F1"))%</span>
                                         </div>
                                     </td>
-                                    <td class="qb-col-speed qb-mono">@(entry.Swarm.DownloadSpeed > 10 ? FormatSpeed(entry.Swarm.DownloadSpeed) : "")</td>
-                                    <td class="qb-col-speed qb-mono">@(entry.Swarm.UploadSpeed > 10 ? FormatSpeed(entry.Swarm.UploadSpeed) : "")</td>
-                                    <td class="qb-col-eta qb-mono">@entry.EtaText</td>
-                                    <td class="qb-col-peers">@entry.Swarm.PeerCount</td>
-                                    <td class="qb-col-ratio qb-mono">@entry.Swarm.Ratio.ToString("F2")</td>
+                                    <td class="qb-col-speed qb-mono">@(entry.DownloadSpeed > 10 ? FormatSpeed(entry.DownloadSpeed) : "")</td>
+                                    <td class="qb-col-speed qb-mono">@(entry.UploadSpeed > 10 ? FormatSpeed(entry.UploadSpeed) : "")</td>
+                                    <td class="qb-col-eta qb-mono">@EtaText(entry)</td>
+                                    <td class="qb-col-peers">@entry.PeerCount</td>
+                                    <td class="qb-col-ratio qb-mono">@entry.Ratio.ToString("F2")</td>
                                     <td class="qb-col-actions">
-                                        @if (entry.Swarm.Paused)
+                                        @if (entry.Paused)
                                         {
-                                            <button class="qb-icon-btn" @onclick="() => entry.Swarm.Resume()" @onclick:stopPropagation title="Resume">&#9654;</button>
+                                            <button class="qb-icon-btn" @onclick="() => entry.Resume()" @onclick:stopPropagation title="Resume">&#9654;</button>
                                         }
                                         else
                                         {
-                                            <button class="qb-icon-btn" @onclick="() => entry.Swarm.Pause()" @onclick:stopPropagation title="Pause">&#9646;&#9646;</button>
+                                            <button class="qb-icon-btn" @onclick="() => entry.Pause()" @onclick:stopPropagation title="Pause">&#9646;&#9646;</button>
                                         }
                                         <button class="qb-icon-btn qb-icon-delete" @onclick="() => RemoveTorrent(entry, false)" @onclick:stopPropagation title="Remove">&#10005;</button>
                                     </td>
@@ -169,29 +169,29 @@
                         {
                             case "general":
                                 <div class="qb-info-grid">
-                                    <div class="qb-info-row"><span class="qb-label">Name</span><span>@sel.DisplayName</span></div>
-                                    <div class="qb-info-row"><span class="qb-label">Hash</span><span class="qb-mono qb-hash">@sel.InfoHashFull</span></div>
-                                    <div class="qb-info-row"><span class="qb-label">Size</span><span>@sel.SizeText</span></div>
-                                    <div class="qb-info-row"><span class="qb-label">Pieces</span><span>@(sel.Swarm.PieceManager != null ? $"{sel.Swarm.PieceManager.CompletedCount} / {sel.Swarm.PieceManager.PieceCount}" : "—")</span></div>
-                                    <div class="qb-info-row"><span class="qb-label">Downloaded</span><span>@FormatBytes(sel.Swarm.Downloaded)</span></div>
-                                    <div class="qb-info-row"><span class="qb-label">Uploaded</span><span>@FormatBytes(sel.Swarm.Uploaded)</span></div>
-                                    <div class="qb-info-row"><span class="qb-label">Ratio</span><span>@sel.Swarm.Ratio.ToString("F3")</span></div>
-                                    <div class="qb-info-row"><span class="qb-label">ETA</span><span>@sel.EtaText</span></div>
-                                    <div class="qb-info-row"><span class="qb-label">Peers</span><span>@sel.Swarm.PeerCount</span></div>
-                                    <div class="qb-info-row"><span class="qb-label">Comment</span><span>@(sel.Swarm.Comment ?? "—")</span></div>
-                                    <div class="qb-info-row"><span class="qb-label">Created</span><span>@(sel.Swarm.Created?.ToString("yyyy-MM-dd HH:mm") ?? "—")</span></div>
-                                    <div class="qb-info-row"><span class="qb-label">Private</span><span>@(sel.Swarm.IsPrivate ? "Yes" : "No")</span></div>
-                                    <div class="qb-info-row"><span class="qb-label">Piece Length</span><span>@(sel.Swarm.PieceLength > 0 ? FormatBytes(sel.Swarm.PieceLength) : "—")</span></div>
-                                    <div class="qb-info-row"><span class="qb-label">Total Size</span><span>@(sel.Swarm.Length > 0 ? FormatBytes(sel.Swarm.Length) : "—")</span></div>
-                                    <div class="qb-info-row"><span class="qb-label">Web Seeds</span><span>@sel.Swarm.WebSeedCount</span></div>
-                                    <div class="qb-info-row"><span class="qb-label">Files</span><span>@sel.Swarm.Files.Length</span></div>
+                                    <div class="qb-info-row"><span class="qb-label">Name</span><span>@sel.Name</span></div>
+                                    <div class="qb-info-row"><span class="qb-label">Hash</span><span class="qb-mono qb-hash">@sel.InfoHashHex</span></div>
+                                    <div class="qb-info-row"><span class="qb-label">Size</span><span>@SizeText(sel)</span></div>
+                                    <div class="qb-info-row"><span class="qb-label">Pieces</span><span>@(sel.PieceManager != null ? $"{sel.PieceManager.CompletedCount} / {sel.PieceManager.PieceCount}" : "—")</span></div>
+                                    <div class="qb-info-row"><span class="qb-label">Downloaded</span><span>@FormatBytes(sel.Downloaded)</span></div>
+                                    <div class="qb-info-row"><span class="qb-label">Uploaded</span><span>@FormatBytes(sel.Uploaded)</span></div>
+                                    <div class="qb-info-row"><span class="qb-label">Ratio</span><span>@sel.Ratio.ToString("F3")</span></div>
+                                    <div class="qb-info-row"><span class="qb-label">ETA</span><span>@EtaText(sel)</span></div>
+                                    <div class="qb-info-row"><span class="qb-label">Peers</span><span>@sel.PeerCount</span></div>
+                                    <div class="qb-info-row"><span class="qb-label">Comment</span><span>@(sel.Comment ?? "—")</span></div>
+                                    <div class="qb-info-row"><span class="qb-label">Created</span><span>@(sel.Created?.ToString("yyyy-MM-dd HH:mm") ?? "—")</span></div>
+                                    <div class="qb-info-row"><span class="qb-label">Private</span><span>@(sel.IsPrivate ? "Yes" : "No")</span></div>
+                                    <div class="qb-info-row"><span class="qb-label">Piece Length</span><span>@(sel.PieceLength > 0 ? FormatBytes(sel.PieceLength) : "—")</span></div>
+                                    <div class="qb-info-row"><span class="qb-label">Total Size</span><span>@(sel.Length > 0 ? FormatBytes(sel.Length) : "—")</span></div>
+                                    <div class="qb-info-row"><span class="qb-label">Web Seeds</span><span>@sel.WebSeedCount</span></div>
+                                    <div class="qb-info-row"><span class="qb-label">Files</span><span>@sel.Files.Length</span></div>
                                 </div>
-                                @if (sel.SpeedHistory.Count > 1)
+                                @if (GetSpeedHistory(sel).Count > 1)
                                 {
                                     <div class="qb-sparkline-label">Transfer Speed</div>
                                     <svg class="qb-sparkline" viewBox="0 0 200 40" preserveAspectRatio="none">
                                         @{
-                                            var hist = sel.SpeedHistory;
+                                            var hist = GetSpeedHistory(sel);
                                             var maxSpeed = Math.Max(hist.Max(), 1024.0);
                                             var points = string.Join(" ", hist.Select((v, i) =>
                                                 $"{i * 200.0 / Math.Max(hist.Count - 1, 1):F1},{(40 - v / maxSpeed * 38):F1}"));
@@ -199,29 +199,29 @@
                                         <polyline points="@points" fill="none" stroke="#10b981" stroke-width="1.5" vector-effect="non-scaling-stroke"/>
                                     </svg>
                                 }
-                                @if (sel.Swarm.HasMetadata)
+                                @if (sel.HasMetadata)
                                 {
                                     <div class="qb-magnet-row">
                                         <span class="qb-label">Magnet</span>
-                                        <input type="text" class="qb-input qb-magnet-display" readonly value="@sel.Swarm.MagnetURI" @onclick="(e) => CopyMagnet(sel)" title="Click to copy" />
+                                        <input type="text" class="qb-input qb-magnet-display" readonly value="@sel.MagnetURI" @onclick="(e) => CopyMagnet(sel)" title="Click to copy" />
                                     </div>
                                 }
                                 <div class="qb-action-row">
                                     <button class="qb-action-btn" @onclick="() => CopyMagnet(sel)" title="Copy magnet link">&#128279; Copy Magnet</button>
-                                    @if (sel.Swarm.TorrentFileBytes != null)
+                                    @if (sel.TorrentFileBytes != null)
                                     {
                                         <button class="qb-action-btn" @onclick="() => ExportTorrent(sel)" title="Download .torrent file">&#128190; Export .torrent</button>
                                     }
                                     <label class="qb-toggle">
-                                        <input type="checkbox" checked="@sel.Sequential" @onchange="(e) => ToggleSequential(sel, (bool)(e.Value ?? false))" />
+                                        <input type="checkbox" checked="@false" @onchange="(e) => ToggleSequential(sel, (bool)(e.Value ?? false))" />
                                         <span>Sequential Download</span>
                                     </label>
                                 </div>
-                                @if (sel.Swarm.PieceManager?.Bitfield != null)
+                                @if (sel.PieceManager?.Bitfield != null)
                                 {
                                     <div class="qb-piece-label">Pieces</div>
                                     <div class="qb-piece-bar">
-                                        @{ var bf = sel.Swarm.PieceManager.Bitfield; var total = bf.Length; var cols = Math.Min(total, 200); var step = Math.Max(1, total / cols); }
+                                        @{ var bf = sel.PieceManager.Bitfield; var total = bf.Length; var cols = Math.Min(total, 200); var step = Math.Max(1, total / cols); }
                                         @for (int i = 0; i < cols; i++)
                                         {
                                             var s = i * step; var end = Math.Min((i + 1) * step, total);
@@ -236,7 +236,7 @@
                                 <table class="qb-sub-table">
                                     <thead><tr><th>Tracker</th><th>Type</th><th>Status</th></tr></thead>
                                     <tbody>
-                                        @foreach (var tr in sel.Trackers)
+                                        @foreach (var tr in GetTrackers(sel))
                                         {
                                             var ttype = tr.Url.StartsWith("wss://") ? "WSS" : tr.Url.StartsWith("ws://") ? "WS" : tr.Url.StartsWith("http") ? "HTTP" : "UDP";
                                             <tr>
@@ -250,22 +250,22 @@
                                                 </td>
                                             </tr>
                                         }
-                                        @if (sel.Trackers.Count == 0) { <tr><td colspan="3" class="qb-muted">No trackers connected</td></tr> }
+                                        @if (GetTrackers(sel).Count == 0) { <tr><td colspan="3" class="qb-muted">No trackers connected</td></tr> }
                                     </tbody>
                                 </table>
-                                @if (sel.Swarm.HasMetadata && sel.Swarm.Metadata!.AnnounceList.Length > 0)
+                                @if (sel.HasMetadata && sel.Metadata!.AnnounceList.Length > 0)
                                 {
                                     <div style="margin-top:8px;color:#334155;font-size:10px">
-                                        Announce list from .torrent: @string.Join(", ", sel.Swarm.Announce.Take(5))
-                                        @if (sel.Swarm.Announce.Length > 5) { <span>... (+@(sel.Swarm.Announce.Length - 5) more)</span> }
+                                        Announce list from .torrent: @string.Join(", ", sel.Announce.Take(5))
+                                        @if (sel.Announce.Length > 5) { <span>... (+@(sel.Announce.Length - 5) more)</span> }
                                     </div>
                                 }
                                 break;
 
                             case "peers":
                                 <div style="padding:0.5rem">
-                                    <div style="margin-bottom:0.5rem;color:#64748b;font-size:12px">@(sel.Swarm.PeerCount + (sel.PeerCoordinator?.PeerCount ?? 0)) connected peer(s) — Web seeds: @sel.Swarm.WebSeedCount</div>
-                                    @if (sel.Swarm.PeerCount + (sel.PeerCoordinator?.PeerCount ?? 0) == 0)
+                                    <div style="margin-bottom:0.5rem;color:#64748b;font-size:12px">@(sel.PeerCount + (_peerCoordinators.GetValueOrDefault(sel.InfoHashHex)?.PeerCount ?? 0)) connected peer(s) — Web seeds: @sel.WebSeedCount</div>
+                                    @if (sel.PeerCount + (_peerCoordinators.GetValueOrDefault(sel.InfoHashHex)?.PeerCount ?? 0) == 0)
                                     {
                                         <div class="qb-muted">Peers connect via WebSocket tracker signaling and WebRTC data channels.<br/>Desktop peers use SIPSorcery, browser peers use SpawnDev.BlazorJS.</div>
                                     }
@@ -273,16 +273,16 @@
                                 break;
 
                             case "content":
-                                @if (sel.Swarm.HasMetadata)
+                                @if (sel.HasMetadata)
                                 {
                                     <div style="display:flex;gap:4px;padding:2px 0">
-                                        <button class="qb-action-btn" style="font-size:10px" @onclick="() => { foreach (var f in sel.Swarm.Files) f.Select(); }">Select All</button>
-                                        <button class="qb-action-btn" style="font-size:10px" @onclick="() => { foreach (var f in sel.Swarm.Files) f.Deselect(); }">Deselect All</button>
+                                        <button class="qb-action-btn" style="font-size:10px" @onclick="() => { foreach (var f in sel.Files) f.Select(); }">Select All</button>
+                                        <button class="qb-action-btn" style="font-size:10px" @onclick="() => { foreach (var f in sel.Files) f.Deselect(); }">Deselect All</button>
                                     </div>
                                     <table class="qb-sub-table">
                                         <thead><tr><th>File</th><th class="qb-col-fsize">Size</th><th class="qb-col-fprog-wide">Progress</th><th class="qb-col-fdl">Downloaded</th><th class="qb-col-ftype">Type</th><th class="qb-col-fpri">Priority</th><th></th></tr></thead>
                                         <tbody>
-                                            @foreach (var file in sel.Swarm.Files)
+                                            @foreach (var file in sel.Files)
                                             {
                                                 var f = file;
                                                 var ext = System.IO.Path.GetExtension(f.Path).ToLowerInvariant();
@@ -345,12 +345,12 @@
 
     @* ═══ Status Bar ═══ *@
     <div class="qb-statusbar">
-        <span>@_torrents.Count torrents</span>
-        <span>@_torrents.Sum(t => t.Swarm.PeerCount) peers</span>
+        <span>@AllTorrents.Count torrents</span>
+        <span>@AllTorrents.Sum(t => t.PeerCount) peers</span>
         <span class="qb-speed-down">&#x25BC; @FormatSpeed(_globalDownSpeed)</span>
         <span class="qb-speed-up">&#x25B2; @FormatSpeed(_globalUpSpeed)</span>
-        <span>@FormatBytes(_torrents.Sum(t => t.Swarm.Downloaded)) downloaded</span>
-        <span>@FormatBytes(_torrents.Sum(t => t.Swarm.Uploaded)) uploaded</span>
+        <span>@FormatBytes(AllTorrents.Sum(t => t.Downloaded)) downloaded</span>
+        <span>@FormatBytes(AllTorrents.Sum(t => t.Uploaded)) uploaded</span>
         <span class="qb-mono">@PeerIdString</span>
         <span>v1.1.0</span>
         <span>@(_asyncFs != null ? "OPFS" : "MEM")</span>
@@ -373,16 +373,16 @@
             @if (_contextEntry != null)
             {
                 var ce = _contextEntry;
-                @if (ce.Swarm.Paused)
+                @if (ce.Paused)
                 {
-                    <div class="qb-ctx-item" @onclick="() => { ce.Swarm.Resume(); _contextMenuOpen = false; }">&#9654; Resume</div>
+                    <div class="qb-ctx-item" @onclick="() => { ce.Resume(); _contextMenuOpen = false; }">&#9654; Resume</div>
                 }
                 else
                 {
-                    <div class="qb-ctx-item" @onclick="() => { ce.Swarm.Pause(); _contextMenuOpen = false; }">&#9646;&#9646; Pause</div>
+                    <div class="qb-ctx-item" @onclick="() => { ce.Pause(); _contextMenuOpen = false; }">&#9646;&#9646; Pause</div>
                 }
                 <div class="qb-ctx-item" @onclick="() => { CopyMagnet(ce); _contextMenuOpen = false; }">&#128279; Copy Magnet URI</div>
-                @if (ce.Swarm.TorrentFileBytes != null)
+                @if (ce.TorrentFileBytes != null)
                 {
                     <div class="qb-ctx-item" @onclick="() => { ExportTorrent(ce); _contextMenuOpen = false; }">&#128190; Export .torrent</div>
                 }
@@ -442,12 +442,11 @@
 @code {
     // ── State ──
     private string _magnetInput = "";
-    private readonly List<TorrentEntry> _torrents = new();
     private readonly List<string> _logMessages = new();
     private WebTorrentClient? _client;
     private IAsyncFS? _asyncFs => AsyncFS;
     private System.Threading.Timer? _refreshTimer;
-    private TorrentEntry? _selectedTorrent;
+    private TorrentSwarm? _selectedTorrent;
     private string _detailTab = "general";
     private string _filterStatus = "";
     private bool _settingsOpen;
@@ -465,8 +464,16 @@
 
     // Context menu
     private bool _contextMenuOpen;
-    private TorrentEntry? _contextEntry;
+    private TorrentSwarm? _contextEntry;
     private double _ctxX, _ctxY;
+
+    // UI-only state per torrent (keyed by InfoHashHex)
+    private readonly Dictionary<string, List<double>> _speedHistory = new();
+    private readonly Dictionary<string, List<TrackerEntry>> _trackerEntries = new();
+    private readonly Dictionary<string, PeerCoordinator?> _peerCoordinators = new();
+    private readonly Dictionary<string, WebRtcTransport?> _webRtcTransports = new();
+    private List<double> GetSpeedHistory(TorrentSwarm t) { if (!_speedHistory.ContainsKey(t.InfoHashHex)) _speedHistory[t.InfoHashHex] = new(); return _speedHistory[t.InfoHashHex]; }
+    private List<TrackerEntry> GetTrackers(TorrentSwarm t) { if (!_trackerEntries.ContainsKey(t.InfoHashHex)) _trackerEntries[t.InfoHashHex] = new(); return _trackerEntries[t.InfoHashHex]; }
 
     // Media
     private bool _mediaOpen, _mediaLoading;
@@ -483,47 +490,30 @@
     };
 
     private string PeerIdString => _client != null ? System.Text.Encoding.ASCII.GetString(_client.PeerId, 0, 8) : "-SD0110-";
-    private List<TorrentEntry> FilteredTorrents => _filterStatus switch
+    private IReadOnlyList<TorrentSwarm> AllTorrents => Client.Torrents;
+    private List<TorrentSwarm> FilteredTorrents => _filterStatus switch
     {
-        "downloading" => _torrents.Where(t => !t.IsDone && t.HasMetadata).ToList(),
-        "seeding" => _torrents.Where(t => t.IsDone).ToList(),
-        "paused" => _torrents.Where(t => t.Swarm.Paused).ToList(),
-        _ => _torrents,
+        "downloading" => AllTorrents.Where(t => !t.Done && t.HasMetadata).ToList(),
+        "seeding" => AllTorrents.Where(t => t.Done).ToList(),
+        "paused" => AllTorrents.Where(t => t.Paused).ToList(),
+        _ => AllTorrents.ToList(),
     };
 
     protected override void OnInitialized()
     {
         _client = Client;
-        Log($"Client initialized (storage: {(_asyncFs != null ? "OPFS" : "memory")})");
-
-        // Rebuild view entries from the singleton's existing torrents
-        foreach (var swarm in _client.Torrents)
-        {
-            var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
-            if (_torrents.Any(t => t.InfoHashFull == hash)) continue;
-            var entry = new TorrentEntry
-            {
-                Swarm = swarm,
-                Name = swarm.Metadata?.Name,
-                InfoHashFull = hash,
-                InfoHashShort = hash[..8] + "...",
-            };
-            _torrents.Add(entry);
-            WireSwarmEvents(entry);
-        }
-        if (_torrents.Count > 0)
-            Log($"Restored {_torrents.Count} torrent(s) from client");
+        Log($"Client initialized ({AllTorrents.Count} torrent(s), storage: {(_asyncFs != null ? "OPFS" : "memory")})");
 
         _refreshTimer = new System.Threading.Timer(_ =>
         {
-            foreach (var t in _torrents)
+            foreach (var t in AllTorrents)
             {
-                t.Swarm.UpdateSpeed();
-                t.SpeedHistory.Add(t.Swarm.DownloadSpeed);
-                if (t.SpeedHistory.Count > 60) t.SpeedHistory.RemoveAt(0); // 60 second window
+                t.UpdateSpeed();
+                GetSpeedHistory(t).Add(t.DownloadSpeed);
+                if (GetSpeedHistory(t).Count > 60) GetSpeedHistory(t).RemoveAt(0); // 60 second window
             }
-            _globalDownSpeed = _torrents.Sum(t => t.Swarm.DownloadSpeed);
-            _globalUpSpeed = _torrents.Sum(t => t.Swarm.UploadSpeed);
+            _globalDownSpeed = AllTorrents.Sum(t => t.DownloadSpeed);
+            _globalUpSpeed = AllTorrents.Sum(t => t.UploadSpeed);
             _globalDownHistory.Add(_globalDownSpeed);
             _globalUpHistory.Add(_globalUpSpeed);
             if (_globalDownHistory.Count > 30) _globalDownHistory.RemoveAt(0);
@@ -534,7 +524,7 @@
 
     // ── Actions ──
     private async Task OnMagnetKeyDown(KeyboardEventArgs e) { if (e.Key == "Enter" && !string.IsNullOrWhiteSpace(_magnetInput)) await AddMagnet(); }
-    private async Task QuickAdd(string name) { if (CCMagnets.TryGetValue(name, out var m)) { var h = m.Split("btih:")[1].Split("&")[0]; if (!_torrents.Any(t => t.InfoHashFull == h)) await AddMagnetInternal(m, name); } }
+    private async Task QuickAdd(string name) { if (CCMagnets.TryGetValue(name, out var m)) { var h = m.Split("btih:")[1].Split("&")[0]; if (!AllTorrents.Any(t => t.InfoHashHex == h)) await AddMagnetInternal(m, name); } }
     private async Task AddMagnet() { var i = _magnetInput.Trim(); _magnetInput = ""; if (!string.IsNullOrWhiteSpace(i)) await AddMagnetInternal(i, null); }
     private async Task SeedTestData()
     {
@@ -551,13 +541,9 @@
                 Comment = "Test torrent created by SpawnDev.WebTorrent demo",
             });
 
-        var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
-        var entry = new TorrentEntry { Swarm = swarm, Name = name, InfoHashFull = hash, InfoHashShort = hash[..8] + "..." };
-        _torrents.Add(entry); _selectedTorrent = entry;
-        WireSwarmEvents(entry);
-
-        // Connect to trackers for peer discovery
-        _ = ConnectTrackers(entry, swarm.MagnetURI);
+        _selectedTorrent = swarm;
+        WireSwarmEvents(swarm);
+        _ = ConnectTrackers(swarm, swarm.MagnetURI);
 
         Log($"Seeding: {name} ({FormatBytes(data.Length)}), magnet: {swarm.MagnetURI[..60]}...");
         StateHasChanged();
@@ -582,11 +568,9 @@
                 Comment = $"Seeded from SpawnDev.WebTorrent demo",
             });
 
-        var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
-        var entry = new TorrentEntry { Swarm = swarm, Name = file.Name, InfoHashFull = hash, InfoHashShort = hash[..8] + "..." };
-        _torrents.Add(entry); _selectedTorrent = entry;
-        WireSwarmEvents(entry);
-        _ = ConnectTrackers(entry, swarm.MagnetURI);
+        _selectedTorrent = swarm;
+        WireSwarmEvents(swarm);
+        _ = ConnectTrackers(swarm, swarm.MagnetURI);
 
         Log($"Seeding: {file.Name} ({FormatBytes(data.Length)}), {swarm.PieceManager!.PieceCount} pieces");
         StateHasChanged();
@@ -606,16 +590,15 @@
         {
             var metadata = TorrentParser.Parse(torrentBytes);
             var hash = Convert.ToHexString(metadata.InfoHash).ToLowerInvariant();
-            if (_torrents.Any(t => t.InfoHashFull == hash)) { Log($"Already added: {metadata.Name}"); return; }
+            if (AllTorrents.Any(t => t.InfoHashHex == hash)) { Log($"Already added: {metadata.Name}"); return; }
 
             var swarm = await _client.AddAsync(metadata, new AddTorrentOptions { AsyncFileSystem = _asyncFs });
-            var entry = new TorrentEntry { Swarm = swarm, Name = metadata.Name, InfoHashFull = hash, InfoHashShort = hash[..8] + "..." };
-            _torrents.Add(entry); _selectedTorrent = entry;
+            _selectedTorrent = swarm;
 
             foreach (var ws in metadata.UrlList) swarm.AddWebSeed(ws.TrimEnd('/'));
-            WireSwarmEvents(entry);
+            WireSwarmEvents(swarm);
             swarm.StartDownload();
-            _ = ConnectTrackers(entry, swarm.MagnetURI);
+            _ = ConnectTrackers(swarm, swarm.MagnetURI);
 
             Log($"Opened: {metadata.Name} ({FormatBytes(metadata.TotalLength)}, {metadata.PieceCount} pieces)");
             StateHasChanged();
@@ -623,10 +606,10 @@
         catch (Exception ex) { Log($"Invalid .torrent: {ex.Message}"); }
     }
 
-    private void PauseAll() { foreach (var t in _torrents) t.Swarm.Pause(); }
-    private void ResumeAll() { foreach (var t in _torrents) t.Swarm.Resume(); }
+    private void PauseAll() { foreach (var t in AllTorrents) t.Pause(); }
+    private void ResumeAll() { foreach (var t in AllTorrents) t.Resume(); }
     private void ToggleSettings() => _settingsOpen = !_settingsOpen;
-    private void SelectTorrent(TorrentEntry e) { _selectedTorrent = e; _detailTab = "general"; }
+    private void SelectTorrent(TorrentSwarm e) { _selectedTorrent = e; _detailTab = "general"; }
     private void SetDownloadLimit(ChangeEventArgs e) { if (int.TryParse(e.Value?.ToString(), out var v)) { _downloadLimitKBs = v; if (_client != null) _client.DownloadLimit = v <= 0 ? -1 : v * 1024; } }
     private void SetUploadLimit(ChangeEventArgs e) { if (int.TryParse(e.Value?.ToString(), out var v)) { _uploadLimitKBs = v; if (_client != null) _client.UploadLimit = v <= 0 ? -1 : v * 1024; } }
 
@@ -636,26 +619,24 @@
         try
         {
             var swarm = await _client.AddAsync(magnetUri, new AddTorrentOptions { AsyncFileSystem = _asyncFs });
-            var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
-            var entry = new TorrentEntry { Swarm = swarm, Name = displayName, InfoHashFull = hash, InfoHashShort = hash[..8] + "..." };
-            _torrents.Add(entry); _selectedTorrent ??= entry;
-            Log($"Added: {entry.DisplayName}");
-            _ = ConnectTrackers(entry, magnetUri);
-            _ = FetchMetadataAndDownload(entry, magnetUri);
+            _selectedTorrent ??= swarm;
+            Log($"Added: {swarm.Name}");
+            _ = ConnectTrackers(swarm, magnetUri);
+            _ = FetchMetadataAndDownload(swarm, magnetUri);
             StateHasChanged();
         }
         catch (Exception ex) { Log($"Error: {ex.Message}"); }
     }
 
-    private async Task FetchMetadataAndDownload(TorrentEntry entry, string magnetUri)
+    private async Task FetchMetadataAndDownload(TorrentSwarm entry, string magnetUri)
     {
-        if (entry.Swarm.HasMetadata)
+        if (entry.HasMetadata)
         {
-            entry.Name ??= entry.Swarm.Metadata!.Name;
-            foreach (var ws in entry.Swarm.Metadata!.UrlList) entry.Swarm.AddWebSeed(ws.TrimEnd('/'));
+
+            foreach (var ws in entry.Metadata!.UrlList) entry.AddWebSeed(ws.TrimEnd('/'));
             WireSwarmEvents(entry);
-            entry.Swarm.StartDownload();
-            Log($"[{entry.DisplayName}] {FormatBytes(entry.Swarm.Metadata!.TotalLength)}, {entry.Swarm.Metadata.PieceCount} pieces");
+            entry.StartDownload();
+            Log($"[{entry.Name}] {FormatBytes(entry.Metadata!.TotalLength)}, {entry.Metadata.PieceCount} pieces");
             await InvokeAsync(StateHasChanged); return;
         }
 
@@ -667,35 +648,34 @@
             var k = p[..eq]; var v = Uri.UnescapeDataString(p[(eq + 1)..].Replace('+', ' '));
             if (k == "xs") torrentUrl = v; if (k == "ws") webSeedUrls.Add(v);
         }
-        if (torrentUrl == null) { Log($"[{entry.DisplayName}] No xs= URL"); return; }
+        if (torrentUrl == null) { Log($"[{entry.Name}] No xs= URL"); return; }
 
         try
         {
-            Log($"[{entry.DisplayName}] Fetching .torrent...");
+            Log($"[{entry.Name}] Fetching .torrent...");
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
             var torrentBytes = await http.GetByteArrayAsync(torrentUrl);
             var metadata = TorrentParser.Parse(torrentBytes);
-            if (!metadata.InfoHash.SequenceEqual(entry.Swarm.InfoHash)) return;
+            if (!metadata.InfoHash.SequenceEqual(entry.InfoHash)) return;
             foreach (var ws in metadata.UrlList) if (!webSeedUrls.Contains(ws)) webSeedUrls.Add(ws);
-            entry.Swarm.SetMetadata(metadata); entry.Name ??= metadata.Name;
-            foreach (var ws in webSeedUrls) entry.Swarm.AddWebSeed(ws.TrimEnd('/'));
+            entry.SetMetadata(metadata);            foreach (var ws in webSeedUrls) entry.AddWebSeed(ws.TrimEnd('/'));
             WireSwarmEvents(entry);
-            entry.Swarm.StartDownload();
-            Log($"[{entry.DisplayName}] {FormatBytes(metadata.TotalLength)}, {metadata.PieceCount} pieces, {webSeedUrls.Count} web seed(s)");
+            entry.StartDownload();
+            Log($"[{entry.Name}] {FormatBytes(metadata.TotalLength)}, {metadata.PieceCount} pieces, {webSeedUrls.Count} web seed(s)");
             await InvokeAsync(StateHasChanged);
         }
-        catch (Exception ex) { Log($"[{entry.DisplayName}] {ex.Message}"); }
+        catch (Exception ex) { Log($"[{entry.Name}] {ex.Message}"); }
     }
 
-    private void WireSwarmEvents(TorrentEntry entry)
+    private void WireSwarmEvents(TorrentSwarm entry)
     {
-        entry.Swarm.OnPieceVerified += (_) => InvokeAsync(StateHasChanged);
-        entry.Swarm.OnDone += () => { Log($"[{entry.DisplayName}] Download complete!"); ShowToast($"Download complete: {entry.DisplayName}"); InvokeAsync(StateHasChanged); };
-        entry.Swarm.OnError += (ex) => Log($"[{entry.DisplayName}] Error: {ex.Message}");
-        entry.Swarm.OnLog += (msg) => Log($"[{entry.DisplayName}] {msg}");
+        entry.OnPieceVerified += (_) => InvokeAsync(StateHasChanged);
+        entry.OnDone += () => { Log($"[{entry.Name}] Download complete!"); ShowToast($"Download complete: {entry.Name}"); InvokeAsync(StateHasChanged); };
+        entry.OnError += (ex) => Log($"[{entry.Name}] Error: {ex.Message}");
+        entry.OnLog += (msg) => Log($"[{entry.Name}] {msg}");
     }
 
-    private async Task ConnectTrackers(TorrentEntry entry, string magnetUri)
+    private async Task ConnectTrackers(TorrentSwarm entry, string magnetUri)
     {
         var wsTrackers = new List<string>();
         var httpTrackers = new List<string>();
@@ -712,9 +692,9 @@
         if (wsTrackers.Count == 0) wsTrackers.AddRange(_defaultTrackers);
 
         // WebSocket trackers via PeerCoordinator (for WebRTC signaling)
-        var webRtc = new WebRtcTransport(); entry.WebRtcTransport = webRtc;
-        var coordinator = new PeerCoordinator(_client!, entry.Swarm.InfoHash, webRtc); entry.PeerCoordinator = coordinator;
-        coordinator.OnPeerConnected += (peer) => { Log($"[{entry.DisplayName}] P2P: {peer.PeerId[..Math.Min(12, peer.PeerId.Length)]}"); _ = entry.Swarm.AddConnectedPeerAsync(peer.Wire, new PeerInfo { Address = peer.PeerId, Source = "webrtc" }); InvokeAsync(StateHasChanged); };
+        var webRtc = new WebRtcTransport(); _webRtcTransports[entry.InfoHashHex] = webRtc;
+        var coordinator = new PeerCoordinator(_client!, entry.InfoHash, webRtc); _peerCoordinators[entry.InfoHashHex] = coordinator;
+        coordinator.OnPeerConnected += (peer) => { Log($"[{entry.Name}] P2P: {peer.PeerId[..Math.Min(12, peer.PeerId.Length)]}"); _ = entry.AddConnectedPeerAsync(peer.Wire, new PeerInfo { Address = peer.PeerId, Source = "webrtc" }); InvokeAsync(StateHasChanged); };
         coordinator.OnPeerDisconnected += (_) => InvokeAsync(StateHasChanged);
         foreach (var url in wsTrackers) { _ = ConnectSingleTracker(entry, coordinator, url); }
 
@@ -722,37 +702,41 @@
         foreach (var url in httpTrackers) { _ = ConnectHttpTracker(entry, url); }
     }
 
-    private async Task ConnectHttpTracker(TorrentEntry entry, string url)
+    private async Task ConnectHttpTracker(TorrentSwarm entry, string url)
     {
-        var te = new TrackerEntry { Url = url, Status = "Connecting..." }; entry.Trackers.Add(te);
+        var te = new TrackerEntry { Url = url, Status = "Connecting..." }; GetTrackers(entry).Add(te);
         try
         {
             var tracker = new HttpTrackerClient(url, _client!.PeerId);
             tracker.OnAnnounceResponse += (s, l) => { te.Status = $"{s}S / {l}L"; InvokeAsync(StateHasChanged); };
-            tracker.OnPeer += (peer) => entry.Swarm.AddPeer(peer);
-            await tracker.StartAsync(entry.Swarm.InfoHash, 0);
+            tracker.OnPeer += (peer) => entry.AddPeer(peer);
+            await tracker.StartAsync(entry.InfoHash, 0);
             te.Status = "Connected";
         }
         catch { te.Status = "Failed"; }
         await InvokeAsync(StateHasChanged);
     }
 
-    private async Task ConnectSingleTracker(TorrentEntry entry, PeerCoordinator coordinator, string url)
+    private async Task ConnectSingleTracker(TorrentSwarm entry, PeerCoordinator coordinator, string url)
     {
-        var te = new TrackerEntry { Url = url, Status = "Connecting..." }; entry.Trackers.Add(te);
-        try { await coordinator.AddTrackerAsync(url); te.Status = "Connected"; Log($"[{entry.DisplayName}] Tracker: {new Uri(url).Host}"); }
+        var te = new TrackerEntry { Url = url, Status = "Connecting..." }; GetTrackers(entry).Add(te);
+        try { await coordinator.AddTrackerAsync(url); te.Status = "Connected"; Log($"[{entry.Name}] Tracker: {new Uri(url).Host}"); }
         catch { te.Status = "Failed"; }
         await InvokeAsync(StateHasChanged);
     }
 
-    private async Task RemoveTorrent(TorrentEntry entry, bool destroyData = false)
+    private async Task RemoveTorrent(TorrentSwarm entry, bool destroyData = false)
     {
         if (_selectedTorrent == entry) _selectedTorrent = null;
-        _torrents.Remove(entry);
-        if (entry.PeerCoordinator != null) await entry.PeerCoordinator.DisposeAsync();
-        if (entry.WebRtcTransport != null) await entry.WebRtcTransport.DisposeAsync();
-        if (_client != null) await _client.RemoveAsync(entry.Swarm, destroyData);
-        Log(destroyData ? $"Removed + deleted data: {entry.DisplayName}" : $"Removed: {entry.DisplayName}");
+        var hash = entry.InfoHashHex;
+        if (_peerCoordinators.TryGetValue(hash, out var pc) && pc != null) await pc.DisposeAsync();
+        if (_webRtcTransports.TryGetValue(hash, out var wrt) && wrt != null) await wrt.DisposeAsync();
+        _peerCoordinators.Remove(hash);
+        _webRtcTransports.Remove(hash);
+        _speedHistory.Remove(hash);
+        _trackerEntries.Remove(hash);
+        if (_client != null) await _client.RemoveAsync(entry, destroyData);
+        Log(destroyData ? $"Removed + deleted data: {entry.Name}" : $"Removed: {entry.Name}");
     }
 
     private void OnDragOver(DragEventArgs e) { }
@@ -787,8 +771,8 @@
                 await RemoveTorrent(_selectedTorrent, false);
                 break;
             case " ": // Space
-                if (_selectedTorrent.Swarm.Paused) _selectedTorrent.Swarm.Resume();
-                else _selectedTorrent.Swarm.Pause();
+                if (_selectedTorrent.Paused) _selectedTorrent.Resume();
+                else _selectedTorrent.Pause();
                 break;
             case "c" when e.CtrlKey: // Ctrl+C
                 await CopyMagnet(_selectedTorrent);
@@ -814,14 +798,14 @@
         await InvokeAsync(StateHasChanged);
     }
 
-    private void ShowProperties(TorrentEntry entry)
+    private void ShowProperties(TorrentSwarm entry)
     {
         _detailTab = "general";
         SelectTorrent(entry);
         _contextMenuOpen = false;
     }
 
-    private void ShowContextMenu(TorrentEntry entry, MouseEventArgs e)
+    private void ShowContextMenu(TorrentSwarm entry, MouseEventArgs e)
     {
         _contextEntry = entry;
         _ctxX = e.ClientX;
@@ -840,18 +824,18 @@
         }
     }
 
-    private void ToggleSequential(TorrentEntry entry, bool sequential)
+    private void ToggleSequential(TorrentSwarm entry, bool sequential)
     {
-        entry.Sequential = sequential;
-        if (entry.Swarm.Coordinator != null)
-            entry.Swarm.Coordinator.Strategy = sequential ? "sequential" : "rarest";
-        Log($"[{entry.DisplayName}] Strategy: {(sequential ? "sequential" : "rarest-first")}");
+        // Sequential mode — future implementation
+        if (entry.Coordinator != null)
+            entry.Coordinator.Strategy = sequential ? "sequential" : "rarest";
+        Log($"[{entry.Name}] Strategy: {(sequential ? "sequential" : "rarest-first")}");
     }
 
     // ── Torrent Actions ──
-    private async Task CopyMagnet(TorrentEntry entry)
+    private async Task CopyMagnet(TorrentSwarm entry)
     {
-        var magnet = entry.Swarm.MagnetURI;
+        var magnet = entry.MagnetURI;
         try
         {
             await JS.CallVoidAsync("navigator.clipboard.writeText", magnet);
@@ -863,11 +847,11 @@
         }
     }
 
-    private async Task ExportTorrent(TorrentEntry entry)
+    private async Task ExportTorrent(TorrentSwarm entry)
     {
-        var bytes = entry.Swarm.TorrentFileBytes;
+        var bytes = entry.TorrentFileBytes;
         if (bytes == null) return;
-        var fileName = $"{entry.DisplayName}.torrent";
+        var fileName = $"{entry.Name}.torrent";
         using var blob = new Blob(new[] { bytes }, new BlobOptions { Type = "application/x-bittorrent" });
         var url = URL.CreateObjectURL(blob);
         // Trigger download via anchor click
@@ -903,25 +887,11 @@
 
     public async ValueTask DisposeAsync() { _refreshTimer?.Dispose(); CloseMedia(); }
 
-    private class TorrentEntry
-    {
-        public TorrentSwarm Swarm { get; init; } = null!;
-        public string? Name { get; set; }
-        public string InfoHashFull { get; init; } = "";
-        public string InfoHashShort { get; init; } = "";
-        public List<TrackerEntry> Trackers { get; } = new();
-        public PeerCoordinator? PeerCoordinator { get; set; }
-        public WebRtcTransport? WebRtcTransport { get; set; }
-        public string DisplayName => Swarm.Metadata?.Name ?? Name ?? InfoHashShort;
-        public bool HasMetadata => Swarm.HasMetadata;
-        public bool IsDone => Swarm.PieceManager?.IsComplete ?? false;
-        public double Progress => Swarm.PieceManager?.Progress ?? 0;
-        public string SizeText => Swarm.HasMetadata ? FormatBytes(Swarm.Metadata!.TotalLength) : "—";
-        public string EtaText { get { var t = Swarm.TimeRemaining; return t < 0 ? (IsDone ? "—" : "∞") : t < 60000 ? $"{t / 1000}s" : t < 3600000 ? $"{t / 60000}m" : $"{t / 3600000}h {(t % 3600000) / 60000}m"; } }
-        public bool Sequential { get; set; }
-        public List<double> SpeedHistory { get; } = new();
-        public string StatusClass => IsDone ? "qb-dot-seed" : Swarm.Paused ? "qb-dot-paused" : HasMetadata ? "qb-dot-dl" : "qb-dot-meta";
-    }
+    // ── TorrentSwarm UI helpers ──
+    private static string StatusCss(TorrentSwarm t) => t.Done ? "qb-dot-seed" : t.Paused ? "qb-dot-paused" : t.HasMetadata ? "qb-dot-dl" : "qb-dot-meta";
+    private static string SizeText(TorrentSwarm t) => t.HasMetadata ? FormatBytes(t.Metadata!.TotalLength) : "—";
+    private static string EtaText(TorrentSwarm t) { var r = t.TimeRemaining; return r < 0 ? (t.Done ? "—" : "∞") : r < 60000 ? $"{r / 1000}s" : r < 3600000 ? $"{r / 60000}m" : $"{r / 3600000}h {(r % 3600000) / 60000}m"; }
+
     private class TrackerEntry { public string Url { get; set; } = ""; public string Status { get; set; } = ""; }
 
     /// <summary>

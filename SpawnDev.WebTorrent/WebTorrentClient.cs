@@ -118,7 +118,8 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
     /// <summary>Save a torrent's .torrent bytes so it persists across page reloads.</summary>
     private async Task SaveTorrentStateAsync(TorrentSwarm swarm)
     {
-        if (_asyncFs == null || !swarm.HasMetadata) return;
+        if (_asyncFs == null) { Console.WriteLine("[WebTorrent] SaveTorrentState skipped: _asyncFs is null"); return; }
+        if (!swarm.HasMetadata) { Console.WriteLine("[WebTorrent] SaveTorrentState skipped: no metadata"); return; }
         try
         {
             var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
@@ -156,10 +157,10 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
     /// <summary>Restore all persisted torrents on startup.</summary>
     private async Task RestoreTorrentsAsync()
     {
-        if (_asyncFs == null) return;
+        if (_asyncFs == null) { Console.WriteLine("[WebTorrent] RestoreTorrents skipped: _asyncFs is null"); return; }
         try
         {
-            if (!await _asyncFs.DirectoryExists(TorrentStateDir)) return;
+            if (!await _asyncFs.DirectoryExists(TorrentStateDir)) { Console.WriteLine("[WebTorrent] RestoreTorrents: no state directory"); return; }
 
             var files = await _asyncFs.GetFiles(TorrentStateDir);
             foreach (var file in files)

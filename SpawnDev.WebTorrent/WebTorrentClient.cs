@@ -120,6 +120,10 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
     private class TorrentState
     {
         public bool Paused { get; set; }
+        public bool Sequential { get; set; }
+        public int[]? SelectedFileIndices { get; set; }
+        public long UploadLimit { get; set; } = -1;
+        public long DownloadLimit { get; set; } = -1;
     }
 
     /// <summary>Save torrent bytes + operational state to OPFS.</summary>
@@ -138,7 +142,14 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
 
             await _asyncFs.Write($"{TorrentStateDir}/{hash}.torrent", torrentBytes);
 
-            var state = new TorrentState { Paused = swarm.Paused };
+            var state = new TorrentState
+            {
+                Paused = swarm.Paused,
+                Sequential = swarm.Sequential,
+                SelectedFileIndices = swarm.SelectedFileIndices,
+                UploadLimit = swarm.PerTorrentUploadLimit,
+                DownloadLimit = swarm.PerTorrentDownloadLimit,
+            };
             var stateJson = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(state);
             await _asyncFs.Write($"{TorrentStateDir}/{hash}.json", stateJson);
         }
@@ -209,6 +220,14 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
                     var swarm = await AddAsync(metadata, new AddTorrentOptions { AsyncFileSystem = _asyncFs });
 
                     // Apply saved state
+                    if (state != null)
+                    {
+                        if (state.Sequential) swarm.Sequential = true;
+                        if (state.SelectedFileIndices != null) swarm.SelectedFileIndices = state.SelectedFileIndices;
+                        if (state.UploadLimit != -1) swarm.PerTorrentUploadLimit = state.UploadLimit;
+                        if (state.DownloadLimit != -1) swarm.PerTorrentDownloadLimit = state.DownloadLimit;
+                    }
+
                     if (state?.Paused == true)
                         swarm.Pause();
                     else if (!swarm.Done)

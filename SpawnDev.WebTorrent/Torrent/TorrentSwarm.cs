@@ -82,6 +82,22 @@ public class TorrentSwarm : IAsyncDisposable
     /// <summary>Whether the swarm is paused (not connecting to new peers).</summary>
     public bool Paused { get; private set; }
 
+    /// <summary>Whether to download pieces sequentially (for streaming) or rarest-first.</summary>
+    public bool Sequential
+    {
+        get => _coordinator?.Strategy == "sequential";
+        set { if (_coordinator != null) _coordinator.Strategy = value ? "sequential" : "rarest"; OnStateChanged?.Invoke(); }
+    }
+
+    /// <summary>Selected file indices (null = all files selected).</summary>
+    public int[]? SelectedFileIndices { get; set; }
+
+    /// <summary>Per-torrent upload rate limit in bytes/sec (-1 = use client default).</summary>
+    public long PerTorrentUploadLimit { get; set; } = -1;
+
+    /// <summary>Per-torrent download rate limit in bytes/sec (-1 = use client default).</summary>
+    public long PerTorrentDownloadLimit { get; set; } = -1;
+
     // Speed tracking
     private long _downloadedSinceLastTick;
     private long _uploadedSinceLastTick;

@@ -15,6 +15,7 @@ public class PieceManager
     private readonly TorrentMetadata _metadata;
     private readonly IChunkStore _store;
     private readonly PieceState[] _pieces;
+    private readonly BlazorJS.Cryptography.IPortableCrypto? _crypto;
 
     /// <summary>Standard block size: 16KB.</summary>
     public const int BlockSize = 16384;
@@ -38,10 +39,12 @@ public class PieceManager
     public event Action<int>? OnPieceComplete;
     public event Action<int, int>? OnBlockReceived; // pieceIndex, blockOffset
 
-    public PieceManager(TorrentMetadata metadata, IChunkStore store)
+    public PieceManager(TorrentMetadata metadata, IChunkStore store,
+        BlazorJS.Cryptography.IPortableCrypto? crypto = null)
     {
         _metadata = metadata;
         _store = store;
+        _crypto = crypto;
         _pieces = new PieceState[metadata.PieceCount];
         Bitfield = new bool[metadata.PieceCount];
 
@@ -138,8 +141,12 @@ public class PieceManager
             pos += block.Length;
         }
 
-        // Verify hash
-        if (_metadata.VerifyPiece(pieceIndex, pieceData))
+        // Verify hash — use async crypto when available (native SubtleCrypto in browser)
+        bool verified = _crypto != null
+            ? await _metadata.VerifyPieceAsync(pieceIndex, pieceData, _crypto)
+            : _metadata.VerifyPiece(pieceIndex, pieceData);
+
+        if (verified)
         {
             // Store verified piece
             await _store.PutAsync(pieceIndex, pieceData);
@@ -169,7 +176,11 @@ public class PieceManager
         var piece = _pieces[pieceIndex];
         if (piece.State == DownloadState.Complete) return true;
 
-        if (_metadata.VerifyPiece(pieceIndex, pieceData))
+        bool verified = _crypto != null
+            ? await _metadata.VerifyPieceAsync(pieceIndex, pieceData, _crypto)
+            : _metadata.VerifyPiece(pieceIndex, pieceData);
+
+        if (verified)
         {
             await _store.PutAsync(pieceIndex, pieceData);
             piece.State = DownloadState.Complete;

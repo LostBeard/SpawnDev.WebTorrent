@@ -241,7 +241,7 @@ public class TorrentSwarm : IAsyncDisposable
             ?? CreateDefaultStore(metadata);
 
         // Create piece manager
-        _pieceManager = new PieceManager(metadata, _store);
+        _pieceManager = new PieceManager(metadata, _store, _client.Crypto);
         _pieceManager.OnPieceComplete += HandlePieceComplete;
 
         // Scan for already-downloaded pieces (restore from OPFS after reload)

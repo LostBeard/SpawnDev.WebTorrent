@@ -88,14 +88,21 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
     public ServiceWorkerStreamHandler? StreamHandler { get; private set; }
 
     private SpawnDev.AsyncFileSystem.IAsyncFS? _asyncFs;
+    private readonly BlazorJS.Cryptography.IPortableCrypto? _crypto;
     private const string TorrentStateDir = "webtorrent/_state";
 
+    /// <summary>Crypto implementation for piece hash verification (SubtleCrypto in browser, .NET on desktop).</summary>
+    public BlazorJS.Cryptography.IPortableCrypto? Crypto => _crypto;
+
     public WebTorrentClient(ServiceWorkerStreamHandler? streamHandler = null,
-        SpawnDev.AsyncFileSystem.IAsyncFS? asyncFs = null, WebTorrentOptions? options = null)
+        SpawnDev.AsyncFileSystem.IAsyncFS? asyncFs = null,
+        BlazorJS.Cryptography.IPortableCrypto? crypto = null,
+        WebTorrentOptions? options = null)
     {
         _options = options ?? new WebTorrentOptions();
         StreamHandler = streamHandler;
         _asyncFs = asyncFs;
+        _crypto = crypto;
         UploadLimit = _options.UploadLimit;
         DownloadLimit = _options.DownloadLimit;
 

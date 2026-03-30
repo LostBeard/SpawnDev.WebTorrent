@@ -62,11 +62,19 @@ public class TorrentMetadata
     /// <summary>Exact source URL (.torrent file) from magnet URI xs= parameter.</summary>
     public string? ExactSource { get; set; }
 
-    /// <summary>Verify a downloaded piece against its hash.</summary>
+    /// <summary>Verify a downloaded piece against its hash using the provided crypto implementation.</summary>
+    public async Task<bool> VerifyPieceAsync(int index, byte[] data, BlazorJS.Cryptography.IPortableCrypto crypto)
+    {
+        if (index < 0 || index >= PieceHashes.Length) return false;
+        var hash = await crypto.Digest("SHA-1", data);
+        return hash.AsSpan().SequenceEqual(PieceHashes[index]);
+    }
+
+    /// <summary>Verify a downloaded piece against its hash (sync, uses .NET SHA1).</summary>
     public bool VerifyPiece(int index, byte[] data)
     {
         if (index < 0 || index >= PieceHashes.Length) return false;
-        var hash = SHA1.HashData(data);
+        var hash = System.Security.Cryptography.SHA1.HashData(data);
         return hash.AsSpan().SequenceEqual(PieceHashes[index]);
     }
 }

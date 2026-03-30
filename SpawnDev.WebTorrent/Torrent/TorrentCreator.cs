@@ -55,6 +55,46 @@ public static class TorrentCreator
     }
 
     /// <summary>
+    /// Create a .torrent file from an HTTP/HTTPS URL. Downloads the file via streaming
+    /// and computes piece hashes as data arrives — no full-file buffering.
+    /// Works on all platforms (desktop + browser).
+    /// </summary>
+    public static async Task<(byte[] torrentBytes, TorrentMetadata metadata)> CreateFromUrlAsync(
+        string url, TorrentCreatorOptions? options = null, CancellationToken ct = default)
+    {
+        using var http = new HttpClient();
+        using var response = await http.SendAsync(
+            new HttpRequestMessage(HttpMethod.Get, url), HttpCompletionOption.ResponseHeadersRead, ct);
+        response.EnsureSuccessStatusCode();
+
+        var length = response.Content.Headers.ContentLength
+            ?? throw new InvalidOperationException($"Server did not provide Content-Length for {url}");
+
+        var name = options?.Name;
+        if (string.IsNullOrEmpty(name))
+        {
+            // Derive name from URL path
+            var uri = new Uri(url);
+            name = Uri.UnescapeDataString(uri.Segments.LastOrDefault()?.TrimEnd('/') ?? "download.bin");
+        }
+
+        // Add the original URL as a web seed — it already serves the file
+        options ??= new TorrentCreatorOptions();
+        if (!options.WebSeeds.Contains(url))
+        {
+            // Build base URL for BEP 17 (directory, not full file path)
+            var uri = new Uri(url);
+            var basePath = string.Join("/", uri.Segments.Take(uri.Segments.Length - 1));
+            var baseUrl = $"{uri.Scheme}://{uri.Authority}{basePath}".TrimEnd('/');
+            if (!options.WebSeeds.Contains(baseUrl))
+                options.WebSeeds = options.WebSeeds.Append(baseUrl).ToArray();
+        }
+
+        using var stream = await response.Content.ReadAsStreamAsync(ct);
+        return await CreateFromStreamAsync(name, stream, length, options, ct);
+    }
+
+    /// <summary>
     /// Create a .torrent file from in-memory bytes.
     /// </summary>
     public static (byte[] torrentBytes, TorrentMetadata metadata) CreateFromBytes(

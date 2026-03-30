@@ -183,7 +183,7 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[WebTorrent] Failed to remove torrent state: {ex.Message}");
+            if (VerboseLogging) Console.Error.WriteLine($"[WebTorrent] Failed to remove torrent state: {ex.Message}");
         }
     }
 
@@ -247,13 +247,13 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
                 }
                 catch (Exception ex)
                 {
-                    Console.Error.WriteLine($"[WebTorrent] Failed to restore {filePath}: {ex.Message}");
+                    if (VerboseLogging) Console.Error.WriteLine($"[WebTorrent] Failed to restore {filePath}: {ex.Message}");
                 }
             }
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[WebTorrent] Failed to restore torrents: {ex.Message}");
+            if (VerboseLogging) Console.Error.WriteLine($"[WebTorrent] Failed to restore torrents: {ex.Message}");
         }
     }
 

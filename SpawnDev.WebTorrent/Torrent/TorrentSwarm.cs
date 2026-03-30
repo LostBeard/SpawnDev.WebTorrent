@@ -597,10 +597,18 @@ public class TorrentSwarm : IAsyncDisposable
         {
             for (int i = 0; i < Metadata.PieceCount; i++)
             {
-                var piece = await _store.GetAsync(i);
-                if (piece != null && piece.Length > 0)
+                try
                 {
-                    _pieceManager.MarkComplete(i);
+                    var piece = await _store.GetAsync(i);
+                    if (piece != null && piece.Length > 0)
+                    {
+                        _pieceManager.MarkComplete(i);
+                    }
+                }
+                catch
+                {
+                    // Stale/corrupt piece — remove it so it gets re-downloaded
+                    try { await _store.RemoveAsync(i); } catch { }
                 }
             }
             if (_pieceManager.IsComplete)
@@ -610,7 +618,9 @@ public class TorrentSwarm : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[WebTorrent] ScanExistingPieces error: {ex.Message}");
+            // Never crash the app from a restore scan failure
+            if (WebTorrentClient.VerboseLogging)
+                Console.Error.WriteLine($"[WebTorrent] ScanExistingPieces error: {ex.Message}");
         }
     }
 

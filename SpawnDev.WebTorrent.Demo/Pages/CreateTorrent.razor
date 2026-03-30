@@ -1,0 +1,452 @@
+@page "/create"
+@using SpawnDev.WebTorrent
+@using SpawnDev.WebTorrent.Torrent
+@using SpawnDev.BlazorJS
+@using SpawnDev.BlazorJS.JSObjects
+@inject BlazorJSRuntime JS
+@inject WebTorrentClient Client
+
+<PageTitle>Create Torrent — SpawnDev.WebTorrent</PageTitle>
+
+<div class="qb">
+    <div class="qb-toolbar">
+        <h2 style="margin:0;padding:8px 16px;color:#e2e8f0;">Create Torrent</h2>
+    </div>
+
+    <div style="display:flex;gap:16px;padding:16px;flex-wrap:wrap;">
+        @* ═══ Left: File List ═══ *@
+        <div style="flex:1;min-width:350px;">
+            <div class="qb-panel">
+                <div class="qb-panel-header">
+                    <span>Files (@_files.Count)</span>
+                    <span style="color:#94a3b8;font-size:0.85rem;">@FormatSize(_files.Sum(f => f.Size))</span>
+                </div>
+
+                @if (_files.Count == 0)
+                {
+                    <div style="padding:32px;text-align:center;color:#64748b;">
+                        <p>No files added yet.</p>
+                        <p style="font-size:0.85rem;">Add files or folders below, or paste a URL to download.</p>
+                    </div>
+                }
+                else
+                {
+                    <div style="max-height:400px;overflow-y:auto;">
+                        <table class="qb-table" style="width:100%;">
+                            <thead>
+                                <tr>
+                                    <th style="width:60%;">Name</th>
+                                    <th style="width:25%;">Size</th>
+                                    <th style="width:15%;text-align:center;">Remove</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var file in _files)
+                                {
+                                    var f = file;
+                                    <tr>
+                                        <td title="@f.Path" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:300px;">@f.Name</td>
+                                        <td>@FormatSize(f.Size)</td>
+                                        <td style="text-align:center;">
+                                            <button class="qb-btn-sm" @onclick="() => RemoveFile(f)" title="Remove">✕</button>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+
+                <div style="padding:8px;display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid #334155;">
+                    <button class="qb-btn" @onclick="AddFiles">Add Files</button>
+                    @if (_showDirectoryPickerSupported)
+                    {
+                        <button class="qb-btn" @onclick="AddFolder">Add Folder</button>
+                    }
+                    <button class="qb-btn" @onclick="() => _showUrlInput = !_showUrlInput">Add from URL</button>
+                    @if (_files.Count > 0)
+                    {
+                        <button class="qb-btn" style="margin-left:auto;color:#ef4444;" @onclick="ClearFiles">Clear All</button>
+                    }
+                </div>
+
+                @if (_showUrlInput)
+                {
+                    <div style="padding:8px;border-top:1px solid #334155;display:flex;gap:8px;">
+                        <input type="text" class="qb-input" style="flex:1;" placeholder="https://example.com/model.onnx"
+                               @bind="_urlInput" @bind:event="oninput" @onkeydown="OnUrlKeyDown" />
+                        <button class="qb-btn qb-btn-accent" @onclick="AddFromUrl"
+                                disabled="@(string.IsNullOrWhiteSpace(_urlInput) || _downloading)">
+                            @(_downloading ? "Downloading..." : "Add")
+                        </button>
+                    </div>
+                }
+            </div>
+        </div>
+
+        @* ═══ Right: Options ═══ *@
+        <div style="flex:0 0 320px;min-width:280px;">
+            <div class="qb-panel">
+                <div class="qb-panel-header">Options</div>
+                <div style="padding:12px;display:flex;flex-direction:column;gap:12px;">
+                    <div>
+                        <label class="qb-label">Torrent Name</label>
+                        <input type="text" class="qb-input" placeholder="@(_files.Count > 0 ? _files[0].Name : "auto from files")"
+                               @bind="_options.Name" />
+                    </div>
+                    <div>
+                        <label class="qb-label">Comment</label>
+                        <textarea class="qb-input" rows="2" @bind="_options.Comment"></textarea>
+                    </div>
+                    <div>
+                        <label class="qb-label">Trackers (one per line)</label>
+                        <textarea class="qb-input" rows="3" placeholder="wss://hub.spawndev.com:44365/announce"
+                                  @bind="_trackers"></textarea>
+                    </div>
+                    <div>
+                        <label class="qb-label">Web Seeds (one per line)</label>
+                        <textarea class="qb-input" rows="2" @bind="_webSeeds"></textarea>
+                    </div>
+                    <div>
+                        <label class="qb-label">Hash Algorithm</label>
+                        <select class="qb-input" @bind="_options.HashAlgorithm">
+                            <option value="SHA-256">SHA-256 (recommended)</option>
+                            <option value="SHA-1">SHA-1 (legacy compatibility)</option>
+                        </select>
+                    </div>
+                    <div style="display:flex;gap:16px;">
+                        <label style="display:flex;align-items:center;gap:4px;color:#cbd5e1;cursor:pointer;">
+                            <input type="checkbox" @bind="_private" /> Private
+                        </label>
+                        <label style="display:flex;align-items:center;gap:4px;color:#cbd5e1;cursor:pointer;">
+                            <input type="checkbox" @bind="_startSeeding" /> Start Seeding
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            @* ═══ Create Button ═══ *@
+            <div style="margin-top:12px;">
+                <button class="qb-btn qb-btn-accent" style="width:100%;padding:12px;font-size:1.1rem;"
+                        @onclick="OnCreateTorrent" disabled="@(_files.Count == 0 || _creating)">
+                    @if (_creating)
+                    {
+                        <span>Creating... @_createProgress</span>
+                    }
+                    else
+                    {
+                        <span>Create Torrent</span>
+                    }
+                </button>
+            </div>
+
+            @if (!string.IsNullOrEmpty(_statusMessage))
+            {
+                <div style="margin-top:8px;padding:8px 12px;border-radius:6px;font-size:0.85rem;
+                            background:@(_statusIsError ? "#7f1d1d" : "#14532d");color:@(_statusIsError ? "#fca5a5" : "#86efac");">
+                    @_statusMessage
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    // ═══ State ═══
+    private List<FileEntry> _files = new();
+    private TorrentCreatorOptions _options = new()
+    {
+        HashAlgorithm = "SHA-256",
+        CreatedBy = "SpawnDev.WebTorrent",
+    };
+    private string _trackers = "wss://hub.spawndev.com:44365/announce";
+    private string _webSeeds = "";
+    private bool _private;
+    private bool _startSeeding = true;
+    private string _urlInput = "";
+    private bool _showUrlInput;
+    private bool _downloading;
+    private bool _creating;
+    private string _createProgress = "";
+    private string _statusMessage = "";
+    private bool _statusIsError;
+    private bool _showDirectoryPickerSupported;
+
+    // ═══ File Entry ═══
+    private class FileEntry
+    {
+        public string Name { get; set; } = "";
+        public string Path { get; set; } = "";
+        public long Size { get; set; }
+        public byte[]? Data { get; set; }
+        public FileSystemFileHandle? Handle { get; set; }
+    }
+
+    protected override void OnInitialized()
+    {
+        using var window = JS.Get<Window>("window");
+        _showDirectoryPickerSupported = window.ShowDirectoryPickerSupported();
+    }
+
+    // ═══ Add Files ═══
+    private async Task AddFiles()
+    {
+        try
+        {
+            using var window = JS.Get<Window>("window");
+            using var handles = await window.ShowOpenFilePicker(new ShowOpenFilePickerOptions { Multiple = true });
+            if (handles == null) return;
+            for (int i = 0; i < handles.Length; i++)
+            {
+                using var handle = handles[i];
+                using var file = await handle.GetFile();
+                var data = await ReadFileToBytes(file);
+                _files.Add(new FileEntry
+                {
+                    Name = file.Name,
+                    Path = file.Name,
+                    Size = data.Length,
+                    Data = data,
+                });
+            }
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            if (!ex.Message.Contains("aborted")) // user cancelled
+                SetStatus($"Error: {ex.Message}", true);
+        }
+    }
+
+    // ═══ Add Folder ═══
+    private async Task AddFolder()
+    {
+        try
+        {
+            using var window = JS.Get<Window>("window");
+            using var dirHandle = await window.ShowDirectoryPicker();
+            if (dirHandle == null) return;
+            var dirName = dirHandle.Name;
+            await AddFilesFromDirectory(dirHandle, dirName);
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            if (!ex.Message.Contains("aborted"))
+                SetStatus($"Error: {ex.Message}", true);
+        }
+    }
+
+    private async Task AddFilesFromDirectory(FileSystemDirectoryHandle dir, string basePath)
+    {
+        await foreach (var entry in dir.ValuesEnumerable())
+        {
+            if (entry.Kind == "file")
+            {
+                using var fileHandle = entry.ToFileSystemFileHandle();
+                using var file = await fileHandle.GetFile();
+                var data = await ReadFileToBytes(file);
+                _files.Add(new FileEntry
+                {
+                    Name = file.Name,
+                    Path = $"{basePath}/{file.Name}",
+                    Size = data.Length,
+                    Data = data,
+                });
+            }
+            else if (entry.Kind == "directory")
+            {
+                using var subDir = entry.ToFileSystemDirectoryHandle();
+                await AddFilesFromDirectory(subDir, $"{basePath}/{entry.Name}");
+            }
+            entry.Dispose();
+        }
+    }
+
+    // ═══ Add from URL ═══
+    private async Task AddFromUrl()
+    {
+        if (string.IsNullOrWhiteSpace(_urlInput)) return;
+        _downloading = true;
+        _statusMessage = "";
+        StateHasChanged();
+
+        try
+        {
+            using var http = new HttpClient();
+            using var response = await http.GetAsync(_urlInput, HttpCompletionOption.ResponseHeadersRead);
+            response.EnsureSuccessStatusCode();
+
+            var data = await response.Content.ReadAsByteArrayAsync();
+            var uri = new Uri(_urlInput);
+            var name = Uri.UnescapeDataString(uri.Segments.LastOrDefault()?.TrimEnd('/') ?? "download.bin");
+
+            _files.Add(new FileEntry
+            {
+                Name = name,
+                Path = name,
+                Size = data.Length,
+                Data = data,
+            });
+
+            // Add source URL as web seed
+            var basePath = string.Join("/", uri.Segments.Take(uri.Segments.Length - 1));
+            var baseUrl = $"{uri.Scheme}://{uri.Authority}{basePath}".TrimEnd('/');
+            if (!string.IsNullOrWhiteSpace(_webSeeds) && !_webSeeds.EndsWith("\n"))
+                _webSeeds += "\n";
+            if (!_webSeeds.Contains(baseUrl))
+                _webSeeds += baseUrl;
+
+            SetStatus($"Downloaded {name} ({FormatSize(data.Length)})", false);
+            _urlInput = "";
+            _showUrlInput = false;
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Download failed: {ex.Message}", true);
+        }
+        finally
+        {
+            _downloading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task OnUrlKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await AddFromUrl();
+    }
+
+    // ═══ Remove / Clear ═══
+    private void RemoveFile(FileEntry file)
+    {
+        _files.Remove(file);
+        StateHasChanged();
+    }
+
+    private void ClearFiles()
+    {
+        _files.Clear();
+        StateHasChanged();
+    }
+
+    // ═══ Create Torrent ═══
+    private async Task OnCreateTorrent()
+    {
+        if (_files.Count == 0) return;
+        _creating = true;
+        _createProgress = "preparing...";
+        _statusMessage = "";
+        StateHasChanged();
+
+        try
+        {
+            // Build options
+            var trackerList = _trackers.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(t => !string.IsNullOrWhiteSpace(t)).ToArray();
+            var webSeedList = _webSeeds.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(w => !string.IsNullOrWhiteSpace(w)).ToArray();
+
+            _options.Trackers = trackerList.Length > 0 ? trackerList : new[] { "wss://hub.spawndev.com:44365/announce" };
+            _options.WebSeeds = webSeedList;
+            _options.IsPrivate = _private;
+
+            if (_files.Count == 1)
+            {
+                // Single file torrent
+                var file = _files[0];
+                if (string.IsNullOrWhiteSpace(_options.Name))
+                    _options.Name = file.Name;
+
+                _createProgress = "hashing pieces...";
+                StateHasChanged();
+
+                var (torrentBytes, metadata) = TorrentCreator.CreateFromBytes(
+                    _options.Name, file.Data!, _options);
+
+                _createProgress = "seeding...";
+                StateHasChanged();
+
+                if (_startSeeding)
+                {
+                    var swarm = await Client.SeedAsync(file.Data!, _options.Name, _options);
+                    SetStatus($"Created and seeding: {metadata.Name} ({FormatSize(metadata.TotalLength)}, {metadata.PieceCount} pieces, {metadata.PieceHashAlgorithm})", false);
+                }
+                else
+                {
+                    SetStatus($"Created: {metadata.Name} ({FormatSize(metadata.TotalLength)}, {metadata.PieceCount} pieces, {metadata.PieceHashAlgorithm})", false);
+                }
+            }
+            else
+            {
+                // Multi-file: concatenate all file data
+                var totalSize = _files.Sum(f => f.Size);
+                var combined = new byte[totalSize];
+                int offset = 0;
+                foreach (var f in _files)
+                {
+                    System.Array.Copy(f.Data!, 0, combined, offset, f.Data!.Length);
+                    offset += f.Data!.Length;
+                }
+
+                var name = string.IsNullOrWhiteSpace(_options.Name) ? _files[0].Name : _options.Name;
+
+                _createProgress = "hashing pieces...";
+                StateHasChanged();
+
+                var (torrentBytes, metadata) = TorrentCreator.CreateFromBytes(name, combined, _options);
+
+                if (_startSeeding)
+                {
+                    _createProgress = "seeding...";
+                    StateHasChanged();
+                    var swarm = await Client.SeedAsync(combined, name, _options);
+                    SetStatus($"Created and seeding: {metadata.Name} ({FormatSize(metadata.TotalLength)}, {metadata.PieceCount} pieces)", false);
+                }
+                else
+                {
+                    SetStatus($"Created: {metadata.Name} ({FormatSize(metadata.TotalLength)}, {metadata.PieceCount} pieces)", false);
+                }
+            }
+
+            _files.Clear();
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Create failed: {ex.Message}", true);
+        }
+        finally
+        {
+            _creating = false;
+            _createProgress = "";
+            StateHasChanged();
+        }
+    }
+
+    // ═══ Helpers ═══
+    private void SetStatus(string msg, bool isError)
+    {
+        _statusMessage = msg;
+        _statusIsError = isError;
+    }
+
+    private async Task<byte[]> ReadFileToBytes(File file)
+    {
+        using var arrayBuffer = await file.ArrayBuffer();
+        using var uint8 = new Uint8Array(arrayBuffer);
+        return uint8.ReadBytes();
+    }
+
+    private static string FormatSize(long bytes)
+    {
+        string[] sizes = { "B", "KB", "MB", "GB", "TB" };
+        double len = bytes;
+        int order = 0;
+        while (len >= 1024 && order < sizes.Length - 1)
+        {
+            order++;
+            len /= 1024;
+        }
+        return $"{len:0.##} {sizes[order]}";
+    }
+}

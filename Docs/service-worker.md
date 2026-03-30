@@ -5,13 +5,14 @@ SpawnDev.WebTorrent includes `webtorrent-sw.js`, a combined service worker and B
 - **Media streaming with seeking** — Video/audio elements get piece data served on demand via range requests
 - **Cross-Origin-Isolation** — COOP/COEP headers for SharedArrayBuffer support
 - **Blazor loading** — Waits for the service worker to be ready before starting Blazor WebAssembly
+- **Health check** — `/webtorrent-sw-check` returns JSON confirming the SW is active
 
 ## How It Works
 
 `webtorrent-sw.js` is a dual-mode script:
 
 - **Page context** (loaded via `<script>` in index.html): Registers itself as a service worker, waits for it to be ready, reloads once to apply COI headers, then dynamically loads `_framework/blazor.webassembly.js`.
-- **Service worker context**: Intercepts fetch requests to add COI headers and handle `/webtorrent/` streaming requests.
+- **Service worker context**: Intercepts fetch requests to add COI headers, handle `/webtorrent/` streaming requests, and respond to health checks.
 
 ## Setup
 
@@ -35,26 +36,35 @@ The `webtorrent-sw.js` file is included in the SpawnDev.WebTorrent NuGet package
 
 ### 3. Program.cs (Blazor WASM)
 
-Register the required services:
+Register the required services as singletons:
 
 ```csharp
 using SpawnDev.AsyncFileSystem;
+using SpawnDev.AsyncFileSystem.BrowserWASM;
 using SpawnDev.BlazorJS;
 using SpawnDev.BlazorJS.Cryptography;
+using SpawnDev.WebTorrent;
 
 builder.Services.AddBlazorJSRuntime();
 
 // Cross-platform crypto for BEP 46 signing
 if (OperatingSystem.IsBrowser())
-{
     builder.Services.AddSingleton<IPortableCrypto, BrowserWASMCrypto>();
-    builder.Services.AddSingleton<IAsyncFS, AsyncFSFileSystemDirectoryHandle>();
-}
 else
-{
     builder.Services.AddSingleton<IPortableCrypto, DotNetCrypto>();
-}
+
+// Persistent file system (OPFS in browser)
+builder.Services.AddSingleton<IAsyncFS, AsyncFSFileSystemDirectoryHandle>();
+
+// WebTorrent services — IAsyncBackgroundService singletons
+// Started automatically before any pages load
+builder.Services.AddSingleton<ServiceWorkerStreamHandler>();
+builder.Services.AddSingleton<WebTorrentClient>();
+
+await builder.Build().BlazorJSRunAsync();
 ```
+
+Both `ServiceWorkerStreamHandler` and `WebTorrentClient` implement `IAsyncBackgroundService`. They are started automatically by SpawnDev.BlazorJS before any page renders. No need to await `Ready` — they are guaranteed to be initialized when your pages load.
 
 ## Media Streaming
 
@@ -64,47 +74,46 @@ else
 /webtorrent/{infoHashHex}/{fileIndex}
 ```
 
-- `infoHashHex` — The torrent's info hash as a lowercase hex string
-- `fileIndex` — Zero-based index of the file in the torrent's file list
-
-### Example
+### File API
 
 ```csharp
-// After downloading a torrent:
-var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
-var videoUrl = $"/webtorrent/{hash}/0"; // First file
+// Get the streaming URL
+var url = file.StreamURL;
 
-// Use in a <video> element:
-<video src="@videoUrl" controls autoplay></video>
-// The browser sends range requests → SW intercepts → Blazor reads pieces → responds
+// Set on a video element
+file.StreamTo(videoElement);
+
+// Get a .NET Stream (seekable, on-demand piece download)
+using var stream = file.CreateReadStream();
 ```
 
 ### Range Request Flow
 
 1. Video element requests `GET /webtorrent/{hash}/{idx}` with `Range: bytes=1000000-1065535`
 2. Service worker intercepts the request
-3. SW posts the request to the main window via `MessageChannel`
-4. Blazor code reads the requested byte range from `TorrentFileStream.ReadAsync()`
-5. Blazor responds with the data + `Content-Range` header
-6. SW wraps it in a `206 Partial Content` response and returns it to the video element
-7. Video plays with full seeking support
+3. SW posts the request to the `ServiceWorkerStreamHandler` singleton via MessageChannel
+4. `WebTorrentClient.HandleStreamRequest` finds the torrent and creates a `TorrentReadStream`
+5. `StreamState` reads 64KB chunks from the stream and sends `Uint8Array` data via the port
+6. SW wraps chunks in a `ReadableStream` and returns `206 Partial Content`
+7. If a piece isn't downloaded yet, `ReadAsync` prioritizes it and waits — the video buffers
 
-### Handling Stream Requests in Blazor
+### Protocol
 
-The main window must listen for `webtorrent-stream` messages from the service worker and respond with piece data. See the demo's `Torrents.razor` for the full implementation:
+Matches the SpawnDev.BlazorJS.WebDesktop `service-worker-fs.js` protocol exactly:
+
+1. SW posts request to client via `MessageChannel` port
+2. Client wires up `port.OnMessage += handler`, calls `port.Start()`, then `port.PostMessage(response)`
+3. Initial response has `body: "stream_pull"` for streaming
+4. SW creates a `ReadableStream` and sends `{ eventType: 'pull', desiredSize: N }` for each chunk
+5. Client reads from `TorrentReadStream` and sends `Uint8Array` chunks back
+6. Falsy value (empty string) signals stream end
+
+## Health Check
 
 ```csharp
-// In OnAfterRenderAsync:
-JS.Set("_wtStreamHandler", new ActionCallback<MessageEvent>(HandleStreamRequest));
-JS.CallVoid("eval", @"
-    navigator.serviceWorker.addEventListener('message', function(e) {
-        if (e.data && e.data.type === 'webtorrent-stream' && e.ports && e.ports[0]) {
-            window._wtStreamHandler(e);
-        }
-    });
-");
-
-// HandleStreamRequest parses the URL, reads from chunk store, responds via port
+// Verify the SW is active and intercepting
+var response = await JS.Fetch("/webtorrent-sw-check");
+// Returns: {"name":"SpawnDev.WebTorrent","active":true,"scope":"..."}
 ```
 
 ## Cross-Origin-Isolation
@@ -116,18 +125,23 @@ Cross-Origin-Embedder-Policy: credentialless
 Cross-Origin-Opener-Policy: same-origin
 ```
 
-This enables `SharedArrayBuffer` which is required for multi-threaded Wasm (used by SpawnDev.ILGPU's Wasm backend).
+This enables `SharedArrayBuffer` which is required for multi-threaded Wasm.
+
+## Torrent Persistence
+
+Torrents persist across page reloads:
+
+- **Pieces**: Stored in OPFS via `AsyncFSChunkStore` at `webtorrent/{infoHashHex}/piece_{N}`
+- **Metadata**: `.torrent` bytes saved at `webtorrent/_state/{infoHashHex}.torrent`
+- **On startup**: `WebTorrentClient.InitAsync()` restores all saved torrents automatically
+- **On remove**: State file deleted. With `destroyStore: true`, pieces deleted too.
 
 ## Lifecycle
 
 1. First visit: `webtorrent-sw.js` runs as a page script, registers itself as a SW
 2. SW activates, calls `skipWaiting()` + `clients.claim()`
 3. Page reloads to pick up COI headers from the SW
-4. On reload: `crossOriginIsolated` is `true`, Blazor loads immediately
-5. Subsequent visits: SW is already active, no reload needed
-
-## Compatibility
-
-- **Requires service worker support** — All modern browsers (Chrome, Firefox, Safari, Edge)
-- **Falls back gracefully** — If SW registration fails or COI can't be established after 2 retries, Blazor loads without COI. Streaming still works if the SW is active.
-- **GitHub Pages** — Works on static hosts where you can't set server headers
+4. On reload: `crossOriginIsolated` is `true`, SW is controlling, Blazor loads
+5. `ServiceWorkerStreamHandler` starts (IAsyncBackgroundService), listens for SW messages
+6. `WebTorrentClient` starts, restores persisted torrents, registers stream handler
+7. Subsequent visits: SW is already active, no reload needed, torrents restored from OPFS

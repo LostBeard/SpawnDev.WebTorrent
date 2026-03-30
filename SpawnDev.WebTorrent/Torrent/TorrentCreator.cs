@@ -25,10 +25,13 @@ public static class TorrentCreator
 
         var pieceHashes = new List<byte[]>();
         var buffer = new byte[pieceLength];
+        bool useSha256 = options.HashAlgorithm == "SHA-256";
         int bytesRead;
         while ((bytesRead = await stream.ReadAsync(buffer.AsMemory(0, pieceLength), ct)) > 0)
         {
-            pieceHashes.Add(SHA1.HashData(buffer.AsSpan(0, bytesRead)));
+            pieceHashes.Add(useSha256
+                ? SHA256.HashData(buffer.AsSpan(0, bytesRead))
+                : SHA1.HashData(buffer.AsSpan(0, bytesRead)));
         }
 
         name = options.Name ?? name;
@@ -63,10 +66,13 @@ public static class TorrentCreator
             : CalculatePieceLength(data.Length);
 
         var pieceHashes = new List<byte[]>();
+        bool useSha256 = options.HashAlgorithm == "SHA-256";
         for (int offset = 0; offset < data.Length; offset += pieceLength)
         {
             int len = Math.Min(pieceLength, data.Length - offset);
-            pieceHashes.Add(SHA1.HashData(data.AsSpan(offset, len)));
+            pieceHashes.Add(useSha256
+                ? SHA256.HashData(data.AsSpan(offset, len))
+                : SHA1.HashData(data.AsSpan(offset, len)));
         }
 
         return BuildTorrent(name, data.Length, pieceLength, pieceHashes, options,
@@ -78,10 +84,11 @@ public static class TorrentCreator
         string name, long totalLength, int pieceLength, List<byte[]> pieceHashes,
         TorrentCreatorOptions options, TorrentFile[] files)
     {
-        // Concatenate piece hashes (20 bytes each)
-        var piecesConcat = new byte[pieceHashes.Count * 20];
+        // Concatenate piece hashes (20 bytes each for SHA-1, 32 bytes each for SHA-256)
+        int hashSize = pieceHashes[0].Length;
+        var piecesConcat = new byte[pieceHashes.Count * hashSize];
         for (int i = 0; i < pieceHashes.Count; i++)
-            Array.Copy(pieceHashes[i], 0, piecesConcat, i * 20, 20);
+            Array.Copy(pieceHashes[i], 0, piecesConcat, i * hashSize, hashSize);
 
         // Build info dictionary (bencoded, raw bytes for hash computation)
         var infoParts = new List<byte>();
@@ -221,4 +228,7 @@ public class TorrentCreatorOptions
 
     /// <summary>Private torrent (no DHT/PEX).</summary>
     public bool IsPrivate { get; set; }
+
+    /// <summary>Hash algorithm for piece verification. "SHA-256" (default) or "SHA-1".</summary>
+    public string HashAlgorithm { get; set; } = "SHA-256";
 }

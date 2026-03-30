@@ -1285,4 +1285,145 @@ public abstract partial class WebTorrentTestBase
 
         Console.WriteLine($"[SW] Range request: bytes=10000-19999, got {receivedData.Length} bytes, verified");
     }
+
+    // ═══════════════════════════════════════════════════════════
+    //  SHA-256 Piece Hashing Tests
+    // ═══════════════════════════════════════════════════════════
+
+    [TestMethod]
+    public async Task SHA256_CreateTorrent_HasCorrectHashSize()
+    {
+        var data = new byte[32768];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 251);
+
+        var (torrentBytes, metadata) = TorrentCreator.CreateFromBytes("sha256-test.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384, HashAlgorithm = "SHA-256" });
+
+        if (metadata.PieceHashes.Length == 0)
+            throw new Exception("No piece hashes");
+        if (metadata.PieceHashes[0].Length != 32)
+            throw new Exception($"Expected 32-byte SHA-256 hash, got {metadata.PieceHashes[0].Length}");
+        if (metadata.PieceHashAlgorithm != "SHA-256")
+            throw new Exception($"Expected SHA-256, got {metadata.PieceHashAlgorithm}");
+
+        Console.WriteLine($"[SHA-256] Created torrent: {metadata.PieceHashes.Length} pieces, {metadata.PieceHashes[0].Length}-byte hashes, algorithm={metadata.PieceHashAlgorithm}");
+    }
+
+    [TestMethod]
+    public async Task SHA256_ParseRoundTrip_PreservesHashes()
+    {
+        var data = new byte[65536];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 199);
+
+        var (torrentBytes, original) = TorrentCreator.CreateFromBytes("sha256-roundtrip.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384, HashAlgorithm = "SHA-256" });
+
+        // Parse the torrent bytes back
+        var parsed = TorrentParser.Parse(torrentBytes);
+
+        if (parsed.PieceHashAlgorithm != "SHA-256")
+            throw new Exception($"Parsed algorithm: {parsed.PieceHashAlgorithm}, expected SHA-256");
+        if (parsed.PieceHashes.Length != original.PieceHashes.Length)
+            throw new Exception($"Piece count mismatch: {parsed.PieceHashes.Length} vs {original.PieceHashes.Length}");
+
+        for (int i = 0; i < parsed.PieceHashes.Length; i++)
+        {
+            if (!parsed.PieceHashes[i].SequenceEqual(original.PieceHashes[i]))
+                throw new Exception($"Hash mismatch at piece {i}");
+        }
+
+        Console.WriteLine($"[SHA-256] Round-trip: {parsed.PieceHashes.Length} pieces, all hashes match");
+    }
+
+    [TestMethod]
+    public async Task SHA256_VerifyPiece_SyncAndAsync()
+    {
+        var data = new byte[16384];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 173);
+
+        var (_, metadata) = TorrentCreator.CreateFromBytes("sha256-verify.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384, HashAlgorithm = "SHA-256" });
+
+        // Sync verify
+        if (!metadata.VerifyPiece(0, data))
+            throw new Exception("Sync SHA-256 verify failed for correct data");
+
+        // Verify with wrong data
+        var badData = new byte[16384];
+        if (metadata.VerifyPiece(0, badData))
+            throw new Exception("Sync SHA-256 verify passed for wrong data");
+
+        Console.WriteLine("[SHA-256] Sync verify: correct=PASS, wrong=REJECT");
+
+        // Async verify (uses IPortableCrypto if available)
+        var crypto = CreateCrypto();
+        if (!await metadata.VerifyPieceAsync(0, data, crypto))
+            throw new Exception("Async SHA-256 verify failed for correct data");
+        if (await metadata.VerifyPieceAsync(0, badData, crypto))
+            throw new Exception("Async SHA-256 verify passed for wrong data");
+
+        Console.WriteLine("[SHA-256] Async verify: correct=PASS, wrong=REJECT");
+    }
+
+    [TestMethod]
+    public async Task SHA256_SeedAndDownload_FullPipeline()
+    {
+        var data = new byte[65536];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 211);
+
+        // Create SHA-256 torrent
+        var (torrentBytes, metadata) = TorrentCreator.CreateFromBytes("sha256-pipeline.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384, HashAlgorithm = "SHA-256" });
+
+        if (metadata.PieceHashAlgorithm != "SHA-256")
+            throw new Exception($"Wrong algorithm: {metadata.PieceHashAlgorithm}");
+
+        // Simulate piece storage and verification
+        var store = new MemoryChunkStore(16384);
+        var pm = new PieceManager(metadata, store);
+
+        for (int i = 0; i < metadata.PieceCount; i++)
+        {
+            int offset = i * metadata.PieceLength;
+            int len = Math.Min(metadata.PieceLength, data.Length - offset);
+            var pieceData = new byte[len];
+            System.Array.Copy(data, offset, pieceData, 0, len);
+
+            var ok = await pm.ReceiveCompletePieceAsync(i, pieceData);
+            if (!ok)
+                throw new Exception($"Piece {i} failed SHA-256 verification");
+        }
+
+        if (!pm.IsComplete)
+            throw new Exception($"Not complete: {pm.CompletedCount}/{pm.PieceCount}");
+
+        Console.WriteLine($"[SHA-256] Full pipeline: {pm.CompletedCount}/{pm.PieceCount} pieces verified with SHA-256");
+    }
+
+    [TestMethod]
+    public async Task SHA1_BackwardsCompatible_StillWorks()
+    {
+        var data = new byte[32768];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 157);
+
+        // Explicitly use SHA-1 (backwards compat)
+        var (torrentBytes, metadata) = TorrentCreator.CreateFromBytes("sha1-compat.bin", data,
+            new TorrentCreatorOptions { PieceLength = 16384, HashAlgorithm = "SHA-1" });
+
+        if (metadata.PieceHashes[0].Length != 20)
+            throw new Exception($"Expected 20-byte SHA-1 hash, got {metadata.PieceHashes[0].Length}");
+        if (metadata.PieceHashAlgorithm != "SHA-1")
+            throw new Exception($"Expected SHA-1, got {metadata.PieceHashAlgorithm}");
+
+        // Verify
+        if (!metadata.VerifyPiece(0, data.AsSpan(0, 16384).ToArray()))
+            throw new Exception("SHA-1 verify failed");
+
+        // Parse round-trip
+        var parsed = TorrentParser.Parse(torrentBytes);
+        if (parsed.PieceHashAlgorithm != "SHA-1")
+            throw new Exception($"Parsed as {parsed.PieceHashAlgorithm}, expected SHA-1");
+
+        Console.WriteLine("[SHA-1] Backwards compatible: create, verify, parse all work");
+    }
 }

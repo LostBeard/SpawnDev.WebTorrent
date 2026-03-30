@@ -26,8 +26,11 @@ public class TorrentMetadata
     /// <summary>Number of pieces.</summary>
     public int PieceCount => PieceLength > 0 ? (int)((TotalLength + PieceLength - 1) / PieceLength) : 0;
 
-    /// <summary>SHA-1 hashes for each piece (20 bytes each). Used to verify downloaded data.</summary>
+    /// <summary>Hashes for each piece (20 bytes for SHA-1, 32 bytes for SHA-256).</summary>
     public byte[][] PieceHashes { get; set; } = Array.Empty<byte[]>();
+
+    /// <summary>Hash algorithm used for piece verification. Auto-detected from hash size.</summary>
+    public string PieceHashAlgorithm => PieceHashes.Length > 0 && PieceHashes[0].Length == 32 ? "SHA-256" : "SHA-1";
 
     /// <summary>Files in this torrent.</summary>
     public TorrentFile[] Files { get; set; } = Array.Empty<TorrentFile>();
@@ -66,15 +69,17 @@ public class TorrentMetadata
     public async Task<bool> VerifyPieceAsync(int index, byte[] data, BlazorJS.Cryptography.IPortableCrypto crypto)
     {
         if (index < 0 || index >= PieceHashes.Length) return false;
-        var hash = await crypto.Digest("SHA-1", data);
+        var hash = await crypto.Digest(PieceHashAlgorithm, data);
         return hash.AsSpan().SequenceEqual(PieceHashes[index]);
     }
 
-    /// <summary>Verify a downloaded piece against its hash (sync, uses .NET SHA1).</summary>
+    /// <summary>Verify a downloaded piece against its hash (sync fallback).</summary>
     public bool VerifyPiece(int index, byte[] data)
     {
         if (index < 0 || index >= PieceHashes.Length) return false;
-        var hash = System.Security.Cryptography.SHA1.HashData(data);
+        var hash = PieceHashAlgorithm == "SHA-256"
+            ? System.Security.Cryptography.SHA256.HashData(data)
+            : System.Security.Cryptography.SHA1.HashData(data);
         return hash.AsSpan().SequenceEqual(PieceHashes[index]);
     }
 }

@@ -43,7 +43,7 @@ public class ServiceWorkerStreamHandler : IAsyncBackgroundService, IDisposable
         _swContainer = BlazorJSRuntime.JS.Get<ServiceWorkerContainer>("navigator.serviceWorker");
         if (_swContainer == null) return Task.CompletedTask;
         _swContainer.OnMessage += HandleMessage;
-        Console.WriteLine("[WebTorrent SW Handler] Initialized — listening for SW messages");
+        if (WebTorrentClient.VerboseLogging) Console.WriteLine("[WebTorrent SW Handler] Initialized — listening for SW messages");
         return Task.CompletedTask;
     }
 
@@ -56,7 +56,7 @@ public class ServiceWorkerStreamHandler : IAsyncBackgroundService, IDisposable
             if (msgType != "webtorrent") return;
 
             var requestUrl = data.JSRef!.Get<string>("url") ?? "";
-            Console.WriteLine($"[WebTorrent SW Handler] Received request: {requestUrl}");
+            if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[WebTorrent SW Handler] Received request: {requestUrl}");
             using var headersObj = data.JSRef!.Get<JSObject?>("headers");
             var rangeHeader = headersObj?.JSRef?.Get<string?>("range");
             var destination = data.JSRef!.Get<string?>("destination") ?? "";
@@ -84,9 +84,9 @@ public class ServiceWorkerStreamHandler : IAsyncBackgroundService, IDisposable
                 Port = port,
             };
 
-            Console.WriteLine($"[WebTorrent SW Handler] Firing OnRequest: hash={infoHash}, fileIdx={fileIdx}, subscribers={OnRequest?.GetInvocationList().Length ?? 0}");
+            if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[WebTorrent SW Handler] Firing OnRequest: hash={infoHash}, fileIdx={fileIdx}, subscribers={OnRequest?.GetInvocationList().Length ?? 0}");
             OnRequest?.Invoke(request);
-            Console.WriteLine($"[WebTorrent SW Handler] OnRequest done: handled={request.Handled}");
+            if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[WebTorrent SW Handler] OnRequest done: handled={request.Handled}");
 
             if (!request.Handled)
             {

@@ -35,6 +35,10 @@ public class TorrentReadStream : Stream
 
     public override int Read(byte[] buffer, int offset, int count)
     {
+        // Sync Read is not supported — Blazor WASM is single-threaded and
+        // .GetAwaiter().GetResult() will deadlock. Use ReadAsync instead.
+        if (OperatingSystem.IsBrowser())
+            throw new NotSupportedException("Synchronous Read is not supported in Blazor WASM. Use ReadAsync.");
         return ReadAsync(buffer, offset, count, CancellationToken.None).GetAwaiter().GetResult();
     }
 

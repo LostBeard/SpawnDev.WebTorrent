@@ -24,6 +24,9 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
     private readonly List<IDiscovery> _discoveryProviders = new();
     private readonly byte[] _peerId;
 
+    /// <summary>Enable verbose logging to Console. Default: false.</summary>
+    public static bool VerboseLogging { get; set; }
+
     /// <summary>Active torrents.</summary>
     public IReadOnlyList<TorrentSwarm> Torrents => _torrents;
 
@@ -180,11 +183,11 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
     /// <summary>Restore all persisted torrents on startup.</summary>
     private async Task RestoreTorrentsAsync()
     {
-        if (_asyncFs == null) { Console.WriteLine("[WebTorrent] RestoreTorrents skipped: _asyncFs is null"); return; }
+        if (_asyncFs == null) { if (VerboseLogging) Console.WriteLine("[WebTorrent] RestoreTorrents skipped: _asyncFs is null"); return; }
         try
         {
             //await _asyncFs.CreateDirectory(TorrentStateDir);
-            if (!await _asyncFs.DirectoryExists(TorrentStateDir)) { Console.WriteLine("[WebTorrent] RestoreTorrents: no state directory"); return; }
+            if (!await _asyncFs.DirectoryExists(TorrentStateDir)) { if (VerboseLogging) Console.WriteLine("[WebTorrent] RestoreTorrents: no state directory"); return; }
 
             var fileNames = await _asyncFs.GetFiles(TorrentStateDir);
             foreach (var fileName in fileNames)
@@ -233,7 +236,7 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
                     else if (!swarm.Done)
                         swarm.StartDownload();
 
-                    Console.WriteLine($"[WebTorrent] Restored: {metadata.Name} ({hash[..8]}...) progress={swarm.Progress:P0} paused={swarm.Paused}");
+                    if (VerboseLogging) Console.WriteLine($"[WebTorrent] Restored: {metadata.Name} ({hash[..8]}...) progress={swarm.Progress:P0} paused={swarm.Paused}");
                 }
                 catch (Exception ex)
                 {

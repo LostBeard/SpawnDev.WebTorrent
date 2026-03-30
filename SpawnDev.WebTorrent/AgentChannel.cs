@@ -212,6 +212,11 @@ public class AgentChannel : IAsyncDisposable
     /// </summary>
     private void HandleTrackerRelay(string fromPeerId, string offerId, JsonElement offerData)
     {
+        _ = HandleTrackerRelayAsync(fromPeerId, offerId, offerData);
+    }
+
+    private async Task HandleTrackerRelayAsync(string fromPeerId, string offerId, JsonElement offerData)
+    {
         // Only process agent relay messages (prefixed with "agent:")
         if (!offerId.StartsWith("agent:")) return;
 
@@ -234,7 +239,7 @@ public class AgentChannel : IAsyncDisposable
             if (_signer != null && !string.IsNullOrEmpty(msg.Signature))
             {
                 var sigBytes = Convert.FromBase64String(msg.Signature);
-                var verified = _signer.VerifyAsync(pubKeyBytes, dataBytes, sigBytes).GetAwaiter().GetResult();
+                var verified = await _signer.VerifyAsync(pubKeyBytes, dataBytes, sigBytes);
                 if (!verified) return; // Reject forged messages
             }
 

@@ -195,25 +195,21 @@ public class TorrentSwarm : IAsyncDisposable
             // If magnet has xs= (exact source), fetch full .torrent metadata from it
             if (parsed.ExactSource != null)
             {
-                Console.WriteLine($"[TorrentSwarm] xs= found: {parsed.ExactSource}");
                 try
                 {
                     using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
                     var torrentBytes = await http.GetByteArrayAsync(parsed.ExactSource);
-                    Console.WriteLine($"[TorrentSwarm] xs= fetched {torrentBytes.Length} bytes, parsing...");
                     var fullMetadata = TorrentParser.Parse(torrentBytes);
                     SetMetadata(fullMetadata);
-                    Console.WriteLine($"[TorrentSwarm] xs= metadata set: {fullMetadata.Name}, {fullMetadata.PieceCount} pieces");
+                    OnLog?.Invoke($"xs= metadata loaded: {fullMetadata.Name}, {fullMetadata.PieceCount} pieces");
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[TorrentSwarm] xs= fetch FAILED: {ex.GetType().Name}: {ex.Message}");
                     OnLog?.Invoke($"xs= fetch failed: {ex.Message} — will rely on peers for metadata");
                 }
             }
             else
             {
-                Console.WriteLine($"[TorrentSwarm] No xs= in magnet, waiting for peers for metadata");
                 // Store web seeds and trackers for when metadata arrives via peers
                 _pendingUrlList = parsed.UrlList;
                 _pendingTrackers = parsed.AnnounceList.SelectMany(a => a).ToArray();

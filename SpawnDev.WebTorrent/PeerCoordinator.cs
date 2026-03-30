@@ -91,7 +91,7 @@ public class PeerCoordinator : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[PeerCoordinator] Failed to connect to {info.Address}: {ex.Message}");
+            if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[PeerCoordinator] Failed to connect to {info.Address}: {ex.Message}");
         }
     }
 

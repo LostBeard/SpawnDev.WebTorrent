@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.HttpOverrides;
 using SpawnDev.WebTorrent.Server;
 using SpawnDev.WebTorrent.Server.HuggingFace;
 
@@ -7,6 +8,15 @@ var builder = WebApplication.CreateBuilder(args);
 // For local dev: HTTPS 5560 + HTTP 5561
 if (!builder.Environment.IsProduction())
     builder.WebHost.UseUrls("https://localhost:5560", "http://localhost:5561");
+
+// Trust forwarded headers from reverse proxy (haproxy) so ctx.Request.Scheme
+// reflects the original HTTPS scheme, not the internal HTTP connection.
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    options.KnownNetworks.Clear();
+    options.KnownProxies.Clear();
+});
 
 // Enable WebSockets for tracker
 // Configuration from appsettings.json (falls back to defaults if not present)
@@ -44,6 +54,7 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
+app.UseForwardedHeaders();
 app.UseWebSockets();
 app.UseCors();
 

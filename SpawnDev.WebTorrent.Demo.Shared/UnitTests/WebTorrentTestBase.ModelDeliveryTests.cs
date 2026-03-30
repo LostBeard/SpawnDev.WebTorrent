@@ -154,7 +154,10 @@ public abstract partial class WebTorrentTestBase
         var magnetUri = doc.RootElement.GetProperty("magnetUri").GetString()
             ?? throw new Exception("magnetUri is null");
 
-        Console.WriteLine($"[ModelDelivery] Got magnet: {magnetUri[..Math.Min(80, magnetUri.Length)]}...");
+        Console.WriteLine($"[ModelDelivery] Full magnet: {magnetUri}");
+        Console.WriteLine($"[ModelDelivery] Has xs=: {magnetUri.Contains("&xs=")}");
+        Console.WriteLine($"[ModelDelivery] Has ws=: {magnetUri.Contains("&ws=")}");
+        Console.WriteLine($"[ModelDelivery] Has tr=: {magnetUri.Contains("&tr=")}");
 
         // 2. Add via magnet URI — the way a real client would do it
         var client = GetOrCreateClient();

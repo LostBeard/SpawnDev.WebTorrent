@@ -300,4 +300,81 @@ public abstract partial class WebTorrentTestBase
 
         Console.WriteLine($"[ModelDelivery] Concurrent requests returned identical {results[0].Length:N0}-byte torrents — no duplicate download");
     }
+
+    [TestMethod(Timeout = 120000)]
+    public async Task ModelDelivery_SeekWhileDownloading_ReadsCorrectData()
+    {
+        if (!await IsServerAvailableAsync())
+            throw new UnsupportedTestException("Server not available");
+
+        var serverUrl = GetTestServerUrl();
+        using var http = CreateTestHttpClient(30);
+
+        // Get .torrent for tokenizer.json (~2MB, multiple pieces)
+        var torrentBytes = await http.GetByteArrayAsync(
+            $"{serverUrl}/torrent/Xenova/distilgpt2/tokenizer.json");
+        var metadata = TorrentParser.Parse(torrentBytes);
+        Console.WriteLine($"[ModelDelivery] Seek test: {metadata.Name}, {metadata.TotalLength:N0} bytes, {metadata.PieceCount} pieces");
+
+        var client = GetOrCreateClient();
+        var swarm = await client.AddAsync(metadata);
+        try
+        {
+            swarm.StartDownload();
+
+            // Don't wait for full download — seek immediately to different offsets
+            var file = swarm.Files[0];
+
+            // Read from the START (piece 0)
+            var startData = await file.ReadAsync(0, 64);
+            if (startData.Length != 64)
+                throw new Exception($"Start read: expected 64 bytes, got {startData.Length}");
+            Console.WriteLine($"[ModelDelivery] Seek start: first 4 bytes = [{startData[0]:X2},{startData[1]:X2},{startData[2]:X2},{startData[3]:X2}]");
+
+            // Read from the MIDDLE (forces priority download of a middle piece)
+            long midOffset = metadata.TotalLength / 2;
+            var midData = await file.ReadAsync(midOffset, 64);
+            if (midData.Length != 64)
+                throw new Exception($"Mid read: expected 64 bytes, got {midData.Length}");
+            Console.WriteLine($"[ModelDelivery] Seek mid ({midOffset}): first 4 bytes = [{midData[0]:X2},{midData[1]:X2},{midData[2]:X2},{midData[3]:X2}]");
+
+            // Read from near the END (forces priority download of a late piece)
+            long endOffset = metadata.TotalLength - 128;
+            var endData = await file.ReadAsync(endOffset, 64);
+            if (endData.Length != 64)
+                throw new Exception($"End read: expected 64 bytes, got {endData.Length}");
+            Console.WriteLine($"[ModelDelivery] Seek end ({endOffset}): first 4 bytes = [{endData[0]:X2},{endData[1]:X2},{endData[2]:X2},{endData[3]:X2}]");
+
+            // Now download the reference file directly via HTTP and verify the seeks matched
+            var directData = await http.GetByteArrayAsync(
+                $"{serverUrl}/hf/Xenova/distilgpt2/tokenizer.json");
+
+            // Verify start
+            for (int i = 0; i < 64; i++)
+            {
+                if (startData[i] != directData[i])
+                    throw new Exception($"Start data mismatch at byte {i}: torrent={startData[i]:X2} direct={directData[i]:X2}");
+            }
+
+            // Verify middle
+            for (int i = 0; i < 64; i++)
+            {
+                if (midData[i] != directData[midOffset + i])
+                    throw new Exception($"Mid data mismatch at byte {midOffset + i}: torrent={midData[i]:X2} direct={directData[midOffset + i]:X2}");
+            }
+
+            // Verify end
+            for (int i = 0; i < 64; i++)
+            {
+                if (endData[i] != directData[endOffset + i])
+                    throw new Exception($"End data mismatch at byte {endOffset + i}: torrent={endData[i]:X2} direct={directData[endOffset + i]:X2}");
+            }
+
+            Console.WriteLine($"[ModelDelivery] Seek test PASSED: start, middle, end all match direct HTTP download");
+        }
+        finally
+        {
+            await client.RemoveAsync(swarm, destroyStore: true);
+        }
+    }
 }

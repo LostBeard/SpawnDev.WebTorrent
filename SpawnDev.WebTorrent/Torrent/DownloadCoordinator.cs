@@ -232,60 +232,54 @@ public class DownloadCoordinator : IDisposable
     }
 
     /// <summary>
-    /// Download all missing pieces via web seed in large bulk requests.
-    /// Groups consecutive missing pieces into chunks (~4MB each) and downloads
-    /// each chunk in a single HTTP range request, then splits into pieces and
-    /// verifies SHA-1 hashes locally. Minimizes HTTP request count.
+    /// Download all missing pieces via web seed. For single-file torrents,
+    /// downloads the entire file in one HTTP request and splits into pieces locally.
+    /// For multi-file torrents, downloads per-file with range requests.
     /// </summary>
     private async Task DownloadBulkFromWebSeed(WebSeedConnection[] seeds, CancellationToken ct)
     {
-        // Find runs of consecutive missing pieces
-        int i = 0;
-        while (i < _pieceManager.PieceCount && !ct.IsCancellationRequested)
+        if (_metadata.Files.Length == 1)
         {
-            // Skip completed pieces
-            if (_pieceManager.Bitfield[i]) { i++; continue; }
+            // Single file — one HTTP request for the whole thing
+            var fileName = _metadata.Files[0].Path.Contains('/')
+                ? _metadata.Files[0].Path : _metadata.Name;
 
-            // Find end of consecutive missing run
-            int runStart = i;
-            int maxPiecesPerRequest = 16; // ~4MB per request at 256KB pieces
-            while (i < _pieceManager.PieceCount && !_pieceManager.Bitfield[i]
-                && (i - runStart) < maxPiecesPerRequest)
-                i++;
-            int runEnd = i; // exclusive
-            int runCount = runEnd - runStart;
-
-            // Download the entire run in one HTTP request
-            long byteStart = (long)runStart * _metadata.PieceLength;
-            long byteEnd = runEnd < _metadata.PieceCount
-                ? (long)runEnd * _metadata.PieceLength - 1
-                : _metadata.TotalLength - 1;
-
-            byte[]? bulkData = null;
+            byte[]? fileData = null;
             foreach (var seed in seeds)
             {
                 if (!seed.IsAvailable) continue;
-                bulkData = await seed.DownloadRangeAsync(
-                    _metadata.Files.Length == 1 ? _metadata.Name : _metadata.Files[0].Path,
-                    byteStart, byteEnd, ct);
-                if (bulkData != null) break;
+                fileData = await seed.DownloadRangeAsync(fileName, 0, _metadata.TotalLength - 1, ct);
+                if (fileData != null) break;
             }
 
-            if (bulkData == null) continue;
+            if (fileData == null) return;
 
-            // Split into individual pieces and verify each
-            for (int p = runStart; p < runEnd; p++)
+            // Split into pieces and verify SHA-1 locally
+            for (int p = 0; p < _metadata.PieceCount; p++)
             {
-                int offsetInBulk = (p - runStart) * _metadata.PieceLength;
+                if (_pieceManager.Bitfield[p]) continue; // already have it
+
+                int offset = p * _metadata.PieceLength;
                 int pieceLen = (p == _metadata.PieceCount - 1)
                     ? (int)(_metadata.TotalLength - (long)p * _metadata.PieceLength)
                     : _metadata.PieceLength;
 
-                if (offsetInBulk + pieceLen > bulkData.Length) break;
+                if (offset + pieceLen > fileData.Length) break;
 
                 var pieceData = new byte[pieceLen];
-                Array.Copy(bulkData, offsetInBulk, pieceData, 0, pieceLen);
+                Array.Copy(fileData, offset, pieceData, 0, pieceLen);
                 await _pieceManager.ReceiveCompletePieceAsync(p, pieceData);
+            }
+        }
+        else
+        {
+            // Multi-file — download per piece (existing path)
+            for (int i = 0; i < _pieceManager.PieceCount; i++)
+            {
+                if (!_pieceManager.Bitfield[i])
+                {
+                    await DownloadFromWebSeed(i, seeds, ct);
+                }
             }
         }
     }

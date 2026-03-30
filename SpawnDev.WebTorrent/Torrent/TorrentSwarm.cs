@@ -25,6 +25,12 @@ public class TorrentSwarm : IAsyncDisposable
     /// <summary>20-byte info hash.</summary>
     public byte[] InfoHash { get; private set; } = Array.Empty<byte>();
 
+    /// <summary>Info hash as lowercase hex string.</summary>
+    public string InfoHashHex => Convert.ToHexString(InfoHash).ToLowerInvariant();
+
+    /// <summary>Display name — metadata name, or short hash if no metadata yet.</summary>
+    public string Name => Metadata?.Name ?? InfoHashHex[..Math.Min(16, InfoHashHex.Length)] + "...";
+
     /// <summary>Whether metadata has been received and parsed.</summary>
     public bool HasMetadata => Metadata != null;
 

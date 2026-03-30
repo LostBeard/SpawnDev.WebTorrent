@@ -496,6 +496,24 @@
         _client = Client;
         Log($"Client initialized (storage: {(_asyncFs != null ? "OPFS" : "memory")})");
 
+        // Rebuild view entries from the singleton's existing torrents
+        foreach (var swarm in _client.Torrents)
+        {
+            var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
+            if (_torrents.Any(t => t.InfoHashFull == hash)) continue;
+            var entry = new TorrentEntry
+            {
+                Swarm = swarm,
+                Name = swarm.Metadata?.Name,
+                InfoHashFull = hash,
+                InfoHashShort = hash[..8] + "...",
+            };
+            _torrents.Add(entry);
+            WireSwarmEvents(entry);
+        }
+        if (_torrents.Count > 0)
+            Log($"Restored {_torrents.Count} torrent(s) from client");
+
         _refreshTimer = new System.Threading.Timer(_ =>
         {
             foreach (var t in _torrents)

@@ -213,6 +213,9 @@ public class TorrentSwarm : IAsyncDisposable
         _pieceManager = new PieceManager(metadata, _store);
         _pieceManager.OnPieceComplete += HandlePieceComplete;
 
+        // Scan for already-downloaded pieces (restore from OPFS after reload)
+        _ = ScanExistingPiecesAsync();
+
         // Create download coordinator
         _coordinator = new DownloadCoordinator(_pieceManager, metadata);
         _coordinator.OnDownloadComplete += () =>
@@ -486,6 +489,31 @@ public class TorrentSwarm : IAsyncDisposable
 
         // Browser fallback: memory
         return new MemoryChunkStore(metadata.PieceLength);
+    }
+
+    /// <summary>Scan chunk store for already-downloaded pieces and rebuild the bitfield.</summary>
+    private async Task ScanExistingPiecesAsync()
+    {
+        if (_store == null || _pieceManager == null || Metadata == null) return;
+        try
+        {
+            for (int i = 0; i < Metadata.PieceCount; i++)
+            {
+                var piece = await _store.GetAsync(i);
+                if (piece != null && piece.Length > 0)
+                {
+                    _pieceManager.MarkComplete(i);
+                }
+            }
+            if (_pieceManager.IsComplete)
+            {
+                Done = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[WebTorrent] ScanExistingPieces error: {ex.Message}");
+        }
     }
 
     /// <summary>Update speed calculations. Call periodically (e.g., every second).</summary>

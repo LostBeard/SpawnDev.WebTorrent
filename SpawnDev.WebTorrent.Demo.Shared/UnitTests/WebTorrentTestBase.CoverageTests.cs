@@ -348,20 +348,16 @@ public abstract partial class WebTorrentTestBase
     }
 
     // ═══════════════════════════════════════════════════════════
-    //  SipSorceryWebRtcConnection (construction)
+    //  WebRTC Transport (platform-agnostic construction)
     // ═══════════════════════════════════════════════════════════
 
     [TestMethod]
-    public async Task SipSorceryConnection_Create()
+    public async Task WebRtcTransport_Create_PlatformAgnostic()
     {
-        if (OperatingSystem.IsBrowser())
-            throw new UnsupportedTestException("SIPSorcery requires desktop");
-
-        var conn = new SipSorceryWebRtcConnection("test-peer", new WebRtcTransportOptions());
-        if (conn.RemoteId != "test-peer") throw new Exception($"RemoteId: {conn.RemoteId}");
-        if (conn.TransportType != "webrtc") throw new Exception($"Type: {conn.TransportType}");
-        if (conn.IsConnected) throw new Exception("Should not be connected");
-        await conn.DisposeAsync();
+        await using var transport = IWebRtcTransport.Create();
+        if (transport.Type != "webrtc") throw new Exception($"Type: {transport.Type}");
+        if (!transport.CanAccept) throw new Exception("Should accept connections");
+        Console.WriteLine($"[Coverage] WebRTC transport: {transport.GetType().Name}");
     }
 
     // ═══════════════════════════════════════════════════════════

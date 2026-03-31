@@ -323,7 +323,7 @@ public abstract partial class WebTorrentTestBase
     public async Task P2P_WebRtcTransport_Create()
     {
         // Verify WebRTC transport can be created with options
-        var transport = new WebRtcTransport(new WebRtcTransportOptions
+        await using var transport = IWebRtcTransport.Create(new WebRtcTransportOptions
         {
             IceServers = new[] { "stun:stun.l.google.com:19302" },
             ChannelLabel = "test-channel",
@@ -335,8 +335,7 @@ public abstract partial class WebTorrentTestBase
         if (!transport.CanAccept)
             throw new Exception("WebRTC transport should accept incoming connections");
 
-        await transport.DisposeAsync();
-        Console.WriteLine("[P2P] WebRTC transport created and disposed successfully");
+        Console.WriteLine($"[P2P] WebRTC transport created: {transport.GetType().Name}");
     }
 
     [TestMethod]

@@ -708,12 +708,11 @@ public abstract partial class WebTorrentTestBase
     public async Task Client_AddTransport()
     {
         await using var client = new WebTorrentClient(crypto: Client!.Crypto);
-        var transport = new WebRtcTransport();
+        await using var transport = IWebRtcTransport.Create();
 
         client.AddTransport(transport);
         // No crash — transport registered
-
-        await transport.DisposeAsync();
+        Console.WriteLine($"[Client] Transport added: {transport.GetType().Name}");
     }
 
     [TestMethod]

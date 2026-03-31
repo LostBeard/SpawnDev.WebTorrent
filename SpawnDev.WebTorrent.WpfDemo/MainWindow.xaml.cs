@@ -273,8 +273,8 @@ public partial class MainWindow : Window
         }
         if (trackers.Count == 0) trackers.AddRange(new[] { "wss://hub.spawndev.com:44365/announce", "wss://tracker.openwebtorrent.com" });
 
-        // Create SIPSorcery WebRTC transport for desktop P2P
-        IWebRtcTransport webRtc = new SipSorceryWebRtcTransport();
+        // Create platform WebRTC transport for P2P
+        var webRtc = IWebRtcTransport.Create();
 
         // PeerCoordinator handles WebRTC signaling via trackers
         var coordinator = new PeerCoordinator(_client, vm.Swarm.InfoHash, webRtc);

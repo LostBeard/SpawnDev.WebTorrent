@@ -475,7 +475,7 @@
     private readonly Dictionary<string, List<double>> _speedHistory = new();
     private readonly Dictionary<string, List<TrackerEntry>> _trackerEntries = new();
     private readonly Dictionary<string, PeerCoordinator?> _peerCoordinators = new();
-    private readonly Dictionary<string, WebRtcTransport?> _webRtcTransports = new();
+    private readonly Dictionary<string, IWebRtcTransport?> _webRtcTransports = new();
     private List<double> GetSpeedHistory(TorrentSwarm t) { if (!_speedHistory.ContainsKey(t.InfoHashHex)) _speedHistory[t.InfoHashHex] = new(); return _speedHistory[t.InfoHashHex]; }
     private List<TrackerEntry> GetTrackers(TorrentSwarm t) { if (!_trackerEntries.ContainsKey(t.InfoHashHex)) _trackerEntries[t.InfoHashHex] = new(); return _trackerEntries[t.InfoHashHex]; }
 
@@ -696,7 +696,7 @@
         if (wsTrackers.Count == 0) wsTrackers.AddRange(_defaultTrackers);
 
         // WebSocket trackers via PeerCoordinator (for WebRTC signaling)
-        var webRtc = new WebRtcTransport(); _webRtcTransports[entry.InfoHashHex] = webRtc;
+        var webRtc = IWebRtcTransport.Create(); _webRtcTransports[entry.InfoHashHex] = webRtc;
         var coordinator = new PeerCoordinator(_client!, entry.InfoHash, webRtc); _peerCoordinators[entry.InfoHashHex] = coordinator;
         coordinator.OnPeerConnected += (peer) => { Log($"[{entry.Name}] P2P: {peer.PeerId[..Math.Min(12, peer.PeerId.Length)]}"); _ = entry.AddConnectedPeerAsync(peer.Wire, new PeerInfo { Address = peer.PeerId, Source = "webrtc" }); InvokeAsync(StateHasChanged); };
         coordinator.OnPeerDisconnected += (_) => InvokeAsync(StateHasChanged);

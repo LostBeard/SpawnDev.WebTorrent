@@ -379,33 +379,39 @@
             }
             else
             {
-                // Multi-file: concatenate all file data
-                var totalSize = _files.Sum(f => f.Size);
-                var combined = new byte[totalSize];
-                int offset = 0;
-                foreach (var f in _files)
-                {
-                    System.Array.Copy(f.Data!, 0, combined, offset, f.Data!.Length);
-                    offset += f.Data!.Length;
-                }
+                // Multi-file torrent with directory structure
+                var torrentName = string.IsNullOrWhiteSpace(_options.Name)
+                    ? System.IO.Path.GetDirectoryName(_files[0].Path)?.Split('/', '\\').FirstOrDefault() ?? "torrent"
+                    : _options.Name;
 
-                var name = string.IsNullOrWhiteSpace(_options.Name) ? _files[0].Name : _options.Name;
+                var multiFiles = _files.Select(f => (f.Path, f.Data!)).ToArray();
 
                 _createProgress = "hashing pieces...";
                 StateHasChanged();
 
-                var (torrentBytes, metadata) = TorrentCreator.CreateFromBytes(name, combined, _options);
+                var (torrentBytes, metadata) = TorrentCreator.CreateFromMultipleFiles(
+                    torrentName, multiFiles, _options);
 
                 if (_startSeeding)
                 {
                     _createProgress = "seeding...";
                     StateHasChanged();
-                    var swarm = await Client.SeedAsync(combined, name, _options);
-                    SetStatus($"Created and seeding: {metadata.Name} ({FormatSize(metadata.TotalLength)}, {metadata.PieceCount} pieces)", false);
+
+                    // Concatenate for seeding (SeedAsync needs flat byte array)
+                    var totalSize = _files.Sum(f => f.Size);
+                    var combined = new byte[totalSize];
+                    int offset = 0;
+                    foreach (var f in _files)
+                    {
+                        System.Array.Copy(f.Data!, 0, combined, offset, f.Data!.Length);
+                        offset += f.Data!.Length;
+                    }
+                    var swarm = await Client.SeedAsync(combined, torrentName, _options);
+                    SetStatus($"Created and seeding: {metadata.Name} ({FormatSize(metadata.TotalLength)}, {metadata.PieceCount} pieces, {metadata.Files.Length} files)", false);
                 }
                 else
                 {
-                    SetStatus($"Created: {metadata.Name} ({FormatSize(metadata.TotalLength)}, {metadata.PieceCount} pieces)", false);
+                    SetStatus($"Created: {metadata.Name} ({FormatSize(metadata.TotalLength)}, {metadata.PieceCount} pieces, {metadata.Files.Length} files)", false);
                 }
             }
 

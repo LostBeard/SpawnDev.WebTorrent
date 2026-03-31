@@ -120,22 +120,118 @@ public static class TorrentCreator
                 StartPiece = 0, EndPiece = pieceHashes.Count - 1 } });
     }
 
+    /// <summary>
+    /// Create a multi-file .torrent from named byte arrays.
+    /// Each entry is (relativePath, data). The torrent name is the root directory.
+    /// Pieces are hashed across the concatenated file data (standard BitTorrent behavior).
+    /// </summary>
+    public static (byte[] torrentBytes, TorrentMetadata metadata) CreateFromMultipleFiles(
+        string torrentName, (string path, byte[] data)[] files, TorrentCreatorOptions? options = null)
+    {
+        options ??= new TorrentCreatorOptions();
+
+        // Concatenate all file data for piece hashing
+        long totalLength = files.Sum(f => (long)f.data.Length);
+        int pieceLength = options.PieceLength > 0
+            ? options.PieceLength
+            : CalculatePieceLength(totalLength);
+
+        var pieceHashes = new List<byte[]>();
+        bool useSha256 = options.HashAlgorithm == "SHA-256";
+
+        // Hash pieces across concatenated file data
+        var buffer = new byte[pieceLength];
+        int bufferFill = 0;
+        foreach (var file in files)
+        {
+            int fileOffset = 0;
+            while (fileOffset < file.data.Length)
+            {
+                int toCopy = Math.Min(pieceLength - bufferFill, file.data.Length - fileOffset);
+                System.Array.Copy(file.data, fileOffset, buffer, bufferFill, toCopy);
+                bufferFill += toCopy;
+                fileOffset += toCopy;
+
+                if (bufferFill == pieceLength)
+                {
+                    pieceHashes.Add(useSha256
+                        ? SHA256.HashData(buffer.AsSpan(0, bufferFill))
+                        : SHA1.HashData(buffer.AsSpan(0, bufferFill)));
+                    bufferFill = 0;
+                }
+            }
+        }
+        // Hash any remaining partial piece
+        if (bufferFill > 0)
+        {
+            pieceHashes.Add(useSha256
+                ? SHA256.HashData(buffer.AsSpan(0, bufferFill))
+                : SHA1.HashData(buffer.AsSpan(0, bufferFill)));
+        }
+
+        // Build TorrentFile entries with offsets
+        var torrentFiles = new TorrentFile[files.Length];
+        long offset = 0;
+        for (int i = 0; i < files.Length; i++)
+        {
+            int startPiece = pieceLength > 0 ? (int)(offset / pieceLength) : 0;
+            int endPiece = pieceLength > 0 ? (int)((offset + files[i].data.Length - 1) / pieceLength) : 0;
+            torrentFiles[i] = new TorrentFile
+            {
+                Path = files[i].path,
+                Length = files[i].data.Length,
+                Offset = offset,
+                StartPiece = startPiece,
+                EndPiece = endPiece,
+            };
+            offset += files[i].data.Length;
+        }
+
+        return BuildTorrent(torrentName, totalLength, pieceLength, pieceHashes, options, torrentFiles);
+    }
+
     private static (byte[] torrentBytes, TorrentMetadata metadata) BuildTorrent(
         string name, long totalLength, int pieceLength, List<byte[]> pieceHashes,
         TorrentCreatorOptions options, TorrentFile[] files)
     {
-        // Concatenate piece hashes (20 bytes each for SHA-1, 32 bytes each for SHA-256)
+        // Concatenate piece hashes
         int hashSize = pieceHashes[0].Length;
         var piecesConcat = new byte[pieceHashes.Count * hashSize];
         for (int i = 0; i < pieceHashes.Count; i++)
-            Array.Copy(pieceHashes[i], 0, piecesConcat, i * hashSize, hashSize);
+            System.Array.Copy(pieceHashes[i], 0, piecesConcat, i * hashSize, hashSize);
+
+        bool isMultiFile = files.Length > 1;
 
         // Build info dictionary (bencoded, raw bytes for hash computation)
+        // Keys MUST be sorted alphabetically within the dict
         var infoParts = new List<byte>();
         infoParts.AddRange(Encoding.ASCII.GetBytes("d"));
 
-        // Keys must be sorted alphabetically
-        AppendBencodeKV(infoParts, "length", totalLength);
+        if (isMultiFile)
+        {
+            // Multi-file: "files" list instead of "length"
+            infoParts.AddRange(BencodeEncoder.EncodeBytes(Encoding.UTF8.GetBytes("files")));
+            infoParts.AddRange(Encoding.ASCII.GetBytes("l"));
+            foreach (var file in files)
+            {
+                infoParts.AddRange(Encoding.ASCII.GetBytes("d"));
+                AppendBencodeKV(infoParts, "length", file.Length);
+                // "path" is a list of path components
+                infoParts.AddRange(BencodeEncoder.EncodeBytes(Encoding.UTF8.GetBytes("path")));
+                infoParts.AddRange(Encoding.ASCII.GetBytes("l"));
+                foreach (var part in file.Path.Split('/', '\\').Where(p => !string.IsNullOrEmpty(p)))
+                    infoParts.AddRange(BencodeEncoder.EncodeBytes(Encoding.UTF8.GetBytes(part)));
+                infoParts.AddRange(Encoding.ASCII.GetBytes("e"));
+                infoParts.AddRange(Encoding.ASCII.GetBytes("e"));
+            }
+            infoParts.AddRange(Encoding.ASCII.GetBytes("e"));
+        }
+        else
+        {
+            // Single-file: "length" key
+            AppendBencodeKV(infoParts, "length", totalLength);
+        }
+
         AppendBencodeKV(infoParts, "name", name);
         AppendBencodeKV(infoParts, "piece length", pieceLength);
         AppendBencodeKVBytes(infoParts, "pieces", piecesConcat);

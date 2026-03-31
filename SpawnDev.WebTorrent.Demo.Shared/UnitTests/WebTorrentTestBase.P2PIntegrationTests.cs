@@ -527,12 +527,10 @@ public abstract partial class WebTorrentTestBase
         int expectedLength;
         try
         {
-            using var http = new HttpClient();
-            // Fetch from our own origin — PlaywrightMultiTest writes this to the published wwwroot
-            var baseUrl = OperatingSystem.IsBrowser()
-                ? ""  // relative URL in browser
-                : "https://localhost:5562";
-            var json = await http.GetStringAsync($"{baseUrl}/_test-desktop-seeder.json");
+            // PlaywrightMultiTest writes _test-desktop-seeder.json to the published wwwroot
+            // and serves on port 5562. Fetch it to get the desktop seeder's magnet URI.
+            using var http = new HttpClient { BaseAddress = new Uri("https://localhost:5562/") };
+            var json = await http.GetStringAsync("_test-desktop-seeder.json");
             var config = System.Text.Json.JsonDocument.Parse(json);
             magnetUri = config.RootElement.GetProperty("magnetUri").GetString();
             expectedLength = config.RootElement.GetProperty("dataLength").GetInt32();

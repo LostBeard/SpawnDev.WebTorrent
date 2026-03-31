@@ -57,41 +57,48 @@ public class PeerCoordinator : IAsyncDisposable
         tracker.OnPeer += HandleNewPeer;
         tracker.OnAnnounceResponse += (s, l) =>
         {
-            Console.WriteLine($"[PeerCoordinator] Announce response: {s} seeders, {l} leechers");
+            Console.Error.WriteLine($"[PeerCoordinator] Announce response: {s} seeders, {l} leechers");
             OnSwarmUpdate?.Invoke(s, l);
         };
 
         // Handle incoming WebRTC offers relayed by the tracker
         tracker.OnOffer += async (fromPeerId, offerId, offer) =>
         {
-            Console.WriteLine($"[PeerCoordinator] Received offer from: {fromPeerId}");
+            Console.Error.WriteLine($"[PeerCoordinator] Received offer from: {fromPeerId}");
             try
             {
                 var (conn, answer) = await _webRtc.HandleOfferAsync(fromPeerId, offer);
                 var answerJson = System.Text.Json.JsonSerializer.SerializeToElement(answer);
                 await tracker.SendAnswerAsync(fromPeerId, answerJson, offerId);
-                Console.WriteLine($"[PeerCoordinator] Sent answer to: {fromPeerId}");
+                Console.Error.WriteLine($"[PeerCoordinator] Sent answer to: {fromPeerId}");
+
+                // Wait for the data channel to open (initiator processes our answer → ICE → open)
+                using var openCts = new CancellationTokenSource(15000);
+                if (conn is WebRtcConnection webRtcConn)
+                    await webRtcConn.WaitForOpenAsync(openCts.Token);
+                Console.Error.WriteLine($"[PeerCoordinator] Data channel open with: {fromPeerId}");
+
                 await SetupPeerAsync(conn);
-                Console.WriteLine($"[PeerCoordinator] Peer setup from offer complete: {fromPeerId}");
+                Console.Error.WriteLine($"[PeerCoordinator] Peer setup from offer complete: {fromPeerId}");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[PeerCoordinator] Offer handling FAILED for {fromPeerId}: {ex.Message}");
+                Console.Error.WriteLine($"[PeerCoordinator] Offer handling FAILED for {fromPeerId}: {ex.Message}");
             }
         };
 
         // Handle incoming WebRTC answers relayed by the tracker
         tracker.OnAnswer += async (fromPeerId, offerId, answer) =>
         {
-            Console.WriteLine($"[PeerCoordinator] Received answer from: {fromPeerId}");
+            Console.Error.WriteLine($"[PeerCoordinator] Received answer from: {fromPeerId}");
             try
             {
                 await _webRtc.HandleAnswerAsync(fromPeerId, answer);
-                Console.WriteLine($"[PeerCoordinator] Answer processed: {fromPeerId}");
+                Console.Error.WriteLine($"[PeerCoordinator] Answer processed: {fromPeerId}");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[PeerCoordinator] Answer handling FAILED for {fromPeerId}: {ex.Message}");
+                Console.Error.WriteLine($"[PeerCoordinator] Answer handling FAILED for {fromPeerId}: {ex.Message}");
             }
         };
 
@@ -104,18 +111,18 @@ public class PeerCoordinator : IAsyncDisposable
         if (_peers.ContainsKey(info.Address)) return; // already connected
         if (_peers.Count >= 55) return; // max peers
 
-        Console.WriteLine($"[PeerCoordinator] New peer: {info.Address}");
+        Console.Error.WriteLine($"[PeerCoordinator] New peer: {info.Address}");
         try
         {
-            Console.WriteLine($"[PeerCoordinator] Creating WebRTC offer for: {info.Address}");
+            Console.Error.WriteLine($"[PeerCoordinator] Creating WebRTC offer for: {info.Address}");
             var conn = await _webRtc.ConnectAsync(info.Address);
-            Console.WriteLine($"[PeerCoordinator] WebRTC connected: {info.Address}");
+            Console.Error.WriteLine($"[PeerCoordinator] WebRTC connected: {info.Address}");
             await SetupPeerAsync(conn);
-            Console.WriteLine($"[PeerCoordinator] Wire handshake complete: {info.Address}");
+            Console.Error.WriteLine($"[PeerCoordinator] Wire handshake complete: {info.Address}");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[PeerCoordinator] FAILED {info.Address}: {ex.GetType().Name}: {ex.Message}");
+            Console.Error.WriteLine($"[PeerCoordinator] FAILED {info.Address}: {ex.GetType().Name}: {ex.Message}");
         }
     }
 

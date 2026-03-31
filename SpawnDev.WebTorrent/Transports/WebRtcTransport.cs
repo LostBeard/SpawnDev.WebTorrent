@@ -69,9 +69,10 @@ public class WebRtcTransport : IWebRtcTransport
         var conn = new WebRtcConnection(fromPeerId, _options);
         _connections.Add(conn);
 
+        // Create the answer but DON'T wait for the data channel to open yet.
+        // The answer must be sent back to the initiator first — only then can
+        // ICE complete and the data channel open. Waiting here would deadlock.
         var answer = await conn.HandleOfferAsync(offer);
-        await conn.WaitForOpenAsync(ct);
-        OnConnection?.Invoke(conn);
         return (conn, answer);
     }
 

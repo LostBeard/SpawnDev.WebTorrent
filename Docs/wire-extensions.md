@@ -4,14 +4,14 @@ SpawnDev.WebTorrent supports custom wire protocol extensions using the BEP 10 Ex
 
 ## The Pattern
 
-Same as JS WebTorrent's `wire.use()` — register a factory function that creates a fresh extension instance for each peer connection:
+Same as JS WebTorrent's `wire.use()` — register a factory function that creates a fresh extension instance for each peer connection. The factory receives the swarm and wire, matching JS WebTorrent's `IExtensionFactory.CreateExtension(torrent, wire)`:
 
 ```csharp
 // Client-wide — all swarms, all peers
-client.UseExtension(() => new MyExtension());
+client.UseExtension((swarm, wire) => new MyExtension());
 
 // Single swarm — all peers on this torrent
-swarm.UseExtension(() => new MyExtension());
+swarm.UseExtension((swarm, wire) => new MyExtension());
 ```
 
 Extensions are created **before** the BEP 10 handshake, so they participate in extension negotiation. After the handshake:
@@ -33,7 +33,6 @@ public class SdComputeExtension : WireExtension
     // Fired when peer sends us a message with our extension ID
     public override async Task HandleMessageAsync(byte[] payload)
     {
-        // Decode and handle the message
         var msg = MyProtocol.Decode(payload);
         OnMessage?.Invoke(msg);
     }
@@ -65,15 +64,18 @@ public class SdComputeExtension : WireExtension
 
 ## Sending Messages
 
-Use `wire.SendExtensionMessageAsync(ext.RemoteId, payload)`:
+Extensions can send directly via the built-in `SendAsync` method — no event wiring needed:
 
 ```csharp
-public async Task SendComputeTask(WireProtocol wire, SdComputeExtension ext, byte[] taskData)
+// Inside your extension
+public async Task SendComputeTask(byte[] taskData)
 {
-    if (!ext.IsSupported) return; // peer doesn't have sd_compute
-    await wire.SendExtensionMessageAsync(ext.RemoteId, taskData);
+    if (!IsSupported) return; // peer doesn't have this extension
+    await SendAsync(taskData); // sends via wire.SendExtensionMessageAsync(RemoteId, data)
 }
 ```
+
+`SendAsync` uses the extension's `Manager.Wire` reference, which is set automatically when the extension is registered. This matches JS WebTorrent's `Extension.Send()` → `Wire.Extended()` pattern.
 
 ## Accessing Extensions on Connected Peers
 
@@ -82,10 +84,11 @@ After a peer connects, access their extension via the wire's ExtensionManager:
 ```csharp
 swarm.OnPeerConnect += (peer) =>
 {
-    var ext = peer.Wire.Extensions.Get<SdComputeExtension>("sd_compute");
+    var ext = peer.Wire.Extensions.Get<SdComputeExtension>();
     if (ext?.IsSupported == true)
     {
-        Console.WriteLine($"Peer supports sd_compute! Capabilities: {string.Join(", ", ext.PeerCapabilities)}");
+        Console.WriteLine($"Peer supports sd_compute!");
+        _ = ext.SendComputeTask(myTaskData);
     }
 };
 ```
@@ -93,7 +96,7 @@ swarm.OnPeerConnect += (peer) =>
 ## Extension Flow
 
 ```
-1. client.UseExtension(() => new MyExt())
+1. client.UseExtension((swarm, wire) => new MyExt())
    └─ stored in client._extensionFactories
 
 2. client.AddAsync("magnet:...")
@@ -103,9 +106,9 @@ swarm.OnPeerConnect += (peer) =>
 3. Peer connects via tracker/WebRTC
    └─ PeerCoordinator.SetupPeerAsync(conn)
        ├─ wire = new WireProtocol(conn)
-       ├─ wire.Extensions.Register(factory())  ← extension created HERE
-       ├─ wire.SendHandshakeAsync(...)         ← extension in BEP 10 negotiation
-       ├─ wire.ReceiveHandshakeAsync(...)      ← RemoteId set, IsSupported = true
+       ├─ wire.Extensions.Register(factory(swarm, wire))  ← extension created HERE
+       ├─ wire.SendHandshakeAsync(...)                     ← extension in BEP 10 negotiation
+       ├─ wire.ReceiveHandshakeAsync(...)                  ← RemoteId set, IsSupported = true
        └─ OnPeerConnected fires
 ```
 
@@ -113,12 +116,17 @@ swarm.OnPeerConnect += (peer) =>
 
 | Extension | BEP | Purpose |
 |-----------|-----|---------|
-| `UtMetadataExtension` | 9 | Exchange torrent metadata with peers |
-| `UtPexExtension` | 11 | Peer exchange — share known peers |
+| `UtMetadataExtension` | 9 | Exchange torrent metadata with peers (auto-registered) |
+| `UtPexExtension` | 11 | Peer exchange — share known peers (auto-registered) |
+
+Both are registered automatically on every wire via `UseExtension` in the `TorrentSwarm` constructor.
 
 ## Notes
 
-- Factory creates a **new instance per peer** — don't share state between extension instances unless thread-safe
+- Factory receives `(TorrentSwarm swarm, WireProtocol wire)` — use these to configure the extension
+- Factory creates a **new instance per peer** — don't share state between instances unless thread-safe
 - Extensions registered after peers are already connected won't apply to those peers
 - Register extensions before calling `AddAsync` or `SeedAsync` for best results
 - The `Name` property must match on both sides for negotiation to succeed
+- Use `SendAsync` to send — no external event wiring needed
+- Never use `Console.Error.WriteLine` in Blazor WASM — use `Console.WriteLine`

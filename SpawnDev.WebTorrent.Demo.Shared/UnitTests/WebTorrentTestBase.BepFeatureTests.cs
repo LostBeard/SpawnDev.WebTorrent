@@ -178,7 +178,7 @@ public abstract partial class WebTorrentTestBase
 
         if (peerId.Length != 20) throw new Exception($"Peer ID: {peerId.Length} bytes");
         var prefix = System.Text.Encoding.ASCII.GetString(peerId, 0, 8);
-        if (prefix != "-SD0110-") throw new Exception($"Prefix: '{prefix}'");
+        if (prefix != "-SD0210-") throw new Exception($"Prefix: '{prefix}'");
 
         // Last 12 bytes should be random (non-zero for any practical test)
         var hasNonZero = false;
@@ -462,7 +462,7 @@ public abstract partial class WebTorrentTestBase
         // Azureus-style: -XX0000- prefix
         var prefix = System.Text.Encoding.ASCII.GetString(peerId, 0, 8);
         if (!prefix.StartsWith("-SD")) throw new Exception($"PeerId should start with -SD, got {prefix}");
-        if (prefix != "-SD0110-") throw new Exception($"PeerId prefix: {prefix}");
+        if (prefix != "-SD0210-") throw new Exception($"PeerId prefix: {prefix}");
 
         // Remaining 12 bytes should be random (not all zero)
         var randomPart = peerId[8..];

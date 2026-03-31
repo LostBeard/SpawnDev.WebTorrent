@@ -124,11 +124,11 @@ Feature parity with the [WebTorrent JS File API](https://github.com/webtorrent/w
 Register custom wire protocol extensions that participate in BEP 10 negotiation — same pattern as JS WebTorrent's `wire.use()`:
 
 ```csharp
-// Register before adding torrents — extension factory creates one per peer
-client.UseExtension(() => new MyComputeExtension());
+// Register before adding torrents — factory receives (swarm, wire), creates one per peer
+client.UseExtension((swarm, wire) => new MyComputeExtension());
 
 // Or on a specific swarm
-swarm.UseExtension(() => new MyComputeExtension());
+swarm.UseExtension((swarm, wire) => new MyComputeExtension());
 ```
 
 Create custom extensions by extending `WireExtension`:
@@ -156,10 +156,10 @@ public class MyComputeExtension : WireExtension
         // Process peer's handshake data
     }
 
-    public async Task SendAsync(WireProtocol wire, byte[] data)
+    public async Task SendComputeData(byte[] data)
     {
         if (!IsSupported) return; // peer doesn't have this extension
-        await wire.SendExtensionMessageAsync(RemoteId, data);
+        await SendAsync(data); // sends directly through the wire
     }
 }
 ```

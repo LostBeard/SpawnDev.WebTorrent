@@ -282,8 +282,8 @@ public abstract partial class WebTorrentTestBase
 
         var peerIdA = new byte[20];
         var peerIdB = new byte[20];
-        "-SD0110-"u8.CopyTo(peerIdA); Random.Shared.NextBytes(peerIdA.AsSpan(8));
-        "-SD0110-"u8.CopyTo(peerIdB); Random.Shared.NextBytes(peerIdB.AsSpan(8));
+        "-SD0210-"u8.CopyTo(peerIdA); Random.Shared.NextBytes(peerIdA.AsSpan(8));
+        "-SD0210-"u8.CopyTo(peerIdB); Random.Shared.NextBytes(peerIdB.AsSpan(8));
 
         // Try local tracker first, fall back to production
         string trackerUrl;

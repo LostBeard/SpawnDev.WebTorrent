@@ -550,7 +550,7 @@ public abstract partial class WebTorrentTestBase
     public async Task HttpTracker_Create()
     {
         var peerId = new byte[20];
-        "-SD0110-"u8.CopyTo(peerId);
+        "-SD0210-"u8.CopyTo(peerId);
 
         var tracker = new HttpTrackerClient("https://tracker.opentrackr.org:1337/announce", peerId);
         if (tracker.Type != "http-tracker") throw new Exception($"Type: '{tracker.Type}'");
@@ -598,7 +598,7 @@ public abstract partial class WebTorrentTestBase
     public async Task UdpTracker_Create()
     {
         var peerId = new byte[20];
-        "-SD0110-"u8.CopyTo(peerId);
+        "-SD0210-"u8.CopyTo(peerId);
 
         var tracker = new UdpTrackerClient("udp://tracker.opentrackr.org:1337/announce", peerId);
 

@@ -20,6 +20,7 @@ public class TorrentSwarm : IAsyncDisposable
     private PieceManager? _pieceManager;
     private DownloadCoordinator? _coordinator;
     private PeerCoordinator? _peerCoordinator;
+    private readonly List<Func<Wire.WireExtension>> _extensionFactories = new();
     private bool _disposed;
 
     /// <summary>Torrent metadata (available after initialization or metadata exchange).</summary>
@@ -315,6 +316,9 @@ public class TorrentSwarm : IAsyncDisposable
                 var webRtc = new Transports.WebRtcTransport();
                 var coordinator = new PeerCoordinator(_client, InfoHash, webRtc);
                 _peerCoordinator = coordinator;
+                // Apply any registered extension factories
+                foreach (var factory in _extensionFactories)
+                    coordinator.UseExtension(factory);
                 coordinator.OnPeerConnected += async (peer) =>
                 {
                     try
@@ -393,6 +397,9 @@ public class TorrentSwarm : IAsyncDisposable
 
             // Perform BitTorrent handshake
             var wire = new WireProtocol(conn);
+            // Register extensions before handshake for BEP 10 negotiation
+            foreach (var factory in _extensionFactories)
+                wire.Extensions.Register(factory());
             await wire.SendHandshakeAsync(InfoHash, _client.PeerId);
 
             if (!await wire.ReceiveHandshakeAsync())
@@ -842,6 +849,17 @@ public class TorrentSwarm : IAsyncDisposable
                 _pieceManager.MarkComplete(i);
             }
         }
+    }
+
+    /// <summary>
+    /// Register a wire extension factory. Extensions are created for every new peer
+    /// BEFORE the BEP 10 handshake, so they participate in extension negotiation.
+    /// Same pattern as JS WebTorrent's wire.use(extensionFactory).
+    /// </summary>
+    public void UseExtension(Func<Wire.WireExtension> factory)
+    {
+        _extensionFactories.Add(factory);
+        _peerCoordinator?.UseExtension(factory);
     }
 
     /// <summary>Add a web seed URL.</summary>

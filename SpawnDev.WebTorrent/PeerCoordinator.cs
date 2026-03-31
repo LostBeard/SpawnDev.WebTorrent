@@ -23,6 +23,7 @@ public class PeerCoordinator : IAsyncDisposable
     private readonly List<WebSocketTrackerClient> _trackers = new();
     private readonly ConcurrentDictionary<string, ConnectedPeer> _peers = new();
     private readonly byte[] _infoHash;
+    private readonly List<Func<WireExtension>> _extensionFactories = new();
 
     public int PeerCount => _peers.Count;
 
@@ -123,9 +124,16 @@ public class PeerCoordinator : IAsyncDisposable
         }
     }
 
+    /// <summary>Register a wire extension factory. Extensions are created for every new peer BEFORE the BEP 10 handshake.</summary>
+    public void UseExtension(Func<WireExtension> factory) => _extensionFactories.Add(factory);
+
     private async Task SetupPeerAsync(IConnection conn)
     {
         var wire = new WireProtocol(conn);
+
+        // Register extensions BEFORE handshake so they're included in BEP 10 negotiation
+        foreach (var factory in _extensionFactories)
+            wire.Extensions.Register(factory());
 
         // Perform BitTorrent handshake
         await wire.SendHandshakeAsync(_infoHash, _client.PeerId);

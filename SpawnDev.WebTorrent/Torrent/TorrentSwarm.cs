@@ -213,9 +213,15 @@ public class TorrentSwarm : IAsyncDisposable
             }
             else
             {
-                // Store web seeds and trackers for when metadata arrives via peers
+                // Store web seeds for when metadata arrives via peers
                 _pendingUrlList = parsed.UrlList;
                 _pendingTrackers = parsed.AnnounceList.SelectMany(a => a).ToArray();
+
+                // Connect to trackers immediately — we only need InfoHash for announce,
+                // not full metadata. This breaks the chicken-and-egg: worker needs tracker
+                // to find seeder to get metadata, but tracker only needs info hash + peer ID.
+                if (_pendingTrackers.Length > 0)
+                    _ = ConnectToTrackersAsync(_pendingTrackers);
             }
         }
         else if (magnetOrInfoHash.Length == 40)
@@ -288,20 +294,21 @@ public class TorrentSwarm : IAsyncDisposable
     {
         if (Metadata == null) return;
 
-        var wsTrackers = new List<string>();
-        var httpTrackers = new List<string>();
+        var trackerUrls = Metadata.AnnounceList.SelectMany(a => a).ToArray();
+        await ConnectToTrackersAsync(trackerUrls);
+    }
 
-        foreach (var tier in Metadata.AnnounceList)
-        {
-            foreach (var url in tier)
-            {
-                if (url.StartsWith("wss://") || url.StartsWith("ws://")) wsTrackers.Add(url);
-                else if (url.StartsWith("http://") || url.StartsWith("https://")) httpTrackers.Add(url);
-            }
-        }
+    /// <summary>
+    /// Connect to tracker URLs using just InfoHash (metadata not required).
+    /// Called from both SetMetadata (has full metadata) and InitializeAsync (magnet with trackers).
+    /// </summary>
+    private async Task ConnectToTrackersAsync(string[] trackerUrls)
+    {
+        var wsTrackers = trackerUrls.Where(u => u.StartsWith("wss://") || u.StartsWith("ws://")).ToArray();
+        var httpTrackers = trackerUrls.Where(u => u.StartsWith("http://") || u.StartsWith("https://")).ToArray();
 
         // WebSocket trackers — need WebRTC transport for browser P2P
-        if (wsTrackers.Count > 0 && OperatingSystem.IsBrowser())
+        if (wsTrackers.Length > 0 && OperatingSystem.IsBrowser() && _peerCoordinator == null)
         {
             try
             {
@@ -336,9 +343,6 @@ public class TorrentSwarm : IAsyncDisposable
             {
                 OnLog?.Invoke($"WebRTC tracker setup failed: {ex.Message}");
             }
-        }
-        else if (wsTrackers.Count > 0)
-        {
         }
 
         // HTTP trackers — peer discovery (desktop)

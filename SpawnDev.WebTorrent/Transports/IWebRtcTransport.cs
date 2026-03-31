@@ -15,4 +15,16 @@ public interface IWebRtcTransport : ITransport
 
     /// <summary>Handle an incoming WebRTC answer (for an offer we sent).</summary>
     Task HandleAnswerAsync(string fromPeerId, object answer);
+
+    /// <summary>
+    /// Create the platform-appropriate WebRTC transport.
+    /// Browser: SpawnDev.BlazorJS RTCPeerConnection.
+    /// Desktop: SIPSorcery RTCPeerConnection.
+    /// </summary>
+    static IWebRtcTransport Create(WebRtcTransportOptions? options = null)
+    {
+        if (OperatingSystem.IsBrowser())
+            return new WebRtcTransport(options);
+        return new SipSorceryWebRtcTransport(options);
+    }
 }

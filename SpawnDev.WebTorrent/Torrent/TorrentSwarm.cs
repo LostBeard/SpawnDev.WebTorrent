@@ -341,12 +341,12 @@ public class TorrentSwarm : IAsyncDisposable
         var wsTrackers = trackerUrls.Where(u => u.StartsWith("wss://") || u.StartsWith("ws://")).ToArray();
         var httpTrackers = trackerUrls.Where(u => u.StartsWith("http://") || u.StartsWith("https://")).ToArray();
 
-        // WebSocket trackers — need WebRTC transport for browser P2P
-        if (wsTrackers.Length > 0 && OperatingSystem.IsBrowser() && _peerCoordinator == null)
+        // WebSocket trackers — need WebRTC transport for P2P (browser + desktop)
+        if (wsTrackers.Length > 0 && _peerCoordinator == null)
         {
             try
             {
-                var webRtc = new Transports.WebRtcTransport();
+                var webRtc = Transports.IWebRtcTransport.Create();
                 var coordinator = new PeerCoordinator(_client, InfoHash, webRtc);
                 coordinator.Swarm = this;
                 _peerCoordinator = coordinator;

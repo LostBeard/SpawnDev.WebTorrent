@@ -588,8 +588,6 @@ public abstract partial class WebTorrentTestBase
     [TestMethod(Timeout = 60000)]
     public async Task P2P_RealWebRTC_SeedAndDownload_ViaTracker()
     {
-        if (!OperatingSystem.IsBrowser())
-            throw new UnsupportedTestException("WebRTC requires browser");
 
         // ── Create test data ──
         var data = new byte[32768]; // 2 pieces at 16KB

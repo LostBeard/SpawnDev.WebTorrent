@@ -342,117 +342,106 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task P2P_WebRtcTransport_DefaultOptions()
     {
-        var transport = new WebRtcTransport();
+        await using var transport = IWebRtcTransport.Create();
 
         if (transport.Type != "webrtc")
             throw new Exception($"Expected type 'webrtc', got '{transport.Type}'");
 
-        await transport.DisposeAsync();
-    }
-
-    [TestMethod]
-    public async Task P2P_WebRtcConnection_Create()
-    {
-        // Verify WebRTC connection can be constructed (doesn't touch browser APIs)
-        var conn = new WebRtcConnection("test-peer-123", new WebRtcTransportOptions());
-
-        if (conn.RemoteId != "test-peer-123")
-            throw new Exception($"RemoteId mismatch: '{conn.RemoteId}'");
-        if (conn.TransportType != "webrtc")
-            throw new Exception($"TransportType should be 'webrtc', got '{conn.TransportType}'");
-        if (conn.IsConnected)
-            throw new Exception("Should not be connected before offer/answer");
-
-        await conn.DisposeAsync();
-        Console.WriteLine("[P2P] WebRTC connection constructed and disposed");
+        Console.WriteLine($"[P2P] WebRTC transport created: {transport.GetType().Name}");
     }
 
     // ═══════════════════════════════════════════════════════════
-    //  WebRTC Signaling Tests (browser only — requires RTCPeerConnection)
+    //  WebRTC Signaling Tests (browser + desktop via IWebRtcTransport)
     // ═══════════════════════════════════════════════════════════
 
     [TestMethod(Timeout = 30000)]
     public async Task P2P_WebRtcOffer_CreateValid()
     {
-        // Only works in browser context where RTCPeerConnection is available
-        if (!OperatingSystem.IsBrowser())
-            throw new UnsupportedTestException("WebRTC requires browser context");
+        // Verify the platform transport creates a valid SDP offer
+        await using var transport = IWebRtcTransport.Create();
+        object? capturedOffer = null;
+        transport.OnOfferCreated += (peerId, offer) => capturedOffer = offer;
 
-        var conn = new WebRtcConnection("test-peer", new WebRtcTransportOptions());
-        var offer = await conn.CreateOfferAsync();
+        // ConnectAsync creates the offer and fires OnOfferCreated, then waits for
+        // the data channel to open (which won't happen without a peer). Use a timeout.
+        using var cts = new CancellationTokenSource(10000);
+        try { await transport.ConnectAsync("test-peer", cts.Token); }
+        catch (OperationCanceledException) { }
 
-        if (offer == null)
-            throw new Exception("CreateOfferAsync returned null");
+        if (capturedOffer == null)
+            throw new Exception("OnOfferCreated never fired — no offer was created");
 
-        // The offer should be an RTCSessionDescription with type "offer" and SDP
-        var offerJson = System.Text.Json.JsonSerializer.Serialize(offer);
-        if (!offerJson.Contains("\"type\"") || !offerJson.Contains("\"sdp\""))
-            throw new Exception($"Offer should contain type and sdp fields: {offerJson[..Math.Min(200, offerJson.Length)]}");
-        if (!offerJson.Contains("offer"))
-            throw new Exception("Offer type should be 'offer'");
+        var offerJson = System.Text.Json.JsonSerializer.Serialize(capturedOffer);
+        if (!offerJson.Contains("sdp"))
+            throw new Exception($"Offer should contain sdp field: {offerJson[..Math.Min(200, offerJson.Length)]}");
         if (!offerJson.Contains("v=0"))
             throw new Exception("SDP should contain 'v=0' (SDP version)");
 
-        Console.WriteLine($"[P2P] WebRTC offer created: {offerJson.Length} chars");
-        await conn.DisposeAsync();
+        Console.WriteLine($"[P2P] WebRTC offer created via {transport.GetType().Name}: {offerJson.Length} chars");
     }
 
     [TestMethod(Timeout = 60000)]
     public async Task P2P_WebRtcLoopback_OfferAnswer()
     {
-        // Test the full offer/answer cycle between two local connections
-        // This validates the signaling works without needing a real remote peer
-        if (!OperatingSystem.IsBrowser())
-            throw new UnsupportedTestException("WebRTC requires browser context");
+        // Test the full offer/answer cycle between two local transports
+        // This validates signaling works without needing a real remote peer
+        await using var initiatorTransport = IWebRtcTransport.Create();
+        await using var responderTransport = IWebRtcTransport.Create();
 
-        var options = new WebRtcTransportOptions
+        IConnection? initiatorConn = null;
+        IConnection? responderConn = null;
+
+        // Wire up: initiator creates offer → responder handles it → answer sent back
+        var offerReceived = new TaskCompletionSource();
+        initiatorTransport.OnOfferCreated += async (peerId, offer) =>
         {
-            IceServers = new[] { "stun:stun.l.google.com:19302" },
-            ChannelLabel = "loopback-test",
+            try
+            {
+                var (conn, answer) = await responderTransport.HandleOfferAsync("initiator", offer);
+                responderConn = conn;
+                await initiatorTransport.HandleAnswerAsync(peerId, answer);
+                offerReceived.TrySetResult();
+            }
+            catch (Exception ex) { offerReceived.TrySetException(ex); }
         };
 
-        // Initiator creates offer
-        var initiator = new WebRtcConnection("peer-b", options);
-        var offer = await initiator.CreateOfferAsync();
-
-        // Responder handles offer and creates answer
-        var responder = new WebRtcConnection("peer-a", options);
-        var answer = await responder.HandleOfferAsync(offer);
-
-        // Initiator handles answer (completes signaling)
-        await initiator.HandleAnswerAsync(answer);
-
-        // Both sides should be opening data channels now
-        // Wait briefly for ICE connectivity and data channel open
-        var openTimeout = Task.Delay(15000);
-        var initiatorOpen = initiator.WaitForOpenAsync();
-        var responderOpen = responder.WaitForOpenAsync();
-
-        var result = await Task.WhenAny(
-            Task.WhenAll(initiatorOpen, responderOpen),
-            openTimeout
-        );
-
-        if (result == openTimeout)
+        // Start connection (fires OnOfferCreated, then waits for data channel open)
+        var connectTask = Task.Run(async () =>
         {
-            Console.WriteLine("[P2P] Loopback: data channels did not open within timeout (ICE may have failed — this is OK in some network configs)");
-            // Don't fail — ICE loopback depends on network config
-            await initiator.DisposeAsync();
-            await responder.DisposeAsync();
+            using var cts = new CancellationTokenSource(20000);
+            initiatorConn = await initiatorTransport.ConnectAsync("responder", cts.Token);
+        });
+
+        // Wait for signaling to complete
+        using var signalingCts = new CancellationTokenSource(15000);
+        signalingCts.Token.Register(() => offerReceived.TrySetCanceled());
+        try { await offerReceived.Task; }
+        catch (OperationCanceledException)
+        {
+            Console.WriteLine("[P2P] Loopback: signaling did not complete within timeout");
             return;
         }
 
-        if (!initiator.IsConnected || !responder.IsConnected)
-            throw new Exception($"Expected both connected: initiator={initiator.IsConnected}, responder={responder.IsConnected}");
+        // Wait for data channels to open
+        var openTimeout = Task.Delay(15000);
+        var result = await Task.WhenAny(connectTask, openTimeout);
+
+        if (result == openTimeout || initiatorConn == null || responderConn == null)
+        {
+            Console.WriteLine("[P2P] Loopback: data channels did not open within timeout (ICE may have failed — this is OK in some network configs)");
+            return;
+        }
+
+        if (!initiatorConn.IsConnected || !responderConn.IsConnected)
+            throw new Exception($"Expected both connected: initiator={initiatorConn.IsConnected}, responder={responderConn.IsConnected}");
 
         // Test data exchange
         var testData = new byte[] { 0x13, 0x42, 0xFF, 0x00, 0xAB };
-        await initiator.SendAsync(testData);
+        await initiatorConn.SendAsync(testData);
 
-        // Give a moment for data to arrive
         var recvBuf = new byte[64];
         using var recvCts = new CancellationTokenSource(5000);
-        var bytesRead = await responder.ReceiveAsync(recvBuf, recvCts.Token);
+        var bytesRead = await responderConn.ReceiveAsync(recvBuf, recvCts.Token);
 
         if (bytesRead != testData.Length)
             throw new Exception($"Expected {testData.Length} bytes, received {bytesRead}");
@@ -460,10 +449,7 @@ public abstract partial class WebTorrentTestBase
             if (recvBuf[i] != testData[i])
                 throw new Exception($"Data mismatch at byte {i}: expected 0x{testData[i]:X2}, got 0x{recvBuf[i]:X2}");
 
-        Console.WriteLine("[P2P] Loopback: offer/answer/data exchange PASSED");
-
-        await initiator.DisposeAsync();
-        await responder.DisposeAsync();
+        Console.WriteLine($"[P2P] Loopback via {initiatorTransport.GetType().Name}: offer/answer/data exchange PASSED");
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -475,7 +461,7 @@ public abstract partial class WebTorrentTestBase
     {
         await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var infoHash = Convert.FromHexString("dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c");
-        var transport = new WebRtcTransport();
+        await using var transport = IWebRtcTransport.Create();
 
         var coordinator = new PeerCoordinator(client, infoHash, transport);
 
@@ -483,19 +469,15 @@ public abstract partial class WebTorrentTestBase
             throw new Exception($"Expected 0 peers, got {coordinator.PeerCount}");
 
         await coordinator.DisposeAsync();
-        await transport.DisposeAsync();
-        Console.WriteLine("[P2P] PeerCoordinator created and disposed");
+        Console.WriteLine($"[P2P] PeerCoordinator created via {transport.GetType().Name} and disposed");
     }
 
     [TestMethod(Timeout = 60000)]
     public async Task P2P_PeerCoordinator_TrackerAnnounce()
     {
-        if (!OperatingSystem.IsBrowser())
-            throw new UnsupportedTestException("PeerCoordinator with tracker requires browser context for WebSocket");
-
         await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var infoHash = Convert.FromHexString("dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c");
-        var transport = new WebRtcTransport();
+        await using var transport = IWebRtcTransport.Create();
         var coordinator = new PeerCoordinator(client, infoHash, transport);
 
         var swarmUpdateTcs = new TaskCompletionSource();

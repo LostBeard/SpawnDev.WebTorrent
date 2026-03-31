@@ -3,7 +3,7 @@
 [![NuGet](https://img.shields.io/nuget/v/SpawnDev.WebTorrent.svg)](https://www.nuget.org/packages/SpawnDev.WebTorrent)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Runs on desktop (.NET) and browser (Blazor WASM). 452+ tests. 15 BEPs implemented.
+Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Runs on desktop (.NET) and browser (Blazor WASM). 461+ tests. 15 BEPs implemented.
 
 ## Features
 
@@ -23,6 +23,7 @@ Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Run
 - **Speed Tracking** — Real-time download/upload bytes/sec per torrent.
 - **AI Agent Communication** — BEP 46 DHT mutable items with real ECDSA-P256 signing via SpawnDev.BlazorJS.Cryptography. AgentChannel pub/sub for shared AI state.
 - **HuggingFace Integration** — Optional server extension that proxies HuggingFace model CDN with local caching and automatic torrent generation.
+- **Custom Wire Extensions** — `UseExtension()` factory pattern (same as JS WebTorrent `wire.use()`). Build custom P2P protocols on top of the BitTorrent wire — distributed compute, AI agents, anything. Extensions negotiate via BEP 10.
 - **.torrent Creation** — Create and parse .torrent files. Complete Bencode encoder/decoder.
 - **452+ Unit Tests** — Every BEP tested, ECDSA crypto verified in browser, service worker streaming verified end-to-end, security tests for signature verification.
 
@@ -117,6 +118,53 @@ Feature parity with the [WebTorrent JS File API](https://github.com/webtorrent/w
 | `file.Deselect()` | Deprioritize |
 | `file.Includes(pieceIndex)` | Check if piece belongs to file |
 | `file.OnDone` | Event when download completes |
+
+## Wire Extensions (BEP 10)
+
+Register custom wire protocol extensions that participate in BEP 10 negotiation — same pattern as JS WebTorrent's `wire.use()`:
+
+```csharp
+// Register before adding torrents — extension factory creates one per peer
+client.UseExtension(() => new MyComputeExtension());
+
+// Or on a specific swarm
+swarm.UseExtension(() => new MyComputeExtension());
+```
+
+Create custom extensions by extending `WireExtension`:
+
+```csharp
+public class MyComputeExtension : WireExtension
+{
+    public override string Name => "sd_compute";
+
+    public override Task HandleMessageAsync(byte[] payload)
+    {
+        // Handle incoming messages from peers
+        var msg = ParseMessage(payload);
+        return Task.CompletedTask;
+    }
+
+    public override Dictionary<string, object>? GetHandshakeData()
+    {
+        // Include data in BEP 10 handshake (optional)
+        return new() { ["capabilities"] = new List<object> { "gpu", "wasm" } };
+    }
+
+    public override void ProcessHandshakeData(Dictionary<string, object> data)
+    {
+        // Process peer's handshake data
+    }
+
+    public async Task SendAsync(WireProtocol wire, byte[] data)
+    {
+        if (!IsSupported) return; // peer doesn't have this extension
+        await wire.SendExtensionMessageAsync(RemoteId, data);
+    }
+}
+```
+
+Extensions are created per-peer via factory, registered **before** the BEP 10 handshake so `IsSupported` and `RemoteId` are set correctly. Use this for custom P2P protocols on top of the BitTorrent wire (e.g., distributed compute, AI agent communication).
 
 ## Service Worker — Media Streaming with Seeking
 

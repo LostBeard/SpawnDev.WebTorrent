@@ -269,19 +269,17 @@ public abstract partial class WebTorrentTestBase
     }
 
     // ═══════════════════════════════════════════════════════════
-    //  FileChunkStore — Desktop Persistent Storage
+    //  Persistent ChunkStore — AsyncFSChunkStore (works on all platforms via IAsyncFS DI)
     // ═══════════════════════════════════════════════════════════
 
     [TestMethod]
     public async Task FileStore_PutGetClear()
     {
-        if (OperatingSystem.IsBrowser())
-            throw new UnsupportedTestException("FileChunkStore requires filesystem");
-
-        var dir = Path.Combine(Path.GetTempPath(), $"wt-test-{Guid.NewGuid():N}");
+        var fs = AsyncFs ?? throw new Exception("IAsyncFS not available from DI");
+        var storePath = $"wt-test-{Guid.NewGuid():N}";
         try
         {
-            await using var store = new FileChunkStore(dir, 16384);
+            await using var store = new AsyncFSChunkStore(fs, storePath, 16384);
 
             // Put
             var data = new byte[16384];
@@ -322,39 +320,33 @@ public abstract partial class WebTorrentTestBase
         }
         finally
         {
-            if (Directory.Exists(dir)) Directory.Delete(dir, true);
         }
     }
 
     [TestMethod]
     public async Task FileStore_ChunkLength()
     {
-        if (OperatingSystem.IsBrowser())
-            throw new UnsupportedTestException("FileChunkStore requires filesystem");
-
-        var dir = Path.Combine(Path.GetTempPath(), $"wt-test-{Guid.NewGuid():N}");
+        var fs = AsyncFs ?? throw new Exception("IAsyncFS not available from DI");
+        var storePath = $"wt-test-{Guid.NewGuid():N}";
         try
         {
-            await using var store = new FileChunkStore(dir, 32768);
+            await using var store = new AsyncFSChunkStore(fs, storePath, 32768);
             if (store.ChunkLength != 32768)
                 throw new Exception($"ChunkLength: {store.ChunkLength}");
         }
         finally
         {
-            if (Directory.Exists(dir)) Directory.Delete(dir, true);
         }
     }
 
     [TestMethod]
     public async Task FileStore_MultipleChunks()
     {
-        if (OperatingSystem.IsBrowser())
-            throw new UnsupportedTestException("FileChunkStore requires filesystem");
-
-        var dir = Path.Combine(Path.GetTempPath(), $"wt-test-{Guid.NewGuid():N}");
+        var fs = AsyncFs ?? throw new Exception("IAsyncFS not available from DI");
+        var storePath = $"wt-test-{Guid.NewGuid():N}";
         try
         {
-            await using var store = new FileChunkStore(dir, 1024);
+            await using var store = new AsyncFSChunkStore(fs, storePath, 1024);
             for (int i = 0; i < 10; i++)
             {
                 var data = new byte[1024];
@@ -371,7 +363,6 @@ public abstract partial class WebTorrentTestBase
         }
         finally
         {
-            if (Directory.Exists(dir)) Directory.Delete(dir, true);
         }
     }
 
@@ -494,19 +485,17 @@ public abstract partial class WebTorrentTestBase
     }
 
     // ═══════════════════════════════════════════════════════════
-    //  FileChunkStore — Desktop Storage
+    //  Persistent ChunkStore — Write/Read/Delete/Clear/Overwrite
     // ═══════════════════════════════════════════════════════════
 
     [TestMethod]
     public async Task FileChunkStore_WriteReadDelete()
     {
-        if (OperatingSystem.IsBrowser())
-            throw new UnsupportedTestException("FileChunkStore requires desktop filesystem");
-
-        var tmpDir = Path.Combine(Path.GetTempPath(), $"wt_test_{Guid.NewGuid():N}");
+        var fs = AsyncFs ?? throw new Exception("IAsyncFS not available from DI");
+        var storePath = $"wt-test-{Guid.NewGuid():N}";
         try
         {
-            await using var store = new FileChunkStore(tmpDir, 16384);
+            await using var store = new AsyncFSChunkStore(fs, storePath, 16384);
 
             // Put a chunk
             var data = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
@@ -537,20 +526,17 @@ public abstract partial class WebTorrentTestBase
         }
         finally
         {
-            if (Directory.Exists(tmpDir)) Directory.Delete(tmpDir, true);
         }
     }
 
     [TestMethod]
     public async Task FileChunkStore_ClearAll()
     {
-        if (OperatingSystem.IsBrowser())
-            throw new UnsupportedTestException("FileChunkStore requires desktop filesystem");
-
-        var tmpDir = Path.Combine(Path.GetTempPath(), $"wt_test_{Guid.NewGuid():N}");
+        var fs = AsyncFs ?? throw new Exception("IAsyncFS not available from DI");
+        var storePath = $"wt-test-{Guid.NewGuid():N}";
         try
         {
-            await using var store = new FileChunkStore(tmpDir, 16384);
+            await using var store = new AsyncFSChunkStore(fs, storePath, 16384);
 
             await store.PutAsync(0, new byte[] { 1, 2, 3 });
             await store.PutAsync(1, new byte[] { 4, 5, 6 });
@@ -568,20 +554,17 @@ public abstract partial class WebTorrentTestBase
         }
         finally
         {
-            if (Directory.Exists(tmpDir)) Directory.Delete(tmpDir, true);
         }
     }
 
     [TestMethod]
     public async Task FileChunkStore_Overwrite()
     {
-        if (OperatingSystem.IsBrowser())
-            throw new UnsupportedTestException("FileChunkStore requires desktop filesystem");
-
-        var tmpDir = Path.Combine(Path.GetTempPath(), $"wt_test_{Guid.NewGuid():N}");
+        var fs = AsyncFs ?? throw new Exception("IAsyncFS not available from DI");
+        var storePath = $"wt-test-{Guid.NewGuid():N}";
         try
         {
-            await using var store = new FileChunkStore(tmpDir, 16384);
+            await using var store = new AsyncFSChunkStore(fs, storePath, 16384);
 
             await store.PutAsync(0, new byte[] { 1, 2, 3 });
             await store.PutAsync(0, new byte[] { 10, 20, 30, 40 }); // overwrite
@@ -596,7 +579,6 @@ public abstract partial class WebTorrentTestBase
         }
         finally
         {
-            if (Directory.Exists(tmpDir)) Directory.Delete(tmpDir, true);
         }
     }
 

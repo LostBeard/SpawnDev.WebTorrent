@@ -87,6 +87,12 @@ public class DownloadCoordinator : IDisposable
         wire.OnChoke += () => peer.IsChoked = true;
         wire.OnUnchoke += () => peer.IsChoked = false;
 
+        // If the remote already sent Unchoke before we subscribed, start unchoked.
+        // In BitTorrent, after handshake the seeder sends Interested+Unchoke+Bitfield
+        // rapidly — Unchoke often arrives before the coordinator sees the peer.
+        if (!wire.PeerChoking)
+            peer.IsChoked = false;
+
         lock (_peersLock) _activePeers.Add(peer);
     }
 

@@ -155,6 +155,10 @@ namespace PlaywrightMultiTest
                         // Fixed port so IndexedDB persists across runs (same origin = same IDB)
                         var _port = 5562;
                         var baseUrl = $"https://localhost:{_port}/";
+                        // Write desktop seeder config to wwwroot so browser tests can fetch it
+                        if (GlobalSetup.Seeder?.IsSeeding == true)
+                            GlobalSetup.Seeder.WriteTestConfig(testableProject.ProjectDetails.WwwRoot);
+
                         testableProject.Server = new StaticFileServer(testableProject.ProjectDetails.WwwRoot, baseUrl);
                         // start https server to serve the Blazor WASM app
                         testableProject.Server.Start();

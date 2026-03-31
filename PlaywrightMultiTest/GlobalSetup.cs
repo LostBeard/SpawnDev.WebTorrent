@@ -7,6 +7,9 @@ namespace PlaywrightMultiTest
     {
         private static Process? _serverProcess;
 
+        /// <summary>Desktop seeder for cross-platform P2P tests.</summary>
+        public static DesktopSeeder? Seeder { get; private set; }
+
         [OneTimeSetUp]
         public async Task SetUp()
         {
@@ -14,11 +17,30 @@ namespace PlaywrightMultiTest
 
             // Start the WebTorrent ServerApp for integration tests
             await StartServerAppAsync();
+
+            // Start desktop seeder for cross-platform P2P tests
+            try
+            {
+                Seeder = new DesktopSeeder();
+                await Seeder.StartAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[GlobalSetup] Desktop seeder failed to start: {ex.Message}");
+                Seeder = null;
+            }
         }
 
         [OneTimeTearDown]
-        public void TearDown()
+        public async Task TearDown()
         {
+            // Stop the desktop seeder
+            if (Seeder != null)
+            {
+                await Seeder.DisposeAsync();
+                Seeder = null;
+            }
+
             // Stop the ServerApp
             if (_serverProcess != null)
             {

@@ -512,6 +512,100 @@ public abstract partial class WebTorrentTestBase
     }
 }
 
+// ═══════════════════════════════════════════════════════════
+//  Cross-Platform P2P — Desktop Seeder + Browser Downloader
+// ═══════════════════════════════════════════════════════════
+
+public abstract partial class WebTorrentTestBase
+{
+    [TestMethod(Timeout = 60000)]
+    public async Task P2P_CrossPlatform_DesktopSeed_BrowserDownload()
+    {
+        // Fetch test config written by PlaywrightMultiTest's DesktopSeeder.
+        // If the file doesn't exist, we're not running under PlaywrightMultiTest → skip.
+        string? magnetUri;
+        int expectedLength;
+        try
+        {
+            using var http = new HttpClient();
+            // Fetch from our own origin — PlaywrightMultiTest writes this to the published wwwroot
+            var baseUrl = OperatingSystem.IsBrowser()
+                ? ""  // relative URL in browser
+                : "https://localhost:5562";
+            var json = await http.GetStringAsync($"{baseUrl}/_test-desktop-seeder.json");
+            var config = System.Text.Json.JsonDocument.Parse(json);
+            magnetUri = config.RootElement.GetProperty("magnetUri").GetString();
+            expectedLength = config.RootElement.GetProperty("dataLength").GetInt32();
+        }
+        catch
+        {
+            throw new UnsupportedTestException("Desktop seeder not available — not running under PlaywrightMultiTest");
+        }
+
+        if (string.IsNullOrEmpty(magnetUri))
+            throw new UnsupportedTestException("Desktop seeder magnet URI is empty");
+
+        Console.WriteLine($"[CrossPlatform] Desktop seeder magnet: {magnetUri[..Math.Min(80, magnetUri.Length)]}...");
+
+        // Generate expected data — same deterministic pattern as DesktopSeeder
+        var expected = new byte[expectedLength];
+        for (int i = 0; i < expected.Length; i++)
+            expected[i] = (byte)((i * 7 + 13) % 256);
+
+        // Download from the desktop seeder via real tracker + WebRTC
+        var crypto = Client!.Crypto;
+        await using var downloader = new WebTorrentClient(crypto: crypto);
+        var swarm = await downloader.AddAsync(magnetUri);
+
+        // Wait for metadata
+        var metadataTimeout = DateTime.UtcNow.AddSeconds(15);
+        while (swarm.Metadata == null && DateTime.UtcNow < metadataTimeout)
+            await Task.Delay(200);
+        if (swarm.Metadata == null)
+            throw new Exception("Metadata never received from desktop seeder");
+        Console.WriteLine($"[CrossPlatform] Metadata received: {swarm.Metadata.TotalLength} bytes, {swarm.Metadata.PieceCount} pieces");
+
+        // Wait for download to complete
+        var downloadTimeout = DateTime.UtcNow.AddSeconds(30);
+        while (swarm.Progress < 1.0 && DateTime.UtcNow < downloadTimeout)
+            await Task.Delay(200);
+
+        if (swarm.Progress < 1.0)
+            throw new Exception($"Download incomplete: {swarm.Progress:P0} ({swarm.Downloaded}/{swarm.Metadata.TotalLength} bytes)");
+
+        Console.WriteLine($"[CrossPlatform] Download complete: {swarm.Downloaded} bytes");
+
+        // Verify data matches
+        var store = swarm.Store;
+        if (store == null)
+            throw new Exception("Store is null after download");
+
+        var actual = new byte[expectedLength];
+        int offset = 0;
+        for (int i = 0; i < swarm.Metadata.PieceCount; i++)
+        {
+            var piece = await store.GetAsync(i);
+            if (piece == null)
+                throw new Exception($"Piece {i} missing after download");
+            int len = Math.Min(piece.Length, expectedLength - offset);
+            Array.Copy(piece, 0, actual, offset, len);
+            offset += len;
+        }
+
+        if (!actual.SequenceEqual(expected))
+        {
+            // Find first mismatch
+            for (int i = 0; i < actual.Length; i++)
+            {
+                if (actual[i] != expected[i])
+                    throw new Exception($"Data mismatch at byte {i}: expected 0x{expected[i]:X2}, got 0x{actual[i]:X2}");
+            }
+        }
+
+        Console.WriteLine("[CrossPlatform] Desktop↔Browser P2P VERIFIED — data matches byte-for-byte");
+    }
+}
+
 /// <summary>
 /// Mock loopback connection pair — two IConnections that pipe data to each other.
 /// Used for testing P2P without network.

@@ -80,7 +80,10 @@ public class TorrentTracker
             try
             {
                 var json = System.Text.Encoding.UTF8.GetString(received.GetBuffer(), 0, (int)received.Length);
-                var msg = JsonSerializer.Deserialize<TrackerMessage>(json);
+                var msg = JsonSerializer.Deserialize<TrackerMessage>(json, new JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+                });
                 if (msg == null) continue;
 
                 switch (msg.Action)

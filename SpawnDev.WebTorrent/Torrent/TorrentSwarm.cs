@@ -186,6 +186,39 @@ public class TorrentSwarm : IAsyncDisposable
         _client = client;
         _options = options;
         Paused = options.Paused;
+
+        // Register built-in BEP 10 extensions on every wire
+        UseExtension(() =>
+        {
+            var ext = new Wire.UtMetadataExtension();
+            // If we have metadata, serve it to peers
+            if (Metadata?.InfoDictBytes != null)
+                ext.LocalMetadata = Metadata.InfoDictBytes;
+            ext.ExpectedInfoHash = InfoHash.Length > 0 ? InfoHash : null;
+            // When metadata is received from a peer, set it on this swarm
+            ext.OnMetadataComplete += (infoDictBytes) =>
+            {
+                try
+                {
+                    var meta = TorrentParser.ParseInfoDict(infoDictBytes, InfoHash);
+                    if (meta != null && Metadata == null)
+                        SetMetadata(meta);
+                }
+                catch (Exception ex) { OnLog?.Invoke($"ut_metadata parse failed: {ex.Message}"); }
+            };
+            return ext;
+        });
+        UseExtension(() =>
+        {
+            var ext = new Wire.UtPexExtension();
+            ext.OnPeersReceived += (peers) =>
+            {
+                if (IsPrivate) return; // BEP 27: no PEX for private torrents
+                foreach (var addr in peers)
+                    AddPeer(new PeerInfo { Address = addr, Source = "pex" });
+            };
+            return ext;
+        });
     }
 
     /// <summary>Initialize from magnet URI or info hash string.</summary>
@@ -515,6 +548,14 @@ public class TorrentSwarm : IAsyncDisposable
             if (hasPieces)
             {
                 await wire.SendBitfieldAsync(BoolBitfieldToBytes(_pieceManager.Bitfield));
+            }
+
+            // If we don't have metadata, request it from this peer via ut_metadata
+            if (Metadata == null)
+            {
+                var utMeta = wire.Extensions.Get<Wire.UtMetadataExtension>();
+                if (utMeta != null && utMeta.IsSupported && utMeta.MetadataSize > 0)
+                    utMeta.RequestAllPieces();
             }
 
             // Run the message read loop in background

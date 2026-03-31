@@ -197,6 +197,27 @@ public static class TorrentParser
     }
 
     /// <summary>
+    /// Parse raw info dictionary bytes (from ut_metadata exchange) into TorrentMetadata.
+    /// Verifies the info hash matches the expected hash.
+    /// </summary>
+    public static TorrentMetadata? ParseInfoDict(byte[] infoDictBytes, byte[] expectedInfoHash)
+    {
+        var hash = SHA1.HashData(infoDictBytes);
+        if (!hash.SequenceEqual(expectedInfoHash))
+            return null; // hash mismatch
+
+        // Wrap in a minimal .torrent structure: d4:infod...ee
+        var prefix = Encoding.ASCII.GetBytes("d4:info");
+        var suffix = Encoding.ASCII.GetBytes("e");
+        var torrentBytes = new byte[prefix.Length + infoDictBytes.Length + suffix.Length];
+        Array.Copy(prefix, torrentBytes, prefix.Length);
+        Array.Copy(infoDictBytes, 0, torrentBytes, prefix.Length, infoDictBytes.Length);
+        Array.Copy(suffix, 0, torrentBytes, prefix.Length + infoDictBytes.Length, suffix.Length);
+
+        return Parse(torrentBytes);
+    }
+
+    /// <summary>
     /// Parse a magnet URI into partial metadata (info hash + trackers + name).
     /// Full metadata must be obtained via ut_metadata extension from peers.
     /// </summary>

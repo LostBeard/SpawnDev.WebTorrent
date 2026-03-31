@@ -20,6 +20,16 @@ public abstract class WireExtension
     /// <summary>Whether the remote peer supports this extension.</summary>
     public bool IsSupported => RemoteId != 0;
 
+    /// <summary>Extension manager this extension is registered with.</summary>
+    internal ExtensionManager? Manager { get; set; }
+
+    /// <summary>Send a message to the remote peer via this extension.</summary>
+    public async Task SendAsync(byte[] payload)
+    {
+        if (!IsSupported || Manager?.Wire == null) return;
+        await Manager.Wire.SendExtensionMessageAsync(RemoteId, payload);
+    }
+
     /// <summary>Handle an incoming extension message from the peer.</summary>
     public abstract Task HandleMessageAsync(byte[] payload);
 
@@ -41,14 +51,26 @@ public class ExtensionManager
     private readonly Dictionary<string, WireExtension> _nameMap = new();
     private int _nextLocalId = 1;
 
+    /// <summary>The WireProtocol this manager belongs to (set by WireProtocol constructor).</summary>
+    internal WireProtocol? Wire { get; set; }
+
     /// <summary>Register an extension. Call before handshake.</summary>
     public void Register(WireExtension ext)
     {
         ext.LocalId = _nextLocalId++;
+        ext.Manager = this;
         _extensions.Add(ext);
         _localIdMap[ext.LocalId] = ext;
         _nameMap[ext.Name] = ext;
     }
+
+    /// <summary>Get a registered extension by type.</summary>
+    public T? Get<T>() where T : WireExtension
+        => _extensions.OfType<T>().FirstOrDefault();
+
+    /// <summary>Get a registered extension by name.</summary>
+    public WireExtension? Get(string name)
+        => _nameMap.TryGetValue(name, out var ext) ? ext : null;
 
     /// <summary>Build the local extension handshake dictionary (m = {name: id, ...}).</summary>
     public Dictionary<string, object> BuildHandshake()
@@ -117,13 +139,6 @@ public class ExtensionManager
         }
     }
 
-    /// <summary>Get an extension by type.</summary>
-    public T? Get<T>() where T : WireExtension
-        => _extensions.OfType<T>().FirstOrDefault();
-
-    /// <summary>Get an extension by name string.</summary>
-    public WireExtension? Get(string name)
-        => _nameMap.TryGetValue(name, out var ext) ? ext : null;
 }
 
 /// <summary>
@@ -157,9 +172,6 @@ public class UtMetadataExtension : WireExtension
 
     /// <summary>Fired when complete metadata is assembled and verified.</summary>
     public event Action<byte[]>? OnMetadataComplete;
-
-    /// <summary>Fired when a request needs to be sent to a peer (ext id, payload).</summary>
-    public event Action<int, byte[]>? OnSendExtension;
 
     /// <summary>Expected info hash for verification.</summary>
     public byte[]? ExpectedInfoHash { get; set; }
@@ -230,7 +242,7 @@ public class UtMetadataExtension : WireExtension
         Array.Copy(dictBytes, response, dictBytes.Length);
         Array.Copy(pieceData, 0, response, dictBytes.Length, pieceData.Length);
 
-        OnSendExtension?.Invoke(RemoteId, response);
+        _ = SendAsync(response);
     }
 
     private void HandleData(int pieceIndex, byte[] payload, int dataOffset)
@@ -290,7 +302,7 @@ public class UtMetadataExtension : WireExtension
             if (!_receivedPieces.ContainsKey(i))
             {
                 var request = CreateRequest(i);
-                OnSendExtension?.Invoke(RemoteId, request);
+                _ = SendAsync(request);
             }
         }
     }

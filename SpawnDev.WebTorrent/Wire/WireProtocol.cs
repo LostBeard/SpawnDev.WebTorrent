@@ -86,6 +86,7 @@ public class WireProtocol : IAsyncDisposable
     public WireProtocol(Transports.IConnection connection)
     {
         _connection = connection;
+        Extensions.Wire = this;
     }
 
     /// <summary>

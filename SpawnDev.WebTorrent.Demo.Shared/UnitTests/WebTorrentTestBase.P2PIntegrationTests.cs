@@ -552,15 +552,23 @@ public abstract partial class WebTorrentTestBase
 
         // Download from the desktop seeder via real tracker + WebRTC
         var crypto = Client!.Crypto;
+        WebTorrentClient.VerboseLogging = true;
         await using var downloader = new WebTorrentClient(crypto: crypto);
         var swarm = await downloader.AddAsync(magnetUri);
 
-        // Wait for metadata
-        var metadataTimeout = DateTime.UtcNow.AddSeconds(15);
+        Console.WriteLine($"[CrossPlatform] Swarm created, InfoHash: {swarm.InfoHashHex}");
+        Console.WriteLine($"[CrossPlatform] Tracker URLs in magnet: {magnetUri.Count(c => c == '&')} params");
+
+        // Wait for metadata — desktop seeder sends it via BEP 9 (ut_metadata) after connecting
+        var metadataTimeout = DateTime.UtcNow.AddSeconds(30);
         while (swarm.Metadata == null && DateTime.UtcNow < metadataTimeout)
-            await Task.Delay(200);
+        {
+            await Task.Delay(500);
+            Console.WriteLine($"[CrossPlatform] Waiting for metadata... peers={swarm.PeerCount} progress={swarm.Progress:P0}");
+        }
+        WebTorrentClient.VerboseLogging = false;
         if (swarm.Metadata == null)
-            throw new Exception("Metadata never received from desktop seeder");
+            throw new Exception($"Metadata never received from desktop seeder (peers={swarm.PeerCount})");
         Console.WriteLine($"[CrossPlatform] Metadata received: {swarm.Metadata.TotalLength} bytes, {swarm.Metadata.PieceCount} pieces");
 
         // Wait for download to complete

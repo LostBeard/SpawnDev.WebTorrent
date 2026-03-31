@@ -347,7 +347,7 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
         _torrents.Add(swarm);
         OnTorrentAdd?.Invoke(swarm);
 
-        swarm.SetMetadata(metadata);
+        await swarm.SetMetadataAsync(metadata);
 
         foreach (var discovery in _discoveryProviders)
         {

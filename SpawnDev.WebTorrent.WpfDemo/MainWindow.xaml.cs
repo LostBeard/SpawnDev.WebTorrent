@@ -230,7 +230,7 @@ public partial class MainWindow : Window
             foreach (var ws in metadata.UrlList)
                 if (!webSeedUrls.Contains(ws)) webSeedUrls.Add(ws);
 
-            vm.Swarm.SetMetadata(metadata);
+            await vm.Swarm.SetMetadataAsync(metadata);
             vm.Name = metadata.Name;
             vm.SizeText = FormatBytes(metadata.TotalLength);
 

@@ -642,7 +642,7 @@ public abstract partial class WebTorrentTestBase
 
         await using var store = new MemoryChunkStore(16384);
         var swarm = new TorrentSwarm(new WebTorrentClient(crypto: Client!.Crypto), new AddTorrentOptions());
-        swarm.SetMetadata(metadata);
+        await swarm.SetMetadataAsync(metadata);
 
         // No pieces complete → 0% progress
         var file = swarm.Files[0];

@@ -109,7 +109,7 @@ else if (mode == "download" && magnetUri != null)
             var metadata = TorrentParser.Parse(torrentBytes);
             if (metadata.InfoHash.SequenceEqual(swarm.InfoHash))
             {
-                swarm.SetMetadata(metadata);
+                await swarm.SetMetadataAsync(metadata);
                 foreach (var ws in metadata.UrlList) swarm.AddWebSeed(ws.TrimEnd('/'));
             }
         }

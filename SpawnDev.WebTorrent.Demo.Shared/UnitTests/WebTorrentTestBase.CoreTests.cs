@@ -63,7 +63,7 @@ public abstract partial class WebTorrentTestBase
         swarm.OnReady += () => readyFired = true;
 
         // Manually test since AddAsync auto-sets metadata
-        swarm.SetMetadata(metadata);
+        await swarm.SetMetadataAsync(metadata);
 
         if (!readyFired) throw new Exception("OnReady should have fired");
     }

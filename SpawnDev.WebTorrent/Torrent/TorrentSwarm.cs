@@ -196,13 +196,13 @@ public class TorrentSwarm : IAsyncDisposable
                 ext.LocalMetadata = swarm.Metadata.InfoDictBytes;
             ext.ExpectedInfoHash = swarm.InfoHash.Length > 0 ? swarm.InfoHash : null;
             // When metadata is received from a peer, set it on this swarm
-            ext.OnMetadataComplete += (infoDictBytes) =>
+            ext.OnMetadataComplete += async (infoDictBytes) =>
             {
                 try
                 {
                     var meta = TorrentParser.ParseInfoDict(infoDictBytes, swarm.InfoHash);
                     if (meta != null && swarm.Metadata == null)
-                        swarm.SetMetadata(meta);
+                        await swarm.SetMetadataAsync(meta);
                 }
                 catch (Exception ex) { swarm.OnLog?.Invoke($"ut_metadata parse failed: {ex.Message}"); }
             };
@@ -237,7 +237,7 @@ public class TorrentSwarm : IAsyncDisposable
                     using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
                     var torrentBytes = await http.GetByteArrayAsync(parsed.ExactSource);
                     var fullMetadata = TorrentParser.Parse(torrentBytes);
-                    SetMetadata(fullMetadata);
+                    await SetMetadataAsync(fullMetadata);
                     OnLog?.Invoke($"xs= metadata loaded: {fullMetadata.Name}, {fullMetadata.PieceCount} pieces");
                 }
                 catch (Exception ex)
@@ -272,7 +272,7 @@ public class TorrentSwarm : IAsyncDisposable
     private string[]? _pendingTrackers;
 
     /// <summary>Set metadata (from .torrent file parse or ut_metadata exchange).</summary>
-    public void SetMetadata(TorrentMetadata metadata)
+    public async Task SetMetadataAsync(TorrentMetadata metadata)
     {
         if (Metadata != null) return; // already set
 
@@ -313,8 +313,8 @@ public class TorrentSwarm : IAsyncDisposable
             _coordinator.AddPeer(peer.Wire, peer.PeerBitfield);
         }
 
-        // Auto-connect to trackers from metadata
-        _ = ConnectTrackersFromMetadataAsync();
+        // Connect to trackers from metadata — must complete before OnReady fires
+        await ConnectTrackersFromMetadataAsync();
 
         OnMetadata?.Invoke();
         OnReady?.Invoke();

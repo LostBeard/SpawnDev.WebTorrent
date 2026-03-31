@@ -662,7 +662,7 @@
             var metadata = TorrentParser.Parse(torrentBytes);
             if (!metadata.InfoHash.SequenceEqual(entry.InfoHash)) return;
             foreach (var ws in metadata.UrlList) if (!webSeedUrls.Contains(ws)) webSeedUrls.Add(ws);
-            entry.SetMetadata(metadata);            foreach (var ws in webSeedUrls) entry.AddWebSeed(ws.TrimEnd('/'));
+            await entry.SetMetadataAsync(metadata);            foreach (var ws in webSeedUrls) entry.AddWebSeed(ws.TrimEnd('/'));
             WireSwarmEvents(entry);
             entry.StartDownload();
             Log($"[{entry.Name}] {FormatBytes(metadata.TotalLength)}, {metadata.PieceCount} pieces, {webSeedUrls.Count} web seed(s)");

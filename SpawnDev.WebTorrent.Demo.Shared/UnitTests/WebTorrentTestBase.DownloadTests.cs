@@ -282,7 +282,7 @@ public abstract partial class WebTorrentTestBase
 
         Console.WriteLine($"[DemoFlow] {metadata.Name}, {metadata.TotalLength:N0} bytes, {metadata.PieceCount} pieces, {webSeedUrls.Count} seeds");
 
-        swarm.SetMetadata(metadata);
+        await swarm.SetMetadataAsync(metadata);
         foreach (var ws in webSeedUrls) swarm.AddWebSeed(ws.TrimEnd('/'));
 
         int piecesVerified = 0;

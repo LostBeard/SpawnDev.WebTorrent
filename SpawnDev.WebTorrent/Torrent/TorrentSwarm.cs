@@ -449,6 +449,15 @@ public class TorrentSwarm : IAsyncDisposable
                 return;
             }
 
+            // Send BEP 10 extended handshake if both sides support it
+            if (wire.SupportsExtensions && wire.Extensions.Count > 0)
+            {
+                var extHandshake = wire.Extensions.BuildHandshake();
+                var encoded = Bencode.BencodeEncoder.Encode(
+                    extHandshake.ToDictionary(kv => kv.Key, kv => kv.Value));
+                await wire.SendExtensionMessageAsync(0, encoded);
+            }
+
             await AddConnectedPeerAsync(wire, info);
         }
         catch (Exception ex)

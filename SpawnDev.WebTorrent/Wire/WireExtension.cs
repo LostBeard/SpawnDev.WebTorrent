@@ -46,6 +46,8 @@ public abstract class WireExtension
 /// </summary>
 public class ExtensionManager
 {
+    /// <summary>Number of registered extensions.</summary>
+    public int Count => _extensions.Count;
     private readonly List<WireExtension> _extensions = new();
     private readonly Dictionary<int, WireExtension> _localIdMap = new();
     private readonly Dictionary<string, WireExtension> _nameMap = new();

@@ -35,7 +35,7 @@ public abstract partial class WebTorrentTestBase
         Console.WriteLine($"[ControlledSwarm] Tracker: {trackerUrl}");
 
         // ── Seeder ──
-        await using var seeder = new WebTorrentClient();
+        await using var seeder = new WebTorrentClient(crypto: Client!.Crypto);
         var seederSwarm = await seeder.SeedAsync(data, "ctrl-discovery.bin",
             new TorrentCreatorOptions { PieceLength = 16384 });
 
@@ -55,7 +55,7 @@ public abstract partial class WebTorrentTestBase
         await Task.Delay(1000);
 
         // ── Downloader ──
-        await using var downloader = new WebTorrentClient();
+        await using var downloader = new WebTorrentClient(crypto: Client!.Crypto);
         var dlSwarm = await downloader.AddAsync(metadata);
 
         // Downloader announces to tracker
@@ -100,12 +100,12 @@ public abstract partial class WebTorrentTestBase
         Console.WriteLine($"[ControlledSwarm-Large] {metadata.PieceCount} pieces, {data.Length:N0} bytes");
 
         // Seeder
-        await using var seeder = new WebTorrentClient();
+        await using var seeder = new WebTorrentClient(crypto: Client!.Crypto);
         var seederSwarm = await seeder.SeedAsync(data, "ctrl-large.bin",
             new TorrentCreatorOptions { PieceLength = 16384 });
 
         // Downloader
-        await using var dl = new WebTorrentClient();
+        await using var dl = new WebTorrentClient(crypto: Client!.Crypto);
         var dlSwarm = await dl.AddAsync(metadata);
 
         // Connect via mock loopback
@@ -166,7 +166,7 @@ public abstract partial class WebTorrentTestBase
         Random.Shared.NextBytes(data1);
         Random.Shared.NextBytes(data2);
 
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
 
         var swarm1 = await client.SeedAsync(data1, "multi-1.bin",
             new TorrentCreatorOptions { PieceLength = 16384 });
@@ -202,7 +202,7 @@ public abstract partial class WebTorrentTestBase
         for (int i = 0; i < data.Length; i++) data[i] = (byte)((i * 23 + 11) % 256);
 
         // Seeder creates and seeds
-        await using var seeder = new WebTorrentClient();
+        await using var seeder = new WebTorrentClient(crypto: Client!.Crypto);
         var seederSwarm = await seeder.SeedAsync(data, "pipeline.bin",
             new TorrentCreatorOptions { PieceLength = 16384 });
 
@@ -213,7 +213,7 @@ public abstract partial class WebTorrentTestBase
         if (torrentBytes == null) throw new Exception("TorrentFileBytes null");
 
         // Downloader adds by parsed .torrent (simulates receiving magnet + fetching .torrent)
-        await using var downloader = new WebTorrentClient();
+        await using var downloader = new WebTorrentClient(crypto: Client!.Crypto);
         var parsedMeta = TorrentParser.Parse(torrentBytes);
         var dlSwarm = await downloader.AddAsync(parsedMeta);
 
@@ -282,7 +282,7 @@ public abstract partial class WebTorrentTestBase
         Console.WriteLine($"[FullSwarm] Data: {metadata.PieceCount} pieces, {data.Length:N0} bytes");
 
         // ═══ SEEDER ═══
-        await using var seeder = new WebTorrentClient();
+        await using var seeder = new WebTorrentClient(crypto: Client!.Crypto);
         var seederSwarm = await seeder.SeedAsync(data, "fullswarm.bin",
             new TorrentCreatorOptions { PieceLength = 16384 });
 
@@ -296,7 +296,7 @@ public abstract partial class WebTorrentTestBase
         await Task.Delay(1000); // Let tracker register
 
         // ═══ DOWNLOADER ═══
-        await using var downloader = new WebTorrentClient();
+        await using var downloader = new WebTorrentClient(crypto: Client!.Crypto);
         var dlSwarm = await downloader.AddAsync(metadata);
 
         // Downloader announces to real tracker

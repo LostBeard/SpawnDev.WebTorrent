@@ -1358,7 +1358,7 @@ public abstract partial class WebTorrentTestBase
         Console.WriteLine("[SHA-256] Sync verify: correct=PASS, wrong=REJECT");
 
         // Async verify (uses IPortableCrypto if available)
-        var crypto = CreateCrypto();
+        var crypto = Client!.Crypto;
         if (!await metadata.VerifyPieceAsync(0, data, crypto))
             throw new Exception("Async SHA-256 verify failed for correct data");
         if (await metadata.VerifyPieceAsync(0, badData, crypto))

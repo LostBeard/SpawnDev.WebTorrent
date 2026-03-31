@@ -22,7 +22,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Swarm_SetMetadata_CreatesCoordinator()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var swarm = await client.AddAsync("magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&dn=Test");
 
         // Before metadata
@@ -49,7 +49,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Swarm_Events_OnReady()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         bool readyFired = false;
         bool clientReadyFired = false;
 
@@ -71,7 +71,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Swarm_PauseResume()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var swarm = await client.AddAsync("magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&dn=Test",
             new AddTorrentOptions { Paused = true });
 
@@ -87,7 +87,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Swarm_AddPeer_RespectsMax()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var swarm = await client.AddAsync("magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&dn=Test");
 
         // AddPeer with no transport won't actually connect (FindTransport returns null)
@@ -101,7 +101,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Swarm_AddPeer_IgnoresWhenPaused()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var swarm = await client.AddAsync("magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&dn=Test",
             new AddTorrentOptions { Paused = true });
 
@@ -575,7 +575,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task RateLimiter_ClientWiring()
     {
-        var client = new WebTorrentClient();
+        var client = new WebTorrentClient(crypto: Client!.Crypto);
 
         // Set via property
         client.UploadLimit = 50000;
@@ -707,7 +707,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Client_AddTransport()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var transport = new WebRtcTransport();
 
         client.AddTransport(transport);
@@ -719,7 +719,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Client_EventWiring()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         bool addFired = false;
         bool readyFired = false;
 

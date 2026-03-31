@@ -139,7 +139,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task MediaViewer_MimeDetection()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
 
         var videoTypes = new[] { ".mp4", ".webm", ".mkv", ".ogv", ".mov" };
         var audioTypes = new[] { ".mp3", ".ogg", ".flac", ".wav", ".aac", ".opus" };
@@ -183,7 +183,7 @@ public abstract partial class WebTorrentTestBase
     public async Task MediaViewer_SeedAndReadForBlob()
     {
         // Full pipeline: seed data → read back → verify (ready for blob URL creation)
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[32768];
         for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 256);
 
@@ -541,7 +541,7 @@ public abstract partial class WebTorrentTestBase
         if (OperatingSystem.IsBrowser())
             throw new UnsupportedTestException("HttpListener requires desktop");
 
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var server = new TorrentHttpServer(client, 18999);
         if (server.BaseUrl != "http://localhost:18999/")
             throw new Exception($"BaseUrl: {server.BaseUrl}");
@@ -553,7 +553,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task TorrentSwarm_Properties_AfterMetadata()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         Random.Shared.NextBytes(data);
         var swarm = await client.SeedAsync(data, "test-props.bin");
@@ -578,7 +578,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task TorrentSwarm_Events_OnReady_OnMetadata()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
 
         bool readyFired = false;
         bool metadataFired = false;
@@ -599,7 +599,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task TorrentSwarm_PauseResume_State()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         var swarm = await client.SeedAsync(data, "pause-test.bin");
 
@@ -623,7 +623,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task TorrentSwarm_FileStream_Properties()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[32768];
         Random.Shared.NextBytes(data);
         var swarm = await client.SeedAsync(data, "stream-test.bin");
@@ -651,7 +651,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Client_OnTorrentAdd_Event()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         TorrentSwarm? added = null;
         client.OnTorrentAdd += (swarm) => added = swarm;
 
@@ -666,7 +666,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Client_OnTorrentRemove_Event()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         TorrentSwarm? removed = null;
         client.OnTorrentRemove += (swarm) => removed = swarm;
 
@@ -682,7 +682,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Client_SpeedProperties()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         // Fresh client should have zero speed
         if (client.DownloadSpeed < 0) throw new Exception($"DownloadSpeed: {client.DownloadSpeed}");
         if (client.UploadSpeed < 0) throw new Exception($"UploadSpeed: {client.UploadSpeed}");

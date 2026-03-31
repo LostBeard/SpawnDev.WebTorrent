@@ -332,7 +332,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task SwarmCompute_Create()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var dht = new DhtDiscovery();
         await using var swarm = new SwarmCompute(client, dht, new HmacFallbackSigner());
 
@@ -346,7 +346,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task SwarmCompute_PublishTask()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var dht = new DhtDiscovery();
         await using var swarm = new SwarmCompute(client, dht, new HmacFallbackSigner());
 
@@ -366,7 +366,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task SwarmCompute_PublishTaskNoInput()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var dht = new DhtDiscovery();
         await using var swarm = new SwarmCompute(client, dht, new HmacFallbackSigner());
 
@@ -378,7 +378,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task SwarmCompute_Events()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var dht = new DhtDiscovery();
         await using var swarm = new SwarmCompute(client, dht, new HmacFallbackSigner());
 
@@ -530,7 +530,7 @@ public abstract partial class WebTorrentTestBase
         if (OperatingSystem.IsBrowser())
             throw new UnsupportedTestException("HttpServer requires desktop");
 
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var server = new TorrentHttpServer(client, 18999);
 
         if (server.BaseUrl != "http://localhost:18999/")
@@ -554,7 +554,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Signer_EcdsaP256_Create()
     {
-        var crypto = CreateCrypto();
+        var crypto = Client!.Crypto;
         var signer = new EcdsaP256Signer(crypto);
         if (signer.Algorithm != "ECDSA-P256")
             throw new Exception($"Algorithm: {signer.Algorithm}");
@@ -567,7 +567,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Signer_EcdsaP256_GenerateKey()
     {
-        var crypto = CreateCrypto();
+        var crypto = Client!.Crypto;
         var signer = new EcdsaP256Signer(crypto);
         await signer.GenerateKeyAsync();
 
@@ -581,7 +581,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Signer_EcdsaP256_SignAndVerify()
     {
-        var crypto = CreateCrypto();
+        var crypto = Client!.Crypto;
         var signer = new EcdsaP256Signer(crypto);
         await signer.GenerateKeyAsync();
 
@@ -599,7 +599,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Signer_EcdsaP256_ExportImport()
     {
-        var crypto = CreateCrypto();
+        var crypto = Client!.Crypto;
         var signer1 = new EcdsaP256Signer(crypto);
         await signer1.GenerateKeyAsync();
 
@@ -627,7 +627,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Signer_EcdsaP256_TwoSigners_DifferentKeys()
     {
-        var crypto = CreateCrypto();
+        var crypto = Client!.Crypto;
         var signer1 = new EcdsaP256Signer(crypto);
         var signer2 = new EcdsaP256Signer(crypto);
         await signer1.GenerateKeyAsync();
@@ -642,7 +642,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Signer_EcdsaP256_SignWithoutKey_Throws()
     {
-        var crypto = CreateCrypto();
+        var crypto = Client!.Crypto;
         var signer = new EcdsaP256Signer(crypto);
 
         try
@@ -662,7 +662,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Signer_EcdsaP256_SignVerify_RoundTrip()
     {
-        var crypto = CreateCrypto();
+        var crypto = Client!.Crypto;
         var signer = new EcdsaP256Signer(crypto);
         await signer.GenerateKeyAsync();
 
@@ -685,7 +685,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Signer_EcdsaP256_CrossSigner_Verify()
     {
-        var crypto = CreateCrypto();
+        var crypto = Client!.Crypto;
 
         // Signer A signs
         var signerA = new EcdsaP256Signer(crypto);
@@ -713,7 +713,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Signer_EcdsaP256_ExportImport_VerifySurvives()
     {
-        var crypto = CreateCrypto();
+        var crypto = Client!.Crypto;
 
         // Generate, sign, export
         var signer1 = new EcdsaP256Signer(crypto);
@@ -740,7 +740,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Signer_EcdsaP256_DhtMutableItems_EndToEnd()
     {
-        var crypto = CreateCrypto();
+        var crypto = Client!.Crypto;
         var signer = new EcdsaP256Signer(crypto);
         await signer.GenerateKeyAsync();
 
@@ -767,7 +767,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Signer_EcdsaP256_AgentChannel_Creates()
     {
-        var crypto = CreateCrypto();
+        var crypto = Client!.Crypto;
         var signer = new EcdsaP256Signer(crypto);
         await signer.GenerateKeyAsync();
 
@@ -794,7 +794,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Signer_EcdsaP256_RejectTruncatedSignature()
     {
-        var crypto = CreateCrypto();
+        var crypto = Client!.Crypto;
         var signer = new EcdsaP256Signer(crypto);
         await signer.GenerateKeyAsync();
 
@@ -876,7 +876,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task MutableItems_RejectForgedItem()
     {
-        var crypto = CreateCrypto();
+        var crypto = Client!.Crypto;
         var dht = new DhtDiscovery();
 
         // Signer A publishes legitimately
@@ -913,7 +913,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task MutableItems_VerifyRejectsTamperedValue()
     {
-        var crypto = CreateCrypto();
+        var crypto = Client!.Crypto;
         var dht = new DhtDiscovery();
         var signer = new EcdsaP256Signer(crypto);
         await signer.GenerateKeyAsync();
@@ -1146,7 +1146,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task SwarmCompute_JoinAsWorker()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var dht = new DhtDiscovery();
         var signer = new HmacFallbackSigner();
         await using var compute = new SwarmCompute(client, dht, signer);

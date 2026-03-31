@@ -77,7 +77,7 @@ public abstract partial class WebTorrentTestBase
             Console.WriteLine($"[CrossProcess] Seeder ready: hash={hash[..8]}, size={expectedSize}");
 
             // Now create a downloader in this process and connect to tracker
-            await using var client = new WebTorrentClient();
+            await using var client = new WebTorrentClient(crypto: Client!.Crypto);
 
             // Generate the same deterministic data to verify against
             var expectedData = new byte[expectedSize];

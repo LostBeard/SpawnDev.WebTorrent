@@ -197,7 +197,7 @@ public abstract partial class WebTorrentTestBase
         Console.WriteLine($"[Swarm] {metadata.Name}: {metadata.TotalLength:N0} bytes, {metadata.PieceCount} pieces");
 
         // Create client and swarm
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var swarm = await client.AddAsync(metadata);
 
         var logs = new List<string>();
@@ -249,7 +249,7 @@ public abstract partial class WebTorrentTestBase
     {
         var magnetUri = "magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&dn=Big+Buck+Bunny&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Fbig-buck-bunny.torrent";
 
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var swarm = await client.AddAsync(magnetUri);
 
         // Parse xs= and ws= (same as Torrents.razor)

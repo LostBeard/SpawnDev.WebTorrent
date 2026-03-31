@@ -18,7 +18,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_Client_SeedAsync()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[32768];
         Random.Shared.NextBytes(data);
 
@@ -36,7 +36,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod(Timeout = 30000)]
     public async Task Api_Client_AddFromUrl()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
 
         TorrentSwarm swarm;
         try
@@ -61,7 +61,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_Client_Get_ByHex()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         var (_, metadata) = TorrentCreator.CreateFromBytes("find-me.bin", data,
             new TorrentCreatorOptions { PieceLength = 16384 });
@@ -77,7 +77,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_Client_Get_NotFound()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var found = client.Get("0000000000000000000000000000000000000000");
         if (found != null) throw new Exception("Should return null for unknown hash");
     }
@@ -85,7 +85,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_Client_Progress()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         var (_, metadata) = TorrentCreator.CreateFromBytes("prog.bin", data,
             new TorrentCreatorOptions { PieceLength = 16384 });
@@ -98,7 +98,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_Client_Ratio()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         // No uploads or downloads yet
         if (client.Ratio != 0) throw new Exception("Ratio should be 0 initially");
     }
@@ -106,7 +106,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_Client_Throttle()
     {
-        var client = new WebTorrentClient();
+        var client = new WebTorrentClient(crypto: Client!.Crypto);
         client.UploadLimit = 50 * 1024; // 50 KB/s
         client.DownloadLimit = 100 * 1024; // 100 KB/s
 
@@ -122,7 +122,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_Client_RemoveAsync()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         var (_, metadata) = TorrentCreator.CreateFromBytes("remove-me.bin", data,
             new TorrentCreatorOptions { PieceLength = 16384 });
@@ -141,7 +141,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_Torrent_MagnetURI()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         var (_, metadata) = TorrentCreator.CreateFromBytes("magnet-test.bin", data,
             new TorrentCreatorOptions { PieceLength = 16384, Trackers = new[] { "wss://tracker.example.com" } });
@@ -160,7 +160,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_Torrent_TorrentFileBytes()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         var (origBytes, metadata) = TorrentCreator.CreateFromBytes("export.bin", data,
             new TorrentCreatorOptions { PieceLength = 16384 });
@@ -176,7 +176,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_Torrent_Ratio()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var swarm = await client.AddAsync("magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&dn=Test");
         if (swarm.Ratio != 0) throw new Exception("Ratio should be 0 with no downloads");
     }
@@ -184,7 +184,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_Torrent_TimeRemaining()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         var (_, metadata) = TorrentCreator.CreateFromBytes("eta.bin", data,
             new TorrentCreatorOptions { PieceLength = 16384 });
@@ -198,7 +198,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_Torrent_Ready()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         var (_, metadata) = TorrentCreator.CreateFromBytes("ready.bin", data,
             new TorrentCreatorOptions { PieceLength = 16384 });
@@ -210,7 +210,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_Torrent_Metadata_Fields()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         var (_, metadata) = TorrentCreator.CreateFromBytes("meta-test.bin", data,
             new TorrentCreatorOptions
@@ -231,7 +231,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_Torrent_PauseResume_WithMetadata()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         var (_, metadata) = TorrentCreator.CreateFromBytes("pause.bin", data,
             new TorrentCreatorOptions { PieceLength = 16384 });
@@ -249,7 +249,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_Torrent_Select_Deselect_Critical()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[65536]; // 4 pieces
         var (_, metadata) = TorrentCreator.CreateFromBytes("select.bin", data,
             new TorrentCreatorOptions { PieceLength = 16384 });
@@ -265,7 +265,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_Torrent_RescanFiles()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[32768];
         Random.Shared.NextBytes(data);
         var swarm = await client.SeedAsync(data, "rescan.bin",
@@ -285,7 +285,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_File_Properties()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[32768];
         var (_, metadata) = TorrentCreator.CreateFromBytes("file-props.mp4", data,
             new TorrentCreatorOptions { PieceLength = 16384 });
@@ -306,7 +306,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_File_MimeTypes()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
 
         var testCases = new Dictionary<string, string>
         {
@@ -339,7 +339,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_File_Done_AfterSeed()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         Random.Shared.NextBytes(data);
 
@@ -354,7 +354,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_File_Downloaded()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[32768];
         var (_, metadata) = TorrentCreator.CreateFromBytes("dl-count.bin", data,
             new TorrentCreatorOptions { PieceLength = 16384 });
@@ -368,7 +368,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_File_SelectDeselect()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[65536]; // 4 pieces
         var (_, metadata) = TorrentCreator.CreateFromBytes("file-sel.bin", data,
             new TorrentCreatorOptions { PieceLength = 16384 });
@@ -384,7 +384,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_File_Includes()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[65536]; // 4 pieces at 16KB each
         var (_, metadata) = TorrentCreator.CreateFromBytes("includes.bin", data,
             new TorrentCreatorOptions { PieceLength = 16384 });
@@ -401,7 +401,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_File_GetArrayBuffer_AfterSeed()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 256);
 
@@ -424,7 +424,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_Seed_ThenReadFile()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[65536]; // 4 pieces
         for (int i = 0; i < data.Length; i++) data[i] = (byte)((i * 7 + 13) % 256);
 
@@ -447,7 +447,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_Seed_VerifyAllPieces()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[65536];
         Random.Shared.NextBytes(data);
 
@@ -465,7 +465,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_Seed_MagnetURI_Roundtrip()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         Random.Shared.NextBytes(data);
 
@@ -489,7 +489,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_Events_OnReady_OnDone()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         bool readyFired = false;
         bool clientReadyFired = false;
 
@@ -510,7 +510,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_Events_OnTorrentAdd_OnTorrentRemove()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         TorrentSwarm? addedSwarm = null;
         TorrentSwarm? removedSwarm = null;
 
@@ -534,7 +534,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_File_StreamAsync()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[65536]; // 4 pieces
         for (int i = 0; i < data.Length; i++) data[i] = (byte)((i * 3 + 5) % 256);
 
@@ -558,7 +558,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_File_StreamAsync_Range()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[65536];
         for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 256);
 
@@ -587,7 +587,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_File_GetBlobBytes()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[32768];
         Random.Shared.NextBytes(data);
 
@@ -606,7 +606,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_Swarm_SpeedTracking()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         var (_, metadata) = TorrentCreator.CreateFromBytes("speed.bin", data,
             new TorrentCreatorOptions { PieceLength = 16384 });
@@ -626,7 +626,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_Client_MultipleTorrents()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
 
         var torrents = new List<TorrentSwarm>();
         for (int i = 0; i < 5; i++)
@@ -666,7 +666,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_PrivateTorrent_Flag()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         var (_, metadata) = TorrentCreator.CreateFromBytes("private.bin", data,
             new TorrentCreatorOptions { PieceLength = 16384, IsPrivate = true });
@@ -678,7 +678,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_PrivateTorrent_RejectsDHTPeers()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         var (_, metadata) = TorrentCreator.CreateFromBytes("private-reject.bin", data,
             new TorrentCreatorOptions { PieceLength = 16384, IsPrivate = true });
@@ -766,7 +766,7 @@ public abstract partial class WebTorrentTestBase
         if (OperatingSystem.IsBrowser())
             throw new UnsupportedTestException("TorrentHttpServer requires desktop");
 
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         await using var server = client.CreateServer(18765);
 
         if (!server.IsRunning) throw new Exception("Server should be running");
@@ -782,7 +782,7 @@ public abstract partial class WebTorrentTestBase
         if (OperatingSystem.IsBrowser())
             throw new UnsupportedTestException("TorrentHttpServer requires desktop");
 
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[32768];
         for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 256);
 
@@ -811,7 +811,7 @@ public abstract partial class WebTorrentTestBase
         if (OperatingSystem.IsBrowser())
             throw new UnsupportedTestException("TorrentHttpServer requires desktop");
 
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[32768];
         for (int i = 0; i < data.Length; i++) data[i] = (byte)(i % 256);
 
@@ -855,7 +855,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_RemoveDuringDownload()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[65536];
         Random.Shared.NextBytes(data);
         var (_, metadata) = TorrentCreator.CreateFromBytes("remove-active.bin", data,
@@ -881,7 +881,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_DestroyTorrent()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         var swarm = await client.SeedAsync(data, "destroy.bin",
             new TorrentCreatorOptions { PieceLength = 16384 });
@@ -956,7 +956,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Api_Events_OnPieceVerified()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var verifiedPieces = new List<int>();
 
         var data = new byte[32768];

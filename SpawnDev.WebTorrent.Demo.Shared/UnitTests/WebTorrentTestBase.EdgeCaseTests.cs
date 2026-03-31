@@ -17,7 +17,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Edge_InvalidMagnet_Throws()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         bool threw = false;
         try { await client.AddAsync("not-a-magnet"); }
         catch (ArgumentException) { threw = true; }
@@ -27,7 +27,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Edge_InvalidInfoHash_Throws()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         bool threw = false;
         try { await client.AddAsync("ZZZZZZ"); }
         catch (ArgumentException) { threw = true; }
@@ -37,7 +37,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Edge_EmptyData_Seed()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[0];
         bool threw = false;
         try { await client.SeedAsync(data, "empty.bin"); }
@@ -49,7 +49,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Edge_VerySmallData_Seed()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[1]; // 1 byte
         data[0] = 0x42;
 
@@ -67,7 +67,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Edge_LargeData_Seed()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[524288]; // 512KB = 32 pieces at 16KB
         Random.Shared.NextBytes(data);
 
@@ -318,7 +318,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Edge_Client_DisposeWhileActive()
     {
-        var client = new WebTorrentClient();
+        var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[32768];
         Random.Shared.NextBytes(data);
 
@@ -335,7 +335,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Edge_Client_AddRemoveRapidly()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
 
         // Rapidly add and remove torrents
         for (int i = 0; i < 10; i++)
@@ -358,7 +358,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Edge_File_MimeType_AllTypes()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
 
         var types = new Dictionary<string, string>
         {

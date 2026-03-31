@@ -251,7 +251,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Client_PeerId_Format()
     {
-        var client = new WebTorrentClient();
+        var client = new WebTorrentClient(crypto: Client!.Crypto);
         var peerId = client.PeerId;
 
         if (peerId.Length != 20) throw new Exception($"Peer ID should be 20 bytes, got {peerId.Length}");
@@ -265,7 +265,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Client_ParseMagnetUri()
     {
-        var client = new WebTorrentClient();
+        var client = new WebTorrentClient(crypto: Client!.Crypto);
         var hash = "d2474e86c95b19b8bcfdb92bc12c9d44667ce52e";
 
         var swarm = await client.AddAsync($"magnet:?xt=urn:btih:{hash}&dn=test");
@@ -638,7 +638,7 @@ public abstract partial class WebTorrentTestBase
             new TorrentCreatorOptions { PieceLength = 16384 });
 
         await using var store = new MemoryChunkStore(16384);
-        var swarm = new TorrentSwarm(new WebTorrentClient(), new AddTorrentOptions());
+        var swarm = new TorrentSwarm(new WebTorrentClient(crypto: Client!.Crypto), new AddTorrentOptions());
         swarm.SetMetadata(metadata);
 
         // No pieces complete → 0% progress

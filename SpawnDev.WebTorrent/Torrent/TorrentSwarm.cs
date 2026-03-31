@@ -1,3 +1,4 @@
+using SpawnDev.BlazorJS;
 using SpawnDev.WebTorrent.Discovery;
 using SpawnDev.WebTorrent.Storage;
 using SpawnDev.WebTorrent.Wire;
@@ -18,6 +19,8 @@ public class TorrentSwarm : IAsyncDisposable
     private IChunkStore? _store;
     private PieceManager? _pieceManager;
     private DownloadCoordinator? _coordinator;
+    private PeerCoordinator? _peerCoordinator;
+    private bool _disposed;
 
     /// <summary>Torrent metadata (available after initialization or metadata exchange).</summary>
     public TorrentMetadata? Metadata { get; private set; }
@@ -298,43 +301,44 @@ public class TorrentSwarm : IAsyncDisposable
         }
 
         // WebSocket trackers — need WebRTC transport for browser P2P
-        Console.Error.WriteLine($"[TorrentSwarm] ConnectTrackers: {wsTrackers.Count} WS, {httpTrackers.Count} HTTP, browser={OperatingSystem.IsBrowser()}");
         if (wsTrackers.Count > 0 && OperatingSystem.IsBrowser())
         {
             try
             {
                 var webRtc = new Transports.WebRtcTransport();
                 var coordinator = new PeerCoordinator(_client, InfoHash, webRtc);
-                coordinator.OnPeerConnected += (peer) =>
+                _peerCoordinator = coordinator;
+                coordinator.OnPeerConnected += async (peer) =>
                 {
-                    Console.Error.WriteLine($"[TorrentSwarm] Peer connected: {peer.PeerId}");
-                    _ = AddConnectedPeerAsync(peer.Wire, new PeerInfo { Address = peer.PeerId, Source = "webrtc" });
+                    try
+                    {
+                        await AddConnectedPeerAsync(peer.Wire, new PeerInfo { Address = peer.PeerId, Source = "webrtc" });
+                    }
+                    catch (Exception ex)
+                    {
+                        OnLog?.Invoke($"AddConnectedPeer failed: {ex.Message}");
+                    }
                 };
 
                 foreach (var url in wsTrackers)
                 {
                     try
                     {
-                        Console.Error.WriteLine($"[TorrentSwarm] Connecting to tracker: {url}");
                         await coordinator.AddTrackerAsync(url);
-                        Console.Error.WriteLine($"[TorrentSwarm] Tracker connected: {url}");
                     }
                     catch (Exception ex)
                     {
-                        Console.Error.WriteLine($"[TorrentSwarm] Tracker {url} FAILED: {ex.Message}");
                         OnLog?.Invoke($"Tracker {url} failed: {ex.Message}");
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[TorrentSwarm] WebRTC setup FAILED: {ex.Message}");
                 OnLog?.Invoke($"WebRTC tracker setup failed: {ex.Message}");
             }
         }
         else if (wsTrackers.Count > 0)
         {
-            Console.Error.WriteLine($"[TorrentSwarm] Skipping WS trackers — not in browser");
         }
 
         // HTTP trackers — peer discovery (desktop)
@@ -411,6 +415,11 @@ public class TorrentSwarm : IAsyncDisposable
     /// <summary>Add a peer that has already completed the handshake (from PeerCoordinator or incoming).</summary>
     public async Task AddConnectedPeerAsync(WireProtocol wire, PeerInfo info)
     {
+        if (_disposed)
+        {
+            await wire.DisposeAsync();
+            return;
+        }
         await _peerLock.WaitAsync();
         try
         {
@@ -425,14 +434,12 @@ public class TorrentSwarm : IAsyncDisposable
             // Wire up events
             wire.OnBitfield += (bf) =>
             {
-                Console.Error.WriteLine($"[TorrentSwarm] OnBitfield received: {bf.Length} bytes");
                 peer.PeerBitfield = new bool[bf.Length * 8];
                 for (int i = 0; i < bf.Length; i++)
                     for (int bit = 0; bit < 8; bit++)
                         if (i * 8 + bit < peer.PeerBitfield.Length)
                             peer.PeerBitfield[i * 8 + bit] = (bf[i] & (1 << (7 - bit))) != 0;
                 int trueCount = peer.PeerBitfield.Count(b => b);
-                Console.Error.WriteLine($"[TorrentSwarm] Parsed bitfield: {trueCount}/{peer.PeerBitfield.Length} pieces, coordinator={_coordinator != null}");
 
                 // Add to coordinator if metadata is available
                 _coordinator?.AddPeer(wire, peer.PeerBitfield);
@@ -464,21 +471,25 @@ public class TorrentSwarm : IAsyncDisposable
 
             wire.OnRequest += async (pieceIndex, offset, length) =>
             {
-                // Seeding: respond to piece requests
-                if (_store != null && _pieceManager != null && _pieceManager.Bitfield[pieceIndex])
+                try
                 {
-                    var data = await _store.GetAsync(pieceIndex, offset, length);
-                    if (data != null)
+                    // Seeding: respond to piece requests
+                    if (_store != null && _pieceManager != null && _pieceManager.Bitfield[pieceIndex])
                     {
-                        // Apply upload rate limiting
-                        await _client.UploadLimiter.WaitAsync(data.Length);
-                        await wire.SendPieceAsync(pieceIndex, offset, data);
-                        Uploaded += data.Length;
-                        _uploadedSinceLastTick += data.Length;
-                        peer.BytesUploaded += data.Length;
-                        OnUpload?.Invoke(data.Length);
+                        var data = await _store.GetAsync(pieceIndex, offset, length);
+                        if (data != null)
+                        {
+                            // Apply upload rate limiting
+                            await _client.UploadLimiter.WaitAsync(data.Length);
+                            await wire.SendPieceAsync(pieceIndex, offset, data);
+                            Uploaded += data.Length;
+                            _uploadedSinceLastTick += data.Length;
+                            peer.BytesUploaded += data.Length;
+                            OnUpload?.Invoke(data.Length);
+                        }
                     }
                 }
+                catch (Exception ex) { OnLog?.Invoke($"OnRequest handler failed: {ex.Message}"); }
             };
 
             _peers.Add(peer);
@@ -489,7 +500,8 @@ public class TorrentSwarm : IAsyncDisposable
             await wire.SendMessageAsync(MessageType.Unchoke);
 
             // Send our bitfield if we have metadata and any pieces
-            if (_pieceManager != null && _pieceManager.Bitfield.Any(b => b))
+            bool hasPieces = _pieceManager != null && _pieceManager.Bitfield.Any(b => b);
+            if (hasPieces)
             {
                 await wire.SendBitfieldAsync(BoolBitfieldToBytes(_pieceManager.Bitfield));
             }
@@ -516,16 +528,20 @@ public class TorrentSwarm : IAsyncDisposable
         finally
         {
             keepAliveCts.Cancel();
-            await _peerLock.WaitAsync();
             try
             {
-                _peers.Remove(peer);
-                _knownPeerAddresses.Remove(peer.Info.Address);
+                await _peerLock.WaitAsync();
+                try
+                {
+                    _peers.Remove(peer);
+                    _knownPeerAddresses.Remove(peer.Info.Address);
+                }
+                finally
+                {
+                    _peerLock.Release();
+                }
             }
-            finally
-            {
-                _peerLock.Release();
-            }
+            catch (ObjectDisposedException) { }
             OnPeerDisconnect?.Invoke(peer);
         }
     }
@@ -579,7 +595,8 @@ public class TorrentSwarm : IAsyncDisposable
         // Notify all peers we have this piece
         foreach (var peer in _peers.ToArray())
         {
-            _ = peer.Wire.SendHaveAsync(pieceIndex);
+            try { _ = peer.Wire.SendHaveAsync(pieceIndex); }
+            catch (Exception ex) { OnLog?.Invoke($"SendHave failed: {ex.Message}"); }
         }
 
         if (_pieceManager.IsComplete)
@@ -635,11 +652,9 @@ public class TorrentSwarm : IAsyncDisposable
                 Done = true;
             }
         }
-        catch (Exception ex)
+        catch
         {
             // Never crash the app from a restore scan failure
-            if (WebTorrentClient.VerboseLogging)
-                Console.Error.WriteLine($"[WebTorrent] ScanExistingPieces error: {ex.Message}");
         }
     }
 
@@ -833,7 +848,12 @@ public class TorrentSwarm : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        _disposed = true;
         _coordinator?.Stop();
+
+        // Dispose PeerCoordinator first — stops tracker clients so no new peers arrive
+        if (_peerCoordinator != null)
+            await _peerCoordinator.DisposeAsync();
 
         foreach (var peer in _peers.ToArray())
             await peer.DisposeAsync();

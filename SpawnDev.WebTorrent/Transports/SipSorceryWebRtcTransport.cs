@@ -84,7 +84,7 @@ public class SipSorceryWebRtcConnection : IConnection
     private readonly WebRtcTransportOptions _options;
     private readonly TaskCompletionSource _openTcs = new();
     private readonly List<byte> _receiveBuffer = new();
-    private readonly SemaphoreSlim _receiveSemaphore = new(0);
+    private TaskCompletionSource? _receiveSignal;
     private RTCPeerConnection? _pc;
     private RTCDataChannel? _dc;
 
@@ -139,6 +139,9 @@ public class SipSorceryWebRtcConnection : IConnection
         dc.onclose += () =>
         {
             IsConnected = false;
+            var signal = _receiveSignal;
+            _receiveSignal = null;
+            signal?.TrySetCanceled();
             OnDisconnected?.Invoke();
         };
 
@@ -150,7 +153,9 @@ public class SipSorceryWebRtcConnection : IConnection
                 {
                     _receiveBuffer.AddRange(data);
                 }
-                _receiveSemaphore.Release();
+                var signal = _receiveSignal;
+                _receiveSignal = null;
+                signal?.TrySetResult();
                 OnDataAvailable?.Invoke();
             }
         };
@@ -270,20 +275,45 @@ public class SipSorceryWebRtcConnection : IConnection
 
     public async Task<int> ReceiveAsync(Memory<byte> buffer, CancellationToken ct = default)
     {
-        await _receiveSemaphore.WaitAsync(ct);
-        lock (_receiveBuffer)
+        while (true)
         {
-            int count = Math.Min(buffer.Length, _receiveBuffer.Count);
-            for (int i = 0; i < count; i++)
-                buffer.Span[i] = _receiveBuffer[i];
-            _receiveBuffer.RemoveRange(0, count);
-            return count;
+            lock (_receiveBuffer)
+            {
+                if (_receiveBuffer.Count > 0)
+                {
+                    int count = Math.Min(buffer.Length, _receiveBuffer.Count);
+                    for (int i = 0; i < count; i++)
+                        buffer.Span[i] = _receiveBuffer[i];
+                    _receiveBuffer.RemoveRange(0, count);
+                    return count;
+                }
+            }
+
+            // Buffer empty — wait for new data from the data channel
+            var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _receiveSignal = tcs;
+
+            // Re-check buffer after creating signal to avoid race
+            lock (_receiveBuffer)
+            {
+                if (_receiveBuffer.Count > 0)
+                {
+                    _receiveSignal = null;
+                    continue;
+                }
+            }
+
+            using var reg = ct.Register(() => tcs.TrySetCanceled());
+            await tcs.Task;
         }
     }
 
     public Task CloseAsync()
     {
         IsConnected = false;
+        var signal = _receiveSignal;
+        _receiveSignal = null;
+        signal?.TrySetCanceled();
         try { _dc?.close(); } catch { }
         try { _pc?.close(); } catch { }
         OnDisconnected?.Invoke();
@@ -294,7 +324,6 @@ public class SipSorceryWebRtcConnection : IConnection
     {
         await CloseAsync();
         _pc?.Dispose();
-        _receiveSemaphore.Dispose();
     }
 
     private class DescriptionDto

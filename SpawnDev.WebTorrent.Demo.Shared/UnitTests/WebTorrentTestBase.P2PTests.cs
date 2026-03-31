@@ -100,7 +100,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task P2P_ClientAddMagnet_BigBuckBunny()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var swarm = await client.AddAsync(CCMagnets["Big Buck Bunny"]);
 
         if (swarm.InfoHash.Length != 20)
@@ -116,7 +116,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task P2P_ClientAddMagnet_AllCCTorrents()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
 
         foreach (var (name, magnet) in CCMagnets)
         {
@@ -473,7 +473,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task P2P_PeerCoordinator_Create()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var infoHash = Convert.FromHexString("dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c");
         var transport = new WebRtcTransport();
 
@@ -493,7 +493,7 @@ public abstract partial class WebTorrentTestBase
         if (!OperatingSystem.IsBrowser())
             throw new UnsupportedTestException("PeerCoordinator with tracker requires browser context for WebSocket");
 
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var infoHash = Convert.FromHexString("dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c");
         var transport = new WebRtcTransport();
         var coordinator = new PeerCoordinator(client, infoHash, transport);

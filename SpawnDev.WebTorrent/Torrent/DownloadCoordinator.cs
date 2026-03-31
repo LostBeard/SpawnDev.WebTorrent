@@ -81,8 +81,15 @@ public class DownloadCoordinator : IDisposable
 
         wire.OnPiece += async (pieceIdx, offset, data) =>
         {
-            peer.OutstandingRequests.RemoveAll(r => r.piece == pieceIdx && r.offset == offset);
-            await _pieceManager.ReceiveBlockAsync(pieceIdx, offset, data);
+            try
+            {
+                peer.OutstandingRequests.RemoveAll(r => r.piece == pieceIdx && r.offset == offset);
+                await _pieceManager.ReceiveBlockAsync(pieceIdx, offset, data);
+            }
+            catch (Exception ex)
+            {
+                OnError?.Invoke(ex);
+            }
         };
 
         wire.OnChoke += () => peer.IsChoked = true;
@@ -92,7 +99,6 @@ public class DownloadCoordinator : IDisposable
         if (!wire.PeerChoking)
             peer.IsChoked = false;
 
-        Console.Error.WriteLine($"[Coordinator] AddPeer: choked={peer.IsChoked}, bitfield={peerBitfield.Count(b => b)}/{peerBitfield.Length} pieces");
 
         lock (_peersLock) _activePeers.Add(peer);
     }
@@ -138,9 +144,7 @@ public class DownloadCoordinator : IDisposable
                 WebSeedConnection[] seeds;
                 lock (_seedsLock) seeds = _webSeeds.ToArray();
 
-                // Debug: log coordinator state each tick (first 10 ticks only)
-                if (_tickCount++ < 10)
-                    Console.Error.WriteLine($"[Coordinator] tick {_tickCount}: {peers.Length} peers ({peers.Count(p => !p.IsChoked)} unchoked), {seeds.Length} seeds, complete={_pieceManager.CompletedCount}/{_pieceManager.PieceCount}");
+                _tickCount++;
 
                 // 1. Request from peers
                 foreach (var peer in peers)
@@ -392,7 +396,8 @@ public class DownloadCoordinator : IDisposable
             // Cancel outstanding requests for this completed piece (endgame cleanup)
             peer.OutstandingRequests.RemoveAll(r => r.piece == pieceIndex);
 
-            _ = peer.Wire.SendHaveAsync(pieceIndex);
+            try { _ = peer.Wire.SendHaveAsync(pieceIndex); }
+            catch (Exception ex) { OnLog?.Invoke($"SendHave failed: {ex.Message}"); }
         }
     }
 

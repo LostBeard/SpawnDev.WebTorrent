@@ -106,7 +106,7 @@ public class WebRtcConnection : IConnection
     private readonly WebRtcTransportOptions _options;
     private readonly TaskCompletionSource _openTcs = new();
     private readonly List<byte> _receiveBuffer = new();
-    private readonly SemaphoreSlim _receiveSemaphore = new(0);
+    private TaskCompletionSource? _receiveSignal;
     private RTCPeerConnection? _pc;
     private RTCDataChannel? _dc;
 
@@ -146,6 +146,9 @@ public class WebRtcConnection : IConnection
         if (state == "disconnected" || state == "failed" || state == "closed")
         {
             IsConnected = false;
+            var signal = _receiveSignal;
+            _receiveSignal = null;
+            signal?.TrySetCanceled();
             OnDisconnected?.Invoke();
         }
     }
@@ -169,11 +172,16 @@ public class WebRtcConnection : IConnection
     private void OnDataChannelClose(Event e)
     {
         IsConnected = false;
+        // Cancel any pending ReceiveAsync wait so RunAsync can exit cleanly
+        var signal = _receiveSignal;
+        _receiveSignal = null;
+        signal?.TrySetCanceled();
         OnDisconnected?.Invoke();
     }
 
     private void OnDataChannelMessage(MessageEvent e)
     {
+        if (_dc == null) return; // Already disposed
         byte[]? bytes = null;
         var dataType = e.TypeOfData;
 
@@ -195,7 +203,9 @@ public class WebRtcConnection : IConnection
             {
                 _receiveBuffer.AddRange(bytes);
             }
-            _receiveSemaphore.Release();
+            var signal = _receiveSignal;
+            _receiveSignal = null;
+            signal?.TrySetResult();
             OnDataAvailable?.Invoke();
         }
     }
@@ -335,20 +345,46 @@ public class WebRtcConnection : IConnection
 
     public async Task<int> ReceiveAsync(Memory<byte> buffer, CancellationToken ct = default)
     {
-        await _receiveSemaphore.WaitAsync(ct);
-        lock (_receiveBuffer)
+        while (true)
         {
-            int count = Math.Min(buffer.Length, _receiveBuffer.Count);
-            for (int i = 0; i < count; i++)
-                buffer.Span[i] = _receiveBuffer[i];
-            _receiveBuffer.RemoveRange(0, count);
-            return count;
+            lock (_receiveBuffer)
+            {
+                if (_receiveBuffer.Count > 0)
+                {
+                    int count = Math.Min(buffer.Length, _receiveBuffer.Count);
+                    for (int i = 0; i < count; i++)
+                        buffer.Span[i] = _receiveBuffer[i];
+                    _receiveBuffer.RemoveRange(0, count);
+                    return count;
+                }
+            }
+
+            // Buffer empty — wait for new data from the data channel
+            var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _receiveSignal = tcs;
+
+            // Re-check buffer after creating signal to avoid race
+            lock (_receiveBuffer)
+            {
+                if (_receiveBuffer.Count > 0)
+                {
+                    _receiveSignal = null;
+                    continue;
+                }
+            }
+
+            using var reg = ct.Register(() => tcs.TrySetCanceled());
+            await tcs.Task;
         }
     }
 
     public Task CloseAsync()
     {
         IsConnected = false;
+        // Cancel any pending ReceiveAsync wait
+        var signal = _receiveSignal;
+        _receiveSignal = null;
+        signal?.TrySetCanceled();
         try { _dc?.Close(); } catch { }
         try { _pc?.Close(); } catch { }
         OnDisconnected?.Invoke();
@@ -357,10 +393,25 @@ public class WebRtcConnection : IConnection
 
     public async ValueTask DisposeAsync()
     {
+        // Unsubscribe from JS events FIRST to prevent callbacks during/after close
+        if (_dc != null)
+        {
+            _dc.OnOpen -= OnDataChannelOpen;
+            _dc.OnClose -= OnDataChannelClose;
+            _dc.OnMessage -= OnDataChannelMessage;
+        }
+        if (_pc != null)
+        {
+            _pc.OnConnectionStateChange -= OnPeerConnectionStateChange;
+            _pc.OnDataChannel -= OnRemoteDataChannel;
+        }
         await CloseAsync();
-        _dc?.Dispose();
-        _pc?.Dispose();
-        _receiveSemaphore.Dispose();
+        var dc = _dc;
+        var pc = _pc;
+        _dc = null;
+        _pc = null;
+        dc?.Dispose();
+        pc?.Dispose();
     }
 }
 

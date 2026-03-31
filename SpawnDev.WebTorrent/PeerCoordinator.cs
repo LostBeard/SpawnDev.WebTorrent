@@ -40,11 +40,18 @@ public class PeerCoordinator : IAsyncDisposable
         // Wire up WebRTC offer creation → send via tracker
         _webRtc.OnOfferCreated += async (peerId, offer) =>
         {
-            foreach (var tracker in _trackers)
+            try
             {
-                var offerJson = System.Text.Json.JsonSerializer.SerializeToElement(offer);
-                await tracker.SendOfferAsync(peerId, offerJson,
-                    Guid.NewGuid().ToString("N"));
+                foreach (var tracker in _trackers)
+                {
+                    var offerJson = System.Text.Json.JsonSerializer.SerializeToElement(offer);
+                    await tracker.SendOfferAsync(peerId, offerJson,
+                        Guid.NewGuid().ToString("N"));
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[PeerCoordinator] SendOffer failed: {ex.GetType().Name}: {ex.Message}");
             }
         };
     }
@@ -57,48 +64,42 @@ public class PeerCoordinator : IAsyncDisposable
         tracker.OnPeer += HandleNewPeer;
         tracker.OnAnnounceResponse += (s, l) =>
         {
-            Console.Error.WriteLine($"[PeerCoordinator] Announce response: {s} seeders, {l} leechers");
             OnSwarmUpdate?.Invoke(s, l);
         };
 
         // Handle incoming WebRTC offers relayed by the tracker
         tracker.OnOffer += async (fromPeerId, offerId, offer) =>
         {
-            Console.Error.WriteLine($"[PeerCoordinator] Received offer from: {fromPeerId}");
             try
             {
                 var (conn, answer) = await _webRtc.HandleOfferAsync(fromPeerId, offer);
                 var answerJson = System.Text.Json.JsonSerializer.SerializeToElement(answer);
                 await tracker.SendAnswerAsync(fromPeerId, answerJson, offerId);
-                Console.Error.WriteLine($"[PeerCoordinator] Sent answer to: {fromPeerId}");
 
                 // Wait for the data channel to open (initiator processes our answer → ICE → open)
                 using var openCts = new CancellationTokenSource(15000);
                 if (conn is WebRtcConnection webRtcConn)
                     await webRtcConn.WaitForOpenAsync(openCts.Token);
-                Console.Error.WriteLine($"[PeerCoordinator] Data channel open with: {fromPeerId}");
 
                 await SetupPeerAsync(conn);
-                Console.Error.WriteLine($"[PeerCoordinator] Peer setup from offer complete: {fromPeerId}");
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[PeerCoordinator] Offer handling FAILED for {fromPeerId}: {ex.Message}");
+                OnPeerDisconnected?.Invoke(new ConnectedPeer { PeerId = fromPeerId });
+                Console.WriteLine($"[PeerCoordinator] Offer handling failed: {ex.GetType().Name}: {ex.Message}");
             }
         };
 
         // Handle incoming WebRTC answers relayed by the tracker
         tracker.OnAnswer += async (fromPeerId, offerId, answer) =>
         {
-            Console.Error.WriteLine($"[PeerCoordinator] Received answer from: {fromPeerId}");
             try
             {
                 await _webRtc.HandleAnswerAsync(fromPeerId, answer);
-                Console.Error.WriteLine($"[PeerCoordinator] Answer processed: {fromPeerId}");
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[PeerCoordinator] Answer handling FAILED for {fromPeerId}: {ex.Message}");
+                Console.WriteLine($"[PeerCoordinator] Answer handling failed: {ex.GetType().Name}: {ex.Message}");
             }
         };
 
@@ -111,18 +112,14 @@ public class PeerCoordinator : IAsyncDisposable
         if (_peers.ContainsKey(info.Address)) return; // already connected
         if (_peers.Count >= 55) return; // max peers
 
-        Console.Error.WriteLine($"[PeerCoordinator] New peer: {info.Address}");
         try
         {
-            Console.Error.WriteLine($"[PeerCoordinator] Creating WebRTC offer for: {info.Address}");
             var conn = await _webRtc.ConnectAsync(info.Address);
-            Console.Error.WriteLine($"[PeerCoordinator] WebRTC connected: {info.Address}");
             await SetupPeerAsync(conn);
-            Console.Error.WriteLine($"[PeerCoordinator] Wire handshake complete: {info.Address}");
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[PeerCoordinator] FAILED {info.Address}: {ex.GetType().Name}: {ex.Message}");
+            Console.WriteLine($"[PeerCoordinator] Connect to {info.Address} failed: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -163,19 +160,21 @@ public class PeerCoordinator : IAsyncDisposable
     /// <summary>Re-announce to all trackers (periodic or after state change).</summary>
     public async Task ReannounceAsync(long uploaded, long downloaded, long left)
     {
-        foreach (var tracker in _trackers)
+        foreach (var tracker in _trackers.ToArray())
             await tracker.AnnounceAsync(_infoHash, 0, uploaded, downloaded, left);
     }
 
     public async ValueTask DisposeAsync()
     {
-        foreach (var tracker in _trackers)
+        foreach (var tracker in _trackers.ToArray())
             await tracker.DisposeAsync();
         _trackers.Clear();
 
         foreach (var peer in _peers.Values.ToArray())
             await peer.Wire.DisposeAsync();
         _peers.Clear();
+
+        await _webRtc.DisposeAsync();
     }
 }
 

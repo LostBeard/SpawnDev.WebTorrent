@@ -18,7 +18,7 @@ public abstract partial class WebTorrentTestBase
     private WebTorrentClient GetOrCreateClient()
     {
         if (Client != null) return Client;
-        return new WebTorrentClient();
+        return new WebTorrentClient(crypto: Client!.Crypto);
     }
 
     // ═══════════════════════════════════════════════════════════

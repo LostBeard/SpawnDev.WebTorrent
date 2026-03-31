@@ -32,7 +32,7 @@ public abstract partial class WebTorrentTestBase
             new TorrentCreatorOptions { PieceLength = 16384 });
 
         // ── Seeder ──
-        await using var seederClient = new WebTorrentClient();
+        await using var seederClient = new WebTorrentClient(crypto: Client!.Crypto);
         var seederSwarm = await seederClient.SeedAsync(data, "p2p-test.bin",
             new TorrentCreatorOptions { PieceLength = 16384 });
 
@@ -40,7 +40,7 @@ public abstract partial class WebTorrentTestBase
         Console.WriteLine($"[P2P-Local] Seeder ready: {seederSwarm.PieceManager!.CompletedCount}/{metadata.PieceCount} pieces");
 
         // ── Downloader ──
-        await using var dlClient = new WebTorrentClient();
+        await using var dlClient = new WebTorrentClient(crypto: Client!.Crypto);
         var dlSwarm = await dlClient.AddAsync(metadata);
 
         if (dlSwarm.PieceManager == null) throw new Exception("Downloader should have PieceManager");
@@ -106,14 +106,14 @@ public abstract partial class WebTorrentTestBase
         Console.WriteLine($"[P2P-Full] Torrent: {metadata.Name}, {metadata.PieceCount} pieces");
 
         // ── Seeder: create client, seed data ──
-        await using var seederClient = new WebTorrentClient();
+        await using var seederClient = new WebTorrentClient(crypto: Client!.Crypto);
         var seederSwarm = await seederClient.SeedAsync(data, "p2p-full.bin",
             new TorrentCreatorOptions { PieceLength = 16384 });
 
         Console.WriteLine($"[P2P-Full] Seeder: {seederSwarm.PieceManager!.CompletedCount} pieces ready");
 
         // ── Downloader: create client, add torrent (no data) ──
-        await using var dlClient = new WebTorrentClient();
+        await using var dlClient = new WebTorrentClient(crypto: Client!.Crypto);
         var dlSwarm = await dlClient.AddAsync(metadata);
 
         Console.WriteLine($"[P2P-Full] Downloader: {dlSwarm.PieceManager!.CompletedCount} pieces");
@@ -198,7 +198,7 @@ public abstract partial class WebTorrentTestBase
         for (int i = 0; i < data.Length; i++) data[i] = (byte)((i * 17 + 5) % 256);
 
         // ── Seeder ──
-        await using var seeder = new WebTorrentClient();
+        await using var seeder = new WebTorrentClient(crypto: Client!.Crypto);
         var seederSwarm = await seeder.SeedAsync(data, "controlled-swarm.bin",
             new TorrentCreatorOptions { PieceLength = 16384 });
 
@@ -208,7 +208,7 @@ public abstract partial class WebTorrentTestBase
         Console.WriteLine($"[ControlledSwarm] Magnet: {magnetUri[..80]}...");
 
         // ── Downloader ──
-        await using var downloader = new WebTorrentClient();
+        await using var downloader = new WebTorrentClient(crypto: Client!.Crypto);
         var dlSwarm = await downloader.AddAsync(seederSwarm.Metadata!);
 
         Console.WriteLine($"[ControlledSwarm] Downloader added: {dlSwarm.PieceManager!.CompletedCount} pieces");
@@ -355,11 +355,11 @@ public abstract partial class WebTorrentTestBase
         var data = new byte[65536]; // 4 pieces
         Random.Shared.NextBytes(data);
 
-        await using var seeder = new WebTorrentClient();
+        await using var seeder = new WebTorrentClient(crypto: Client!.Crypto);
         var seederSwarm = await seeder.SeedAsync(data, "pause-test.bin",
             new TorrentCreatorOptions { PieceLength = 16384 });
 
-        await using var dl = new WebTorrentClient();
+        await using var dl = new WebTorrentClient(crypto: Client!.Crypto);
         var dlSwarm = await dl.AddAsync(seederSwarm.Metadata!);
 
         // Connect
@@ -425,7 +425,7 @@ public abstract partial class WebTorrentTestBase
         var metadata = TorrentParser.Parse(torrentBytes);
 
         // Add with paused=true, deselect=true — should NOT start downloading
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var swarm = await client.AddAsync(metadata, new AddTorrentOptions { Paused = true });
 
         // Verify we can browse files without downloading
@@ -465,7 +465,7 @@ public abstract partial class WebTorrentTestBase
         var data = new byte[131072]; // 8 pieces at 16KB
         Random.Shared.NextBytes(data);
 
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var swarm = await client.SeedAsync(data, "verify-seed.bin",
             new TorrentCreatorOptions { PieceLength = 16384 });
 
@@ -493,7 +493,7 @@ public abstract partial class WebTorrentTestBase
         var data = new byte[262144];
         Random.Shared.NextBytes(data);
 
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var swarm = await client.SeedAsync(data, "large-seed.bin",
             new TorrentCreatorOptions { PieceLength = 16384 });
 
@@ -598,22 +598,31 @@ public abstract partial class WebTorrentTestBase
         var trackerUrl = "wss://hub.spawndev.com:44365/announce";
 
         // ── Seeder: create torrent and seed ──
-        var seeder = new WebTorrentClient();
-        var seederSwarm = await seeder.SeedAsync(data, "p2p-test.bin",
+        var crypto = Client!.Crypto;
+        var seeder = new WebTorrentClient(crypto: crypto);
+        TorrentSwarm? seederSwarm = null;
+        try
+        {
+            seederSwarm = await seeder.SeedAsync(data, "p2p-test.bin",
             new TorrentCreatorOptions
             {
                 PieceLength = 16384,
                 Trackers = new[] { trackerUrl },
                 HashAlgorithm = "SHA-256",
             });
+        }
+        catch (Exception ex)
+        {
+            throw new Exception($"Seeder setup failed: {ex.Message}");
+        }
 
         var infoHash = seederSwarm.InfoHash;
         var magnetUri = seederSwarm.MagnetURI;
-        Console.Error.WriteLine($"[P2P Test] Seeder: hash={seederSwarm.InfoHashHex}, magnet={magnetUri}");
-        Console.Error.WriteLine($"[P2P Test] Seeder: {seederSwarm.PieceManager?.CompletedCount}/{seederSwarm.Metadata?.PieceCount} pieces");
+        Console.WriteLine($"[P2P Test] Seeder: hash={seederSwarm.InfoHashHex}, magnet={magnetUri}");
+        Console.WriteLine($"[P2P Test] Seeder: {seederSwarm.PieceManager?.CompletedCount}/{seederSwarm.Metadata?.PieceCount} pieces");
 
         // ── Downloader: add by magnet, use MemoryChunkStore (no OPFS conflict) ──
-        var downloader = new WebTorrentClient();
+        var downloader = new WebTorrentClient(crypto: crypto);
         TorrentSwarm? dlSwarm = null;
 
         try
@@ -625,16 +634,16 @@ public abstract partial class WebTorrentTestBase
                 StoreFactory = (pieceLen) => new MemoryChunkStore(pieceLen),
             });
 
-            Console.Error.WriteLine($"[P2P Test] Downloader: added, {dlSwarm.Files.Length} files");
-            Console.Error.WriteLine($"[P2P Test] Downloader metadata AnnounceList: {metadata.AnnounceList?.Length ?? 0} tiers");
+            Console.WriteLine($"[P2P Test] Downloader: added, {dlSwarm.Files.Length} files");
+            Console.WriteLine($"[P2P Test] Downloader metadata AnnounceList: {metadata.AnnounceList?.Length ?? 0} tiers");
             if (metadata.AnnounceList != null)
                 foreach (var tier in metadata.AnnounceList)
                     foreach (var t in tier)
-                        Console.Error.WriteLine($"[P2P Test]   tracker: {t}");
+                        Console.WriteLine($"[P2P Test]   tracker: {t}");
 
             // Start download immediately — peers will connect async
             dlSwarm.StartDownload();
-            Console.Error.WriteLine($"[P2P Test] Download started, waiting for peers + data...");
+            Console.WriteLine($"[P2P Test] Download started, waiting for peers + data...");
 
             // Wait for completion — give time for tracker + WebRTC + piece exchange
             var done = new TaskCompletionSource<bool>();
@@ -648,11 +657,11 @@ public abstract partial class WebTorrentTestBase
 
             // Log progress
             dlSwarm.OnPieceVerified += (idx) =>
-                Console.Error.WriteLine($"[P2P Test] Downloader piece {idx} verified, progress={dlSwarm.Progress:P0}");
+                Console.WriteLine($"[P2P Test] Downloader piece {idx} verified, progress={dlSwarm.Progress:P0}");
 
             var completed = await done.Task;
 
-            Console.Error.WriteLine($"[P2P Test] Downloader: completed={completed}, peers={dlSwarm.PeerCount}, " +
+            Console.WriteLine($"[P2P Test] Downloader: completed={completed}, peers={dlSwarm.PeerCount}, " +
                 $"pieces={dlSwarm.PieceManager?.CompletedCount}/{metadata.PieceCount}");
 
             if (!completed)
@@ -674,7 +683,7 @@ public abstract partial class WebTorrentTestBase
                     throw new Exception($"Data mismatch at byte {i}");
             }
 
-            Console.Error.WriteLine($"[P2P Test] SUCCESS: {data.Length} bytes transferred via real WebRTC P2P, verified byte-for-byte");
+            Console.WriteLine($"[P2P Test] SUCCESS: {data.Length} bytes transferred via real WebRTC P2P, verified byte-for-byte");
         }
         finally
         {

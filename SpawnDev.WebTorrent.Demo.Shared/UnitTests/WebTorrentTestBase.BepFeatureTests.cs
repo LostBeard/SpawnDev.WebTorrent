@@ -173,7 +173,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Bep20_PeerIdFormat()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var peerId = client.PeerId;
 
         if (peerId.Length != 20) throw new Exception($"Peer ID: {peerId.Length} bytes");
@@ -186,7 +186,7 @@ public abstract partial class WebTorrentTestBase
         if (!hasNonZero) throw new Exception("Random bytes should have some non-zero");
 
         // Two clients should have different peer IDs
-        await using var client2 = new WebTorrentClient();
+        await using var client2 = new WebTorrentClient(crypto: Client!.Crypto);
         if (client.PeerId.SequenceEqual(client2.PeerId))
             throw new Exception("Two clients should have different peer IDs");
     }
@@ -210,7 +210,7 @@ public abstract partial class WebTorrentTestBase
         if (!parsed.IsPrivate) throw new Exception("Parsed should be private");
 
         // Verify in swarm
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var swarm = await client.AddAsync(parsed);
         if (!swarm.IsPrivate) throw new Exception("Swarm should be private");
     }
@@ -453,7 +453,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Bep20_PeerId_Format()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var peerId = client.PeerId;
 
         // BEP 20: 20 bytes total
@@ -469,7 +469,7 @@ public abstract partial class WebTorrentTestBase
         if (randomPart.All(b => b == 0)) throw new Exception("Random part should not be all zeros");
 
         // Two clients should have different peer IDs
-        await using var client2 = new WebTorrentClient();
+        await using var client2 = new WebTorrentClient(crypto: Client!.Crypto);
         if (client.PeerId.SequenceEqual(client2.PeerId))
             throw new Exception("Two clients should have different peer IDs");
 

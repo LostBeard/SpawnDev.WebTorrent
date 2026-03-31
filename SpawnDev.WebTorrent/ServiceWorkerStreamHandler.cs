@@ -95,7 +95,7 @@ public class ServiceWorkerStreamHandler : IAsyncBackgroundService, IDisposable
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[WebTorrent SW Handler] HandleMessage error: {ex}");
+            Console.WriteLine($"[WebTorrent SW Handler] HandleMessage error: {ex}");
         }
     }
 
@@ -114,7 +114,7 @@ public class ServiceWorkerStreamHandler : IAsyncBackgroundService, IDisposable
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[WebTorrent SW Handler] TryParseStreamUrl error: {ex.Message}");
+            Console.WriteLine($"[WebTorrent SW Handler] TryParseStreamUrl error: {ex.Message}");
             return false;
         }
     }
@@ -158,7 +158,7 @@ public class ServiceWorkerStreamHandler : IAsyncBackgroundService, IDisposable
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[WebTorrent SW Handler] Dispose error: {ex.Message}");
+            Console.WriteLine($"[WebTorrent SW Handler] Dispose error: {ex.Message}");
         }
     }
 }
@@ -287,7 +287,7 @@ public class StreamRequest
                 }
                 catch (Exception ex)
                 {
-                    Console.Error.WriteLine($"[WebTorrent SW Handler] Stream chunk error: {ex}");
+                    Console.WriteLine($"[WebTorrent SW Handler] Stream chunk error: {ex}");
                     _port.PostMessage("");
                     Cleanup();
                 }

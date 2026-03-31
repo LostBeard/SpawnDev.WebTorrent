@@ -16,7 +16,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Swarm_Props_MetadataFields()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[50000];
         Random.Shared.NextBytes(data);
         var swarm = await client.SeedAsync(data, "props-test.bin");
@@ -34,7 +34,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Swarm_Props_LastPieceLength()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         // 50000 bytes, default piece length 16384 → last piece = 50000 - 3*16384 = 848
         var data = new byte[50000];
         Random.Shared.NextBytes(data);
@@ -49,7 +49,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Swarm_Props_Announce()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         Random.Shared.NextBytes(data);
         var swarm = await client.SeedAsync(data, "announce.bin", new TorrentCreatorOptions
@@ -65,7 +65,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Swarm_Props_Bitfield_AfterSeed()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[32768];
         Random.Shared.NextBytes(data);
         var swarm = await client.SeedAsync(data, "bitfield.bin");
@@ -80,7 +80,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Swarm_Props_StateAfterSeed()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         Random.Shared.NextBytes(data);
         var swarm = await client.SeedAsync(data, "state.bin");
@@ -95,7 +95,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Swarm_Props_SpeedZeroWhenIdle()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         Random.Shared.NextBytes(data);
         var swarm = await client.SeedAsync(data, "speed.bin");
@@ -108,7 +108,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Swarm_Props_PeerCountZero()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         Random.Shared.NextBytes(data);
         var swarm = await client.SeedAsync(data, "peers.bin");
@@ -120,7 +120,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Swarm_Props_MagnetURI_Format()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         Random.Shared.NextBytes(data);
         var swarm = await client.SeedAsync(data, "magnet-fmt.bin");
@@ -135,7 +135,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Swarm_Props_Ratio_ZeroWhenNoTraffic()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         Random.Shared.NextBytes(data);
         var swarm = await client.SeedAsync(data, "ratio.bin");
@@ -146,7 +146,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Swarm_Props_TimeRemaining_AfterSeed()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         Random.Shared.NextBytes(data);
         var swarm = await client.SeedAsync(data, "eta.bin");
@@ -163,7 +163,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Swarm_Files_Count()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         Random.Shared.NextBytes(data);
         var swarm = await client.SeedAsync(data, "files-count.bin");
@@ -175,7 +175,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Swarm_Files_Properties()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[32768];
         Random.Shared.NextBytes(data);
         var swarm = await client.SeedAsync(data, "file-props.bin");
@@ -196,7 +196,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Swarm_PrivateTorrent_Properties()
     {
-        await using var client = new WebTorrentClient();
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
         var data = new byte[16384];
         Random.Shared.NextBytes(data);
         var swarm = await client.SeedAsync(data, "private.bin", new TorrentCreatorOptions { IsPrivate = true });

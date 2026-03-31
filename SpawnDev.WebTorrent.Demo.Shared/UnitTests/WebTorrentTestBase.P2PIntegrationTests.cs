@@ -609,8 +609,8 @@ public abstract partial class WebTorrentTestBase
 
         var infoHash = seederSwarm.InfoHash;
         var magnetUri = seederSwarm.MagnetURI;
-        Console.WriteLine($"[P2P Test] Seeder: hash={seederSwarm.InfoHashHex}, magnet={magnetUri}");
-        Console.WriteLine($"[P2P Test] Seeder: {seederSwarm.PieceManager?.CompletedCount}/{seederSwarm.Metadata?.PieceCount} pieces");
+        Console.Error.WriteLine($"[P2P Test] Seeder: hash={seederSwarm.InfoHashHex}, magnet={magnetUri}");
+        Console.Error.WriteLine($"[P2P Test] Seeder: {seederSwarm.PieceManager?.CompletedCount}/{seederSwarm.Metadata?.PieceCount} pieces");
 
         // ── Downloader: add by magnet, use MemoryChunkStore (no OPFS conflict) ──
         var downloader = new WebTorrentClient();
@@ -625,14 +625,20 @@ public abstract partial class WebTorrentTestBase
                 StoreFactory = (pieceLen) => new MemoryChunkStore(pieceLen),
             });
 
-            Console.WriteLine($"[P2P Test] Downloader: added, {dlSwarm.Files.Length} files, starting download");
+            Console.Error.WriteLine($"[P2P Test] Downloader: added, {dlSwarm.Files.Length} files");
+            Console.Error.WriteLine($"[P2P Test] Downloader metadata AnnounceList: {metadata.AnnounceList?.Length ?? 0} tiers");
+            if (metadata.AnnounceList != null)
+                foreach (var tier in metadata.AnnounceList)
+                    foreach (var t in tier)
+                        Console.Error.WriteLine($"[P2P Test]   tracker: {t}");
 
-            // Start download
+            // Start download immediately — peers will connect async
             dlSwarm.StartDownload();
+            Console.Error.WriteLine($"[P2P Test] Download started, waiting for peers + data...");
 
-            // Wait for completion
+            // Wait for completion — give time for tracker + WebRTC + piece exchange
             var done = new TaskCompletionSource<bool>();
-            using var cts = new CancellationTokenSource(45000);
+            using var cts = new CancellationTokenSource(55000);
 
             if (dlSwarm.Done)
                 done.TrySetResult(true);
@@ -642,11 +648,11 @@ public abstract partial class WebTorrentTestBase
 
             // Log progress
             dlSwarm.OnPieceVerified += (idx) =>
-                Console.WriteLine($"[P2P Test] Downloader piece {idx} verified, progress={dlSwarm.Progress:P0}");
+                Console.Error.WriteLine($"[P2P Test] Downloader piece {idx} verified, progress={dlSwarm.Progress:P0}");
 
             var completed = await done.Task;
 
-            Console.WriteLine($"[P2P Test] Downloader: completed={completed}, peers={dlSwarm.PeerCount}, " +
+            Console.Error.WriteLine($"[P2P Test] Downloader: completed={completed}, peers={dlSwarm.PeerCount}, " +
                 $"pieces={dlSwarm.PieceManager?.CompletedCount}/{metadata.PieceCount}");
 
             if (!completed)
@@ -668,7 +674,7 @@ public abstract partial class WebTorrentTestBase
                     throw new Exception($"Data mismatch at byte {i}");
             }
 
-            Console.WriteLine($"[P2P Test] SUCCESS: {data.Length} bytes transferred via real WebRTC P2P, verified byte-for-byte");
+            Console.Error.WriteLine($"[P2P Test] SUCCESS: {data.Length} bytes transferred via real WebRTC P2P, verified byte-for-byte");
         }
         finally
         {

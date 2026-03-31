@@ -156,20 +156,8 @@ public class PeerCoordinator : IAsyncDisposable
 
         _peers[peer.PeerId] = peer;
         OnPeerConnected?.Invoke(peer);
-
-        // Start message read loop (runs until disconnect)
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await wire.RunAsync();
-            }
-            finally
-            {
-                _peers.TryRemove(peer.PeerId, out _);
-                OnPeerDisconnected?.Invoke(peer);
-            }
-        });
+        // Message read loop is started by TorrentSwarm.AddConnectedPeerAsync — not here.
+        // Having two RunAsync loops on the same wire causes messages to be split randomly.
     }
 
     /// <summary>Re-announce to all trackers (periodic or after state change).</summary>

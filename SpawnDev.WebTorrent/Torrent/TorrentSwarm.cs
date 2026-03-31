@@ -20,7 +20,7 @@ public class TorrentSwarm : IAsyncDisposable
     private PieceManager? _pieceManager;
     private DownloadCoordinator? _coordinator;
     private PeerCoordinator? _peerCoordinator;
-    private readonly List<Func<Wire.WireExtension>> _extensionFactories = new();
+    private readonly List<Func<TorrentSwarm, Wire.WireProtocol, Wire.WireExtension>> _extensionFactories = new();
     private bool _disposed;
 
     /// <summary>Torrent metadata (available after initialization or metadata exchange).</summary>
@@ -188,34 +188,34 @@ public class TorrentSwarm : IAsyncDisposable
         Paused = options.Paused;
 
         // Register built-in BEP 10 extensions on every wire
-        UseExtension(() =>
+        UseExtension((swarm, wire) =>
         {
             var ext = new Wire.UtMetadataExtension();
             // If we have metadata, serve it to peers
-            if (Metadata?.InfoDictBytes != null)
-                ext.LocalMetadata = Metadata.InfoDictBytes;
-            ext.ExpectedInfoHash = InfoHash.Length > 0 ? InfoHash : null;
+            if (swarm.Metadata?.InfoDictBytes != null)
+                ext.LocalMetadata = swarm.Metadata.InfoDictBytes;
+            ext.ExpectedInfoHash = swarm.InfoHash.Length > 0 ? swarm.InfoHash : null;
             // When metadata is received from a peer, set it on this swarm
             ext.OnMetadataComplete += (infoDictBytes) =>
             {
                 try
                 {
-                    var meta = TorrentParser.ParseInfoDict(infoDictBytes, InfoHash);
-                    if (meta != null && Metadata == null)
-                        SetMetadata(meta);
+                    var meta = TorrentParser.ParseInfoDict(infoDictBytes, swarm.InfoHash);
+                    if (meta != null && swarm.Metadata == null)
+                        swarm.SetMetadata(meta);
                 }
-                catch (Exception ex) { OnLog?.Invoke($"ut_metadata parse failed: {ex.Message}"); }
+                catch (Exception ex) { swarm.OnLog?.Invoke($"ut_metadata parse failed: {ex.Message}"); }
             };
             return ext;
         });
-        UseExtension(() =>
+        UseExtension((swarm, wire) =>
         {
             var ext = new Wire.UtPexExtension();
             ext.OnPeersReceived += (peers) =>
             {
-                if (IsPrivate) return; // BEP 27: no PEX for private torrents
+                if (swarm.IsPrivate) return; // BEP 27: no PEX for private torrents
                 foreach (var addr in peers)
-                    AddPeer(new PeerInfo { Address = addr, Source = "pex" });
+                    swarm.AddPeer(new PeerInfo { Address = addr, Source = "pex" });
             };
             return ext;
         });
@@ -348,6 +348,7 @@ public class TorrentSwarm : IAsyncDisposable
             {
                 var webRtc = new Transports.WebRtcTransport();
                 var coordinator = new PeerCoordinator(_client, InfoHash, webRtc);
+                coordinator.Swarm = this;
                 _peerCoordinator = coordinator;
                 // Apply any registered extension factories
                 foreach (var factory in _extensionFactories)
@@ -432,7 +433,7 @@ public class TorrentSwarm : IAsyncDisposable
             var wire = new WireProtocol(conn);
             // Register extensions before handshake for BEP 10 negotiation
             foreach (var factory in _extensionFactories)
-                wire.Extensions.Register(factory());
+                wire.Extensions.Register(factory(this, wire));
             await wire.SendHandshakeAsync(InfoHash, _client.PeerId);
 
             if (!await wire.ReceiveHandshakeAsync())
@@ -897,7 +898,7 @@ public class TorrentSwarm : IAsyncDisposable
     /// BEFORE the BEP 10 handshake, so they participate in extension negotiation.
     /// Same pattern as JS WebTorrent's wire.use(extensionFactory).
     /// </summary>
-    public void UseExtension(Func<Wire.WireExtension> factory)
+    public void UseExtension(Func<TorrentSwarm, Wire.WireProtocol, Wire.WireExtension> factory)
     {
         _extensionFactories.Add(factory);
         _peerCoordinator?.UseExtension(factory);

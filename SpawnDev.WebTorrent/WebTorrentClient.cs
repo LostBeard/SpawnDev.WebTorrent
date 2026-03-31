@@ -22,7 +22,7 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
     private readonly List<TorrentSwarm> _torrents = new();
     private readonly List<ITransport> _transports = new();
     private readonly List<IDiscovery> _discoveryProviders = new();
-    private readonly List<Func<Wire.WireExtension>> _extensionFactories = new();
+    private readonly List<Func<TorrentSwarm, Wire.WireProtocol, Wire.WireExtension>> _extensionFactories = new();
     private readonly byte[] _peerId;
 
     /// <summary>Enable verbose logging to Console. Default: false.</summary>
@@ -294,7 +294,7 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
     /// Register a wire extension factory for all swarms. Extensions are created for every
     /// new peer BEFORE the BEP 10 handshake. Same pattern as JS WebTorrent's wire.use().
     /// </summary>
-    public void UseExtension(Func<Wire.WireExtension> factory)
+    public void UseExtension(Func<TorrentSwarm, Wire.WireProtocol, Wire.WireExtension> factory)
     {
         _extensionFactories.Add(factory);
         foreach (var torrent in _torrents)

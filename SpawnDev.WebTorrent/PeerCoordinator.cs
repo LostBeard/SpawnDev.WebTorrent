@@ -23,13 +23,16 @@ public class PeerCoordinator : IAsyncDisposable
     private readonly List<WebSocketTrackerClient> _trackers = new();
     private readonly ConcurrentDictionary<string, ConnectedPeer> _peers = new();
     private readonly byte[] _infoHash;
-    private readonly List<Func<WireExtension>> _extensionFactories = new();
+    private readonly List<Func<Torrent.TorrentSwarm, WireProtocol, WireExtension>> _extensionFactories = new();
 
     public int PeerCount => _peers.Count;
 
     public event Action<ConnectedPeer>? OnPeerConnected;
     public event Action<ConnectedPeer>? OnPeerDisconnected;
     public event Action<int, int>? OnSwarmUpdate; // seeders, leechers
+
+    /// <summary>The swarm this coordinator belongs to (set by TorrentSwarm).</summary>
+    internal Torrent.TorrentSwarm? Swarm { get; set; }
 
     public PeerCoordinator(WebTorrentClient client, byte[] infoHash,
         IWebRtcTransport webRtc)
@@ -125,7 +128,7 @@ public class PeerCoordinator : IAsyncDisposable
     }
 
     /// <summary>Register a wire extension factory. Extensions are created for every new peer BEFORE the BEP 10 handshake.</summary>
-    public void UseExtension(Func<WireExtension> factory) => _extensionFactories.Add(factory);
+    public void UseExtension(Func<Torrent.TorrentSwarm, WireProtocol, WireExtension> factory) => _extensionFactories.Add(factory);
 
     private async Task SetupPeerAsync(IConnection conn)
     {
@@ -133,7 +136,7 @@ public class PeerCoordinator : IAsyncDisposable
 
         // Register extensions BEFORE handshake so they're included in BEP 10 negotiation
         foreach (var factory in _extensionFactories)
-            wire.Extensions.Register(factory());
+            wire.Extensions.Register(factory(Swarm!, wire));
 
         // Perform BitTorrent handshake
         await wire.SendHandshakeAsync(_infoHash, _client.PeerId);

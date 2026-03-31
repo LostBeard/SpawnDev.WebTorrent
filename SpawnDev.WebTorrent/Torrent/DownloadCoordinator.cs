@@ -17,6 +17,7 @@ public class DownloadCoordinator : IDisposable
     private readonly TorrentMetadata _metadata;
     private readonly List<WebSeedConnection> _webSeeds = new();
     private Task? _bulkDownloadTask;
+    private int _tickCount;
     private readonly List<ActivePeer> _activePeers = new();
     private readonly object _peersLock = new();
     private readonly object _seedsLock = new();
@@ -88,10 +89,10 @@ public class DownloadCoordinator : IDisposable
         wire.OnUnchoke += () => peer.IsChoked = false;
 
         // If the remote already sent Unchoke before we subscribed, start unchoked.
-        // In BitTorrent, after handshake the seeder sends Interested+Unchoke+Bitfield
-        // rapidly — Unchoke often arrives before the coordinator sees the peer.
         if (!wire.PeerChoking)
             peer.IsChoked = false;
+
+        Console.Error.WriteLine($"[Coordinator] AddPeer: choked={peer.IsChoked}, bitfield={peerBitfield.Count(b => b)}/{peerBitfield.Length} pieces");
 
         lock (_peersLock) _activePeers.Add(peer);
     }
@@ -136,6 +137,10 @@ public class DownloadCoordinator : IDisposable
                 lock (_peersLock) peers = _activePeers.ToArray();
                 WebSeedConnection[] seeds;
                 lock (_seedsLock) seeds = _webSeeds.ToArray();
+
+                // Debug: log coordinator state each tick (first 10 ticks only)
+                if (_tickCount++ < 10)
+                    Console.Error.WriteLine($"[Coordinator] tick {_tickCount}: {peers.Length} peers ({peers.Count(p => !p.IsChoked)} unchoked), {seeds.Length} seeds, complete={_pieceManager.CompletedCount}/{_pieceManager.PieceCount}");
 
                 // 1. Request from peers
                 foreach (var peer in peers)

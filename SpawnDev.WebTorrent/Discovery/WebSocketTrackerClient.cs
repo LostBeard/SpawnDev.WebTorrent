@@ -197,6 +197,7 @@ public class WebSocketTrackerClient : IDiscovery
     {
         try
         {
+            Console.Error.WriteLine($"[WSTracker] Received: {json[..Math.Min(200, json.Length)]}");
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
@@ -230,6 +231,8 @@ public class WebSocketTrackerClient : IDiscovery
 
         int seeders = root.TryGetProperty("complete", out var c) ? c.GetInt32() : 0;
         int leechers = root.TryGetProperty("incomplete", out var ic) ? ic.GetInt32() : 0;
+        int peerCount = (root.TryGetProperty("peers", out var p) && p.ValueKind == System.Text.Json.JsonValueKind.Array) ? p.GetArrayLength() : 0;
+        Console.Error.WriteLine($"[WSTracker] Announce response: {seeders}S/{leechers}L, {peerCount} peers");
         OnAnnounceResponse?.Invoke(seeders, leechers);
 
         // Extract peers

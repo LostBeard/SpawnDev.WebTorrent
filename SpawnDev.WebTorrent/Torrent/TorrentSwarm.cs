@@ -298,7 +298,7 @@ public class TorrentSwarm : IAsyncDisposable
         }
 
         // WebSocket trackers — need WebRTC transport for browser P2P
-        Console.WriteLine($"[TorrentSwarm] ConnectTrackers: {wsTrackers.Count} WS, {httpTrackers.Count} HTTP, browser={OperatingSystem.IsBrowser()}");
+        Console.Error.WriteLine($"[TorrentSwarm] ConnectTrackers: {wsTrackers.Count} WS, {httpTrackers.Count} HTTP, browser={OperatingSystem.IsBrowser()}");
         if (wsTrackers.Count > 0 && OperatingSystem.IsBrowser())
         {
             try
@@ -307,7 +307,7 @@ public class TorrentSwarm : IAsyncDisposable
                 var coordinator = new PeerCoordinator(_client, InfoHash, webRtc);
                 coordinator.OnPeerConnected += (peer) =>
                 {
-                    Console.WriteLine($"[TorrentSwarm] Peer connected: {peer.PeerId}");
+                    Console.Error.WriteLine($"[TorrentSwarm] Peer connected: {peer.PeerId}");
                     _ = AddConnectedPeerAsync(peer.Wire, new PeerInfo { Address = peer.PeerId, Source = "webrtc" });
                 };
 
@@ -315,26 +315,26 @@ public class TorrentSwarm : IAsyncDisposable
                 {
                     try
                     {
-                        Console.WriteLine($"[TorrentSwarm] Connecting to tracker: {url}");
+                        Console.Error.WriteLine($"[TorrentSwarm] Connecting to tracker: {url}");
                         await coordinator.AddTrackerAsync(url);
-                        Console.WriteLine($"[TorrentSwarm] Tracker connected: {url}");
+                        Console.Error.WriteLine($"[TorrentSwarm] Tracker connected: {url}");
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"[TorrentSwarm] Tracker {url} FAILED: {ex.Message}");
+                        Console.Error.WriteLine($"[TorrentSwarm] Tracker {url} FAILED: {ex.Message}");
                         OnLog?.Invoke($"Tracker {url} failed: {ex.Message}");
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[TorrentSwarm] WebRTC setup FAILED: {ex.Message}");
+                Console.Error.WriteLine($"[TorrentSwarm] WebRTC setup FAILED: {ex.Message}");
                 OnLog?.Invoke($"WebRTC tracker setup failed: {ex.Message}");
             }
         }
         else if (wsTrackers.Count > 0)
         {
-            Console.WriteLine($"[TorrentSwarm] Skipping WS trackers — not in browser");
+            Console.Error.WriteLine($"[TorrentSwarm] Skipping WS trackers — not in browser");
         }
 
         // HTTP trackers — peer discovery (desktop)
@@ -425,11 +425,14 @@ public class TorrentSwarm : IAsyncDisposable
             // Wire up events
             wire.OnBitfield += (bf) =>
             {
+                Console.Error.WriteLine($"[TorrentSwarm] OnBitfield received: {bf.Length} bytes");
                 peer.PeerBitfield = new bool[bf.Length * 8];
                 for (int i = 0; i < bf.Length; i++)
                     for (int bit = 0; bit < 8; bit++)
                         if (i * 8 + bit < peer.PeerBitfield.Length)
                             peer.PeerBitfield[i * 8 + bit] = (bf[i] & (1 << (7 - bit))) != 0;
+                int trueCount = peer.PeerBitfield.Count(b => b);
+                Console.Error.WriteLine($"[TorrentSwarm] Parsed bitfield: {trueCount}/{peer.PeerBitfield.Length} pieces, coordinator={_coordinator != null}");
 
                 // Add to coordinator if metadata is available
                 _coordinator?.AddPeer(wire, peer.PeerBitfield);

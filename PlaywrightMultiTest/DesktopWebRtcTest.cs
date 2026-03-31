@@ -51,4 +51,48 @@ public class DesktopWebRtcTest
         await client.DisposeAsync();
         WebTorrentClient.VerboseLogging = false;
     }
+
+    [Test, Timeout(60000)]
+    public async Task Desktop_TwoClients_DiscoverViaTracker()
+    {
+        WebTorrentClient.VerboseLogging = true;
+        var crypto = new DotNetCrypto();
+
+        // Seeder
+        var seeder = new WebTorrentClient(crypto: crypto);
+        var data = new byte[32768];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)((i * 7 + 13) % 256);
+
+        var seederSwarm = await seeder.SeedAsync(data, "two-client-test.bin",
+            new TorrentCreatorOptions
+            {
+                PieceLength = 16384,
+                Trackers = new[] { "wss://hub.spawndev.com:44365/announce" },
+            });
+        Console.WriteLine($"Seeder: InfoHash={seederSwarm.InfoHashHex}, Ready={seederSwarm.Ready}");
+
+        // Downloader — add via magnet
+        var downloader = new WebTorrentClient(crypto: crypto);
+        var dlSwarm = await downloader.AddAsync(seederSwarm.MagnetURI);
+        Console.WriteLine($"Downloader: InfoHash={dlSwarm.InfoHashHex}");
+
+        // Wait for peers to discover each other
+        var timeout = DateTime.UtcNow.AddSeconds(30);
+        while (seederSwarm.PeerCount == 0 && dlSwarm.PeerCount == 0 && DateTime.UtcNow < timeout)
+        {
+            await Task.Delay(500);
+            Console.WriteLine($"  Seeder peers={seederSwarm.PeerCount}, Downloader peers={dlSwarm.PeerCount}");
+        }
+
+        Console.WriteLine($"Final: Seeder peers={seederSwarm.PeerCount}, Downloader peers={dlSwarm.PeerCount}");
+
+        if (seederSwarm.PeerCount == 0 && dlSwarm.PeerCount == 0)
+            Assert.Fail("Neither client discovered the other via tracker");
+
+        await dlSwarm.DisposeAsync();
+        await downloader.DisposeAsync();
+        await seederSwarm.DisposeAsync();
+        await seeder.DisposeAsync();
+        WebTorrentClient.VerboseLogging = false;
+    }
 }

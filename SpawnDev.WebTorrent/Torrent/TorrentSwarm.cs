@@ -313,6 +313,10 @@ public class TorrentSwarm : IAsyncDisposable
             _coordinator.AddPeer(peer.Wire, peer.PeerBitfield);
         }
 
+        // Start the download loop if not paused and not already done
+        if (!Paused && !Done)
+            _coordinator.Start();
+
         // Connect to trackers from metadata — must complete before OnReady fires
         await ConnectTrackersFromMetadataAsync();
 

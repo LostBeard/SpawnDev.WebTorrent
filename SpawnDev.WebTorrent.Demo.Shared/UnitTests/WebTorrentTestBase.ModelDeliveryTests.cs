@@ -544,7 +544,7 @@ public abstract partial class WebTorrentTestBase
         // Parse round-trip
         var parsed = TorrentParser.Parse(torrentBytes);
         if (parsed.PieceHashes.Length != metadata.PieceHashes.Length)
-            throw new Exception("Round-trip piece count mismatch");
+            throw new Exception($"Round-trip piece count mismatch: created={metadata.PieceHashes.Length} (hash={metadata.PieceHashAlgorithm}, hashLen={metadata.PieceHashes[0].Length}), parsed={parsed.PieceHashes.Length} (hash={parsed.PieceHashAlgorithm}, hashLen={parsed.PieceHashes[0].Length}), totalLength={metadata.TotalLength}, pieceLength={metadata.PieceLength}");
 
         Console.WriteLine($"[ModelDelivery] CreateFromUrl: {metadata.Name}, {metadata.TotalLength:N0} bytes, " +
             $"{metadata.PieceHashes.Length} pieces, {metadata.UrlList.Length} web seeds, algorithm={metadata.PieceHashAlgorithm}");

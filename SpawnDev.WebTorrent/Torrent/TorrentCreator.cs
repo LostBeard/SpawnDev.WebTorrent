@@ -26,12 +26,24 @@ public static class TorrentCreator
         var pieceHashes = new List<byte[]>();
         var buffer = new byte[pieceLength];
         bool useSha256 = options.HashAlgorithm == "SHA-256";
+        int bufferFill = 0;
         int bytesRead;
-        while ((bytesRead = await stream.ReadAsync(buffer.AsMemory(0, pieceLength), ct)) > 0)
+        while ((bytesRead = await stream.ReadAsync(buffer.AsMemory(bufferFill, pieceLength - bufferFill), ct)) > 0)
+        {
+            bufferFill += bytesRead;
+            if (bufferFill == pieceLength)
+            {
+                pieceHashes.Add(useSha256
+                    ? SHA256.HashData(buffer.AsSpan(0, bufferFill))
+                    : SHA1.HashData(buffer.AsSpan(0, bufferFill)));
+                bufferFill = 0;
+            }
+        }
+        if (bufferFill > 0)
         {
             pieceHashes.Add(useSha256
-                ? SHA256.HashData(buffer.AsSpan(0, bytesRead))
-                : SHA1.HashData(buffer.AsSpan(0, bytesRead)));
+                ? SHA256.HashData(buffer.AsSpan(0, bufferFill))
+                : SHA1.HashData(buffer.AsSpan(0, bufferFill)));
         }
 
         name = options.Name ?? name;

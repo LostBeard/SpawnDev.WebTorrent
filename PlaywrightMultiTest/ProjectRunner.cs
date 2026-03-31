@@ -155,7 +155,21 @@ namespace PlaywrightMultiTest
                         // Fixed port so IndexedDB persists across runs (same origin = same IDB)
                         var _port = 5562;
                         var baseUrl = $"https://localhost:{_port}/";
-                        // Write desktop seeder config to wwwroot so browser tests can fetch it
+                        // Start desktop seeder and write config to wwwroot before static server starts
+                        if (GlobalSetup.Seeder == null)
+                        {
+                            try
+                            {
+                                GlobalSetup.Seeder = new DesktopSeeder();
+                                await GlobalSetup.Seeder.StartAsync();
+                                LogStatus($"Desktop seeder started: {GlobalSetup.Seeder.MagnetUri?[..Math.Min(80, GlobalSetup.Seeder.MagnetUri?.Length ?? 0)]}");
+                            }
+                            catch (Exception ex)
+                            {
+                                LogStatus($"Desktop seeder failed: {ex.Message}");
+                                GlobalSetup.Seeder = null;
+                            }
+                        }
                         if (GlobalSetup.Seeder?.IsSeeding == true)
                             GlobalSetup.Seeder.WriteTestConfig(testableProject.ProjectDetails.WwwRoot);
 

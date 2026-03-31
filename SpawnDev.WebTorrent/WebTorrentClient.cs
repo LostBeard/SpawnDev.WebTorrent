@@ -107,10 +107,12 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
         UploadLimit = _options.UploadLimit;
         DownloadLimit = _options.DownloadLimit;
 
-        // Generate peer ID: -SD0210- + 12 random bytes (Azureus-style)
-        // SD = SpawnDev, 0210 = v2.1.0
+        // Generate peer ID: -SDMMNN- + 12 random bytes (Azureus-style)
+        // SD = SpawnDev, MMNN = major*10+minor, patch (from assembly version)
         _peerId = new byte[20];
-        "-SD0210-"u8.CopyTo(_peerId);
+        var v = typeof(WebTorrentClient).Assembly.GetName().Version ?? new Version(0, 0, 0);
+        var versionStr = $"-SD{v.Major * 10 + v.Minor:D2}{v.Build:D2}-";
+        System.Text.Encoding.ASCII.GetBytes(versionStr).CopyTo(_peerId, 0);
         Random.Shared.NextBytes(_peerId.AsSpan(8));
     }
 

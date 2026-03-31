@@ -298,6 +298,7 @@ public class TorrentSwarm : IAsyncDisposable
         }
 
         // WebSocket trackers — need WebRTC transport for browser P2P
+        Console.WriteLine($"[TorrentSwarm] ConnectTrackers: {wsTrackers.Count} WS, {httpTrackers.Count} HTTP, browser={OperatingSystem.IsBrowser()}");
         if (wsTrackers.Count > 0 && OperatingSystem.IsBrowser())
         {
             try
@@ -306,19 +307,34 @@ public class TorrentSwarm : IAsyncDisposable
                 var coordinator = new PeerCoordinator(_client, InfoHash, webRtc);
                 coordinator.OnPeerConnected += (peer) =>
                 {
+                    Console.WriteLine($"[TorrentSwarm] Peer connected: {peer.PeerId}");
                     _ = AddConnectedPeerAsync(peer.Wire, new PeerInfo { Address = peer.PeerId, Source = "webrtc" });
                 };
 
                 foreach (var url in wsTrackers)
                 {
-                    try { await coordinator.AddTrackerAsync(url); }
-                    catch (Exception ex) { OnLog?.Invoke($"Tracker {url} failed: {ex.Message}"); }
+                    try
+                    {
+                        Console.WriteLine($"[TorrentSwarm] Connecting to tracker: {url}");
+                        await coordinator.AddTrackerAsync(url);
+                        Console.WriteLine($"[TorrentSwarm] Tracker connected: {url}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[TorrentSwarm] Tracker {url} FAILED: {ex.Message}");
+                        OnLog?.Invoke($"Tracker {url} failed: {ex.Message}");
+                    }
                 }
             }
             catch (Exception ex)
             {
+                Console.WriteLine($"[TorrentSwarm] WebRTC setup FAILED: {ex.Message}");
                 OnLog?.Invoke($"WebRTC tracker setup failed: {ex.Message}");
             }
+        }
+        else if (wsTrackers.Count > 0)
+        {
+            Console.WriteLine($"[TorrentSwarm] Skipping WS trackers — not in browser");
         }
 
         // HTTP trackers — peer discovery (desktop)

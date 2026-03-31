@@ -84,6 +84,8 @@ public class PeerCoordinator : IAsyncDisposable
                 using var openCts = new CancellationTokenSource(15000);
                 if (conn is WebRtcConnection webRtcConn)
                     await webRtcConn.WaitForOpenAsync(openCts.Token);
+                else if (conn is SipSorceryWebRtcConnection sipConn)
+                    await sipConn.WaitForOpenAsync(openCts.Token);
 
                 await SetupPeerAsync(conn);
             }

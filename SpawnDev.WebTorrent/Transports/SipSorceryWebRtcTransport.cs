@@ -54,9 +54,10 @@ public class SipSorceryWebRtcTransport : IWebRtcTransport
         var conn = new SipSorceryWebRtcConnection(fromPeerId, _options);
         _connections.Add(conn);
 
+        // Create answer but DON'T wait for data channel — the answer must be sent
+        // back to the initiator first, then ICE completes, then data channel opens.
+        // Waiting here deadlocks (same fix as WebRtcTransport.HandleOfferAsync).
         var answer = await conn.HandleOfferAsync(offer);
-        await conn.WaitForOpenAsync(ct);
-        OnConnection?.Invoke(conn);
         return (conn, answer);
     }
 

@@ -15,8 +15,8 @@ SpawnDev.WebTorrent uses the [Azureus-style peer ID](http://bittorrent.org/beps/
 | Field | Value | Meaning |
 |-------|-------|---------|
 | Client ID | `SD` | **S**pawn**D**ev |
-| Version | `0110` | v1.1.0 |
-| Full prefix | `-SD0110-` | SpawnDev.WebTorrent v1.1.0 |
+| Version | `0110` | v1.1.0 (note: needs update for v2.1.0) |
+| Full prefix | `-SD0110-` | SpawnDev.WebTorrent |
 
 ## Version History
 
@@ -24,6 +24,7 @@ SpawnDev.WebTorrent uses the [Azureus-style peer ID](http://bittorrent.org/beps/
 |---------|---------|---------|
 | 1.0.0 | `-SD0100-` | 2026-03-27 — Initial NuGet release |
 | 1.1.0 | `-SD0110-` | 2026-03-28 — Real WebRTC P2P, 12 BEPs, 150 tests |
+| 2.1.0 | `-SD0210-` | 2026-03-31 — SHA-256, wire extensions, 461+ tests, 15 BEPs |
 
 ## Version Encoding
 
@@ -33,8 +34,8 @@ The 4-digit version maps to semver as: `MMNN` where MM = major*10 + minor, NN = 
 |--------|---------------|
 | 1.0.0 | `0100` |
 | 1.1.0 | `0110` |
-| 1.2.0 | `0120` |
 | 2.0.0 | `0200` |
+| 2.1.0 | `0210` |
 
 ## How Other Clients Identify Us
 
@@ -55,7 +56,7 @@ The peer ID is generated in `WebTorrentClient.cs`:
 
 ```csharp
 _peerId = new byte[20];
-"-SD0110-"u8.CopyTo(_peerId);
+"-SD0210-"u8.CopyTo(_peerId);
 Random.Shared.NextBytes(_peerId.AsSpan(8));
 ```
 

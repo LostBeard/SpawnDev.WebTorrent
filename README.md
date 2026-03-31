@@ -225,9 +225,7 @@ Both demos connect to the same trackers and can P2P with each other.
 | BEP | Title | Desktop | Browser |
 |-----|-------|---------|---------|
 | 3 | BitTorrent Protocol | Yes | Yes |
-| 5 | DHT (Kademlia) | Yes | Via relay |
-| 44 | DHT Storage | Yes | Via relay |
-| 46 | Mutable Items (AI Agents) | Yes | Yes |
+| 5 | DHT (Kademlia) | Yes | Desktop only |
 | 6 | Fast Extension | Yes | Yes |
 | 9 | Magnet Links / ut_metadata | Yes | Yes |
 | 10 | Extension Protocol | Yes | Yes |
@@ -237,6 +235,8 @@ Both demos connect to the same trackers and can P2P with each other.
 | 20 | Peer ID Conventions | Yes | Yes |
 | 23 | Compact Peer Lists | Yes | Yes |
 | 27 | Private Torrents | Yes | Yes |
+| 44 | DHT Storage | Yes | Desktop only |
+| 46 | Mutable Items (AI Agents) | Yes | Yes |
 | 53 | Magnet File Selection | Yes | Yes |
 
 See [Docs/bep-support.md](Docs/bep-support.md) for full details.

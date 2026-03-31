@@ -83,7 +83,6 @@ public class WebSocketTrackerClient : IDiscovery
             Port = port,
         };
 
-        if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[WSTracker] Announce sent: infoHash={msg.InfoHash[..12]}... peerId={msg.PeerId[..12]}...");
         await SendJsonAsync(msg, ct);
     }
 
@@ -195,7 +194,6 @@ public class WebSocketTrackerClient : IDiscovery
 
     private void ProcessMessage(string json)
     {
-        if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[WSTracker] Received: {json[..Math.Min(200, json.Length)]}");
         try
         {
             using var doc = JsonDocument.Parse(json);

@@ -94,6 +94,10 @@ public class ExtensionManager
         return handshake;
     }
 
+    /// <summary>Fired after the remote peer's BEP 10 extension handshake is processed.
+    /// RemoteId and MetadataSize are available when this fires.</summary>
+    public event Action? OnRemoteHandshake;
+
     /// <summary>Process the remote peer's extension handshake.</summary>
     public void ProcessHandshake(Dictionary<string, object> handshake)
     {
@@ -113,6 +117,8 @@ public class ExtensionManager
 
         foreach (var ext in _extensions)
             ext.ProcessHandshakeData(handshake);
+
+        OnRemoteHandshake?.Invoke();
     }
 
     /// <summary>Route an incoming extension message to the correct handler.</summary>

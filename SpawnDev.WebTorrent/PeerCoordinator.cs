@@ -120,10 +120,8 @@ public class PeerCoordinator : IAsyncDisposable
 
         try
         {
-            if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[PeerCoordinator] Connecting to peer: {info.Address[..Math.Min(20, info.Address.Length)]}...");
             using var cts = new CancellationTokenSource(15000);
             var conn = await _webRtc.ConnectAsync(info.Address, cts.Token);
-            if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[PeerCoordinator] Connected! Setting up wire...");
             await SetupPeerAsync(conn);
         }
         catch (OperationCanceledException)
@@ -181,7 +179,6 @@ public class PeerCoordinator : IAsyncDisposable
         };
 
         _peers[peer.PeerId] = peer;
-        if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[PeerCoordinator] SetupPeer complete: {peer.PeerId[..Math.Min(20, peer.PeerId.Length)]}... total={_peers.Count}");
         OnPeerConnected?.Invoke(peer);
         // Message read loop is started by TorrentSwarm.AddConnectedPeerAsync — not here.
         // Having two RunAsync loops on the same wire causes messages to be split randomly.

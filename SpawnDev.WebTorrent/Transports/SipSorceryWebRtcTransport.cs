@@ -133,16 +133,14 @@ public class SipSorceryWebRtcConnection : IConnection
 
         dc.onopen += () =>
         {
-            if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[SipSorcery] DC onopen: label={dc.label}");
             IsConnected = true;
             _openTcs.TrySetResult();
         };
 
-        // If the data channel is already open when we subscribe (SipSorcery can fire
-        // ondatachannel with state=open), trigger immediately
+        // SipSorcery can fire ondatachannel with state already open —
+        // onopen won't fire again, so check immediately
         if (dc.readyState == RTCDataChannelState.open)
         {
-            if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[SipSorcery] DC already open: label={dc.label}");
             IsConnected = true;
             _openTcs.TrySetResult();
         }
@@ -202,11 +200,7 @@ public class SipSorceryWebRtcConnection : IConnection
         _pc = CreatePeerConnection();
 
         // Listen for incoming data channel
-        _pc.ondatachannel += (dc) =>
-        {
-            if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[SipSorcery] ondatachannel: label={dc.label} state={dc.readyState}");
-            SetupDataChannel(dc);
-        };
+        _pc.ondatachannel += (dc) => SetupDataChannel(dc);
 
         // Set remote offer
         var offerDesc = DeserializeDescription(offer);

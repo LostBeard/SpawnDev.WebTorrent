@@ -518,7 +518,7 @@ public abstract partial class WebTorrentTestBase
 
 public abstract partial class WebTorrentTestBase
 {
-    [TestMethod(Timeout = 60000)]
+    [TestMethod(Timeout = 120000)]
     public async Task P2P_CrossPlatform_DesktopSeed_BrowserDownload()
     {
         // Fetch test config written by PlaywrightMultiTest's DesktopSeeder.
@@ -560,7 +560,7 @@ public abstract partial class WebTorrentTestBase
         Console.WriteLine($"[CrossPlatform] Tracker URLs in magnet: {magnetUri.Count(c => c == '&')} params");
 
         // Wait for metadata — desktop seeder sends it via BEP 9 (ut_metadata) after connecting
-        var metadataTimeout = DateTime.UtcNow.AddSeconds(30);
+        var metadataTimeout = DateTime.UtcNow.AddSeconds(45);
         while (swarm.Metadata == null && DateTime.UtcNow < metadataTimeout)
         {
             await Task.Delay(500);

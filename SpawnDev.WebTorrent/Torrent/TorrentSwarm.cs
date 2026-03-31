@@ -560,15 +560,20 @@ public class TorrentSwarm : IAsyncDisposable
                 await wire.SendBitfieldAsync(BoolBitfieldToBytes(_pieceManager.Bitfield));
             }
 
-            // If we don't have metadata, request it from this peer via ut_metadata
+            // If we don't have metadata, request it AFTER RunAsync processes the
+            // remote's BEP 10 handshake (which sets RemoteId and MetadataSize)
             if (Metadata == null)
             {
-                var utMeta = wire.Extensions.Get<Wire.UtMetadataExtension>();
-                if (utMeta != null && utMeta.IsSupported && utMeta.MetadataSize > 0)
-                    utMeta.RequestAllPieces();
+                wire.Extensions.OnRemoteHandshake += () =>
+                {
+                    var utMeta = wire.Extensions.Get<Wire.UtMetadataExtension>();
+                    if (utMeta != null && utMeta.IsSupported && utMeta.MetadataSize > 0)
+                        utMeta.RequestAllPieces();
+                };
             }
 
-            // Run the message read loop in background
+            // Start message read loop — processes buffered BEP 10 handshake,
+            // which triggers OnRemoteHandshake → ut_metadata request
             _ = RunPeerAsync(peer);
         }
         finally

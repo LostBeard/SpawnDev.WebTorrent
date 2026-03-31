@@ -578,3 +578,103 @@ internal class MockLoopbackConnection : SpawnDev.WebTorrent.Transports.IConnecti
         _dataAvailable.Dispose();
     }
 }
+
+// ═══════════════════════════════════════════════════════════
+//  Real WebRTC P2P — Two Clients, Real Tracker, Real Data
+// ═══════════════════════════════════════════════════════════
+
+public abstract partial class WebTorrentTestBase
+{
+    [TestMethod(Timeout = 60000)]
+    public async Task P2P_RealWebRTC_SeedAndDownload_ViaTracker()
+    {
+        if (!OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("WebRTC requires browser");
+
+        // ── Create test data ──
+        var data = new byte[32768]; // 2 pieces at 16KB
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)((i * 7 + 13) % 256);
+
+        var trackerUrl = "wss://hub.spawndev.com:44365/announce";
+
+        // ── Seeder: create torrent and seed ──
+        var seeder = new WebTorrentClient();
+        var seederSwarm = await seeder.SeedAsync(data, "p2p-test.bin",
+            new TorrentCreatorOptions
+            {
+                PieceLength = 16384,
+                Trackers = new[] { trackerUrl },
+                HashAlgorithm = "SHA-256",
+            });
+
+        var infoHash = seederSwarm.InfoHash;
+        var magnetUri = seederSwarm.MagnetURI;
+        Console.WriteLine($"[P2P Test] Seeder: hash={seederSwarm.InfoHashHex}, magnet={magnetUri}");
+        Console.WriteLine($"[P2P Test] Seeder: {seederSwarm.PieceManager?.CompletedCount}/{seederSwarm.Metadata?.PieceCount} pieces");
+
+        // ── Downloader: add by magnet, use MemoryChunkStore (no OPFS conflict) ──
+        var downloader = new WebTorrentClient();
+        TorrentSwarm? dlSwarm = null;
+
+        try
+        {
+            // Parse the torrent bytes to get metadata (so downloader doesn't need peer metadata exchange)
+            var metadata = seederSwarm.Metadata!;
+            dlSwarm = await downloader.AddAsync(metadata, new AddTorrentOptions
+            {
+                StoreFactory = (pieceLen) => new MemoryChunkStore(pieceLen),
+            });
+
+            Console.WriteLine($"[P2P Test] Downloader: added, {dlSwarm.Files.Length} files, starting download");
+
+            // Start download
+            dlSwarm.StartDownload();
+
+            // Wait for completion
+            var done = new TaskCompletionSource<bool>();
+            using var cts = new CancellationTokenSource(45000);
+
+            if (dlSwarm.Done)
+                done.TrySetResult(true);
+            else
+                dlSwarm.OnDone += () => done.TrySetResult(true);
+            cts.Token.Register(() => done.TrySetResult(false));
+
+            // Log progress
+            dlSwarm.OnPieceVerified += (idx) =>
+                Console.WriteLine($"[P2P Test] Downloader piece {idx} verified, progress={dlSwarm.Progress:P0}");
+
+            var completed = await done.Task;
+
+            Console.WriteLine($"[P2P Test] Downloader: completed={completed}, peers={dlSwarm.PeerCount}, " +
+                $"pieces={dlSwarm.PieceManager?.CompletedCount}/{metadata.PieceCount}");
+
+            if (!completed)
+            {
+                // Log why it failed
+                throw new Exception($"P2P download timed out. Progress: {dlSwarm.Progress:P0}, " +
+                    $"peers: {dlSwarm.PeerCount}, " +
+                    $"pieces: {dlSwarm.PieceManager?.CompletedCount ?? 0}/{metadata.PieceCount}");
+            }
+
+            // Verify downloaded data
+            var downloadedData = await dlSwarm.Files[0].GetArrayBufferAsync();
+            if (downloadedData.Length != data.Length)
+                throw new Exception($"Size mismatch: {downloadedData.Length} vs {data.Length}");
+
+            for (int i = 0; i < data.Length; i++)
+            {
+                if (downloadedData[i] != data[i])
+                    throw new Exception($"Data mismatch at byte {i}");
+            }
+
+            Console.WriteLine($"[P2P Test] SUCCESS: {data.Length} bytes transferred via real WebRTC P2P, verified byte-for-byte");
+        }
+        finally
+        {
+            if (dlSwarm != null)
+                await downloader.RemoveAsync(dlSwarm, destroyStore: true);
+            await seeder.RemoveAsync(seederSwarm, destroyStore: true);
+        }
+    }
+}

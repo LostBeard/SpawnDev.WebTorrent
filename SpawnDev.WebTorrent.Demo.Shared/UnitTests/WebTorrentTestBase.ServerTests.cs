@@ -84,7 +84,7 @@ public abstract partial class WebTorrentTestBase
     public async Task TrackerClient_CreateWithPeerId()
     {
         var peerId = new byte[20];
-        "-SD0100-"u8.CopyTo(peerId);
+        "-SD0210-"u8.CopyTo(peerId);
         Random.Shared.NextBytes(peerId.AsSpan(8));
 
         var client = new WebSocketTrackerClient("wss://tracker.example.com/announce", peerId);

@@ -142,7 +142,7 @@ public abstract partial class WebTorrentTestBase
     {
         var meta = TorrentParser.ParseMagnet(CCMagnets["Big Buck Bunny"]);
         var peerId = new byte[20];
-        "-SD0100-"u8.CopyTo(peerId);
+        "-SD0210-"u8.CopyTo(peerId);
         Random.Shared.NextBytes(peerId.AsSpan(8));
 
         // Try connecting to public WebSocket trackers
@@ -211,7 +211,7 @@ public abstract partial class WebTorrentTestBase
     {
         var meta = TorrentParser.ParseMagnet(CCMagnets["Sintel"]);
         var peerId = new byte[20];
-        "-SD0100-"u8.CopyTo(peerId);
+        "-SD0210-"u8.CopyTo(peerId);
         Random.Shared.NextBytes(peerId.AsSpan(8));
 
         string? connectedTracker = null;
@@ -262,7 +262,7 @@ public abstract partial class WebTorrentTestBase
     {
         var meta = TorrentParser.ParseMagnet(CCMagnets["Big Buck Bunny"]);
         var peerId = new byte[20];
-        "-SD0100-"u8.CopyTo(peerId);
+        "-SD0210-"u8.CopyTo(peerId);
         Random.Shared.NextBytes(peerId.AsSpan(8));
 
         var peersFound = new List<string>();

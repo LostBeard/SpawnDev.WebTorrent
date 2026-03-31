@@ -257,7 +257,7 @@ public abstract partial class WebTorrentTestBase
         if (peerId.Length != 20) throw new Exception($"Peer ID should be 20 bytes, got {peerId.Length}");
         var prefix = System.Text.Encoding.ASCII.GetString(peerId, 0, 8);
         if (prefix != "-SD0210-")
-            throw new Exception($"Peer ID prefix should be '-SD0100-', got '{prefix}'");
+            throw new Exception($"Peer ID prefix should be '-SD0210-', got '{prefix}'");
 
         await client.DisposeAsync();
     }

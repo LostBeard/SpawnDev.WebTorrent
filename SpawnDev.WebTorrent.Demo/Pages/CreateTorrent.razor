@@ -1,4 +1,3 @@
-@page "/create"
 @using SpawnDev.WebTorrent
 @using SpawnDev.WebTorrent.Torrent
 @using SpawnDev.BlazorJS
@@ -6,16 +5,18 @@
 @inject BlazorJSRuntime JS
 @inject WebTorrentClient Client
 
-<PageTitle>Create Torrent — SpawnDev.WebTorrent</PageTitle>
-
-<div class="qb">
-    <div class="qb-toolbar">
-        <h2 style="margin:0;padding:8px 16px;color:#e2e8f0;">Create Torrent</h2>
+@if (Visible)
+{
+<div class="modal-overlay" @onclick="Close" @onclick:stopPropagation>
+<div class="modal-content" @onclick:stopPropagation style="max-width:800px;width:90vw;max-height:85vh;overflow-y:auto;">
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #334155;">
+        <h3 style="margin:0;color:#e2e8f0;">Create Torrent</h3>
+        <button class="qb-btn-sm" @onclick="Close" style="font-size:1.2rem;">✕</button>
     </div>
 
     <div style="display:flex;gap:16px;padding:16px;flex-wrap:wrap;">
         @* ═══ Left: File List ═══ *@
-        <div style="flex:1;min-width:350px;">
+        <div style="flex:1;min-width:300px;">
             <div class="qb-panel">
                 <div class="qb-panel-header">
                     <span>Files (@_files.Count)</span>
@@ -24,20 +25,20 @@
 
                 @if (_files.Count == 0)
                 {
-                    <div style="padding:32px;text-align:center;color:#64748b;">
+                    <div style="padding:24px;text-align:center;color:#64748b;">
                         <p>No files added yet.</p>
-                        <p style="font-size:0.85rem;">Add files or folders below, or paste a URL to download.</p>
+                        <p style="font-size:0.85rem;">Add files or folders, or paste a URL.</p>
                     </div>
                 }
                 else
                 {
-                    <div style="max-height:400px;overflow-y:auto;">
+                    <div style="max-height:300px;overflow-y:auto;">
                         <table class="qb-table" style="width:100%;">
                             <thead>
                                 <tr>
-                                    <th style="width:60%;">Name</th>
-                                    <th style="width:25%;">Size</th>
-                                    <th style="width:15%;text-align:center;">Remove</th>
+                                    <th style="width:55%;">Name</th>
+                                    <th style="width:20%;">Size</th>
+                                    <th style="width:25%;">Path</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -45,10 +46,11 @@
                                 {
                                     var f = file;
                                     <tr>
-                                        <td title="@f.Path" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:300px;">@f.Name</td>
+                                        <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px;" title="@f.Name">@f.Name</td>
                                         <td>@FormatSize(f.Size)</td>
-                                        <td style="text-align:center;">
-                                            <button class="qb-btn-sm" @onclick="() => RemoveFile(f)" title="Remove">✕</button>
+                                        <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px;color:#94a3b8;font-size:0.85rem;" title="@f.Path">
+                                            @f.Path
+                                            <button class="qb-btn-sm" style="float:right;" @onclick="() => RemoveFile(f)" title="Remove">✕</button>
                                         </td>
                                     </tr>
                                 }
@@ -85,13 +87,13 @@
         </div>
 
         @* ═══ Right: Options ═══ *@
-        <div style="flex:0 0 320px;min-width:280px;">
+        <div style="flex:0 0 280px;min-width:240px;">
             <div class="qb-panel">
                 <div class="qb-panel-header">Options</div>
-                <div style="padding:12px;display:flex;flex-direction:column;gap:12px;">
+                <div style="padding:12px;display:flex;flex-direction:column;gap:10px;">
                     <div>
                         <label class="qb-label">Torrent Name</label>
-                        <input type="text" class="qb-input" placeholder="@(_files.Count > 0 ? _files[0].Name : "auto from files")"
+                        <input type="text" class="qb-input" placeholder="@(_files.Count > 0 ? _files[0].Name : "auto")"
                                @bind="_options.Name" />
                     </div>
                     <div>
@@ -100,7 +102,7 @@
                     </div>
                     <div>
                         <label class="qb-label">Trackers (one per line)</label>
-                        <textarea class="qb-input" rows="3" placeholder="wss://hub.spawndev.com:44365/announce"
+                        <textarea class="qb-input" rows="2" placeholder="wss://hub.spawndev.com:44365/announce"
                                   @bind="_trackers"></textarea>
                     </div>
                     <div>
@@ -111,7 +113,7 @@
                         <label class="qb-label">Hash Algorithm</label>
                         <select class="qb-input" @bind="_options.HashAlgorithm">
                             <option value="SHA-256">SHA-256 (recommended)</option>
-                            <option value="SHA-1">SHA-1 (legacy compatibility)</option>
+                            <option value="SHA-1">SHA-1 (legacy)</option>
                         </select>
                     </div>
                     <div style="display:flex;gap:16px;">
@@ -124,34 +126,29 @@
                     </div>
                 </div>
             </div>
-
-            @* ═══ Create Button ═══ *@
-            <div style="margin-top:12px;">
-                <button class="qb-btn qb-btn-accent" style="width:100%;padding:12px;font-size:1.1rem;"
-                        @onclick="OnCreateTorrent" disabled="@(_files.Count == 0 || _creating)">
-                    @if (_creating)
-                    {
-                        <span>Creating... @_createProgress</span>
-                    }
-                    else
-                    {
-                        <span>Create Torrent</span>
-                    }
-                </button>
-            </div>
-
-            @if (!string.IsNullOrEmpty(_statusMessage))
-            {
-                <div style="margin-top:8px;padding:8px 12px;border-radius:6px;font-size:0.85rem;
-                            background:@(_statusIsError ? "#7f1d1d" : "#14532d");color:@(_statusIsError ? "#fca5a5" : "#86efac");">
-                    @_statusMessage
-                </div>
-            }
         </div>
     </div>
+
+    @* ═══ Footer ═══ *@
+    <div style="padding:12px 16px;border-top:1px solid #334155;display:flex;gap:8px;justify-content:flex-end;align-items:center;">
+        @if (!string.IsNullOrEmpty(_statusMessage))
+        {
+            <span style="flex:1;font-size:0.85rem;color:@(_statusIsError ? "#fca5a5" : "#86efac");">@_statusMessage</span>
+        }
+        <button class="qb-btn" @onclick="Close">Cancel</button>
+        <button class="qb-btn qb-btn-accent" style="padding:8px 24px;"
+                @onclick="OnCreateTorrent" disabled="@(_files.Count == 0 || _creating)">
+            @(_creating ? $"Creating... {_createProgress}" : "Create Torrent")
+        </button>
+    </div>
 </div>
+</div>
+}
 
 @code {
+    [Parameter] public bool Visible { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
     // ═══ State ═══
     private List<FileEntry> _files = new();
     private TorrentCreatorOptions _options = new()
@@ -172,14 +169,12 @@
     private bool _statusIsError;
     private bool _showDirectoryPickerSupported;
 
-    // ═══ File Entry ═══
     private class FileEntry
     {
         public string Name { get; set; } = "";
         public string Path { get; set; } = "";
         public long Size { get; set; }
         public byte[]? Data { get; set; }
-        public FileSystemFileHandle? Handle { get; set; }
     }
 
     protected override void OnInitialized()
@@ -188,7 +183,14 @@
         _showDirectoryPickerSupported = window.ShowDirectoryPickerSupported();
     }
 
-    // ═══ Add Files ═══
+    private async Task Close()
+    {
+        _files.Clear();
+        _statusMessage = "";
+        _creating = false;
+        await OnClose.InvokeAsync();
+    }
+
     private async Task AddFiles()
     {
         try
@@ -201,24 +203,17 @@
                 using var handle = handles[i];
                 using var file = await handle.GetFile();
                 var data = await ReadFileToBytes(file);
-                _files.Add(new FileEntry
-                {
-                    Name = file.Name,
-                    Path = file.Name,
-                    Size = data.Length,
-                    Data = data,
-                });
+                _files.Add(new FileEntry { Name = file.Name, Path = file.Name, Size = data.Length, Data = data });
             }
             StateHasChanged();
         }
         catch (Exception ex)
         {
-            if (!ex.Message.Contains("aborted")) // user cancelled
+            if (!ex.Message.Contains("aborted"))
                 SetStatus($"Error: {ex.Message}", true);
         }
     }
 
-    // ═══ Add Folder ═══
     private async Task AddFolder()
     {
         try
@@ -226,8 +221,7 @@
             using var window = JS.Get<Window>("window");
             using var dirHandle = await window.ShowDirectoryPicker();
             if (dirHandle == null) return;
-            var dirName = dirHandle.Name;
-            await AddFilesFromDirectory(dirHandle, dirName);
+            await AddFilesFromDirectory(dirHandle, dirHandle.Name);
             StateHasChanged();
         }
         catch (Exception ex)
@@ -246,13 +240,7 @@
                 using var fileHandle = entry.ToFileSystemFileHandle();
                 using var file = await fileHandle.GetFile();
                 var data = await ReadFileToBytes(file);
-                _files.Add(new FileEntry
-                {
-                    Name = file.Name,
-                    Path = $"{basePath}/{file.Name}",
-                    Size = data.Length,
-                    Data = data,
-                });
+                _files.Add(new FileEntry { Name = file.Name, Path = $"{basePath}/{file.Name}", Size = data.Length, Data = data });
             }
             else if (entry.Kind == "directory")
             {
@@ -263,74 +251,37 @@
         }
     }
 
-    // ═══ Add from URL ═══
     private async Task AddFromUrl()
     {
         if (string.IsNullOrWhiteSpace(_urlInput)) return;
         _downloading = true;
         _statusMessage = "";
         StateHasChanged();
-
         try
         {
             using var http = new HttpClient();
             using var response = await http.GetAsync(_urlInput, HttpCompletionOption.ResponseHeadersRead);
             response.EnsureSuccessStatusCode();
-
             var data = await response.Content.ReadAsByteArrayAsync();
             var uri = new Uri(_urlInput);
             var name = Uri.UnescapeDataString(uri.Segments.LastOrDefault()?.TrimEnd('/') ?? "download.bin");
-
-            _files.Add(new FileEntry
-            {
-                Name = name,
-                Path = name,
-                Size = data.Length,
-                Data = data,
-            });
-
-            // Add source URL as web seed
+            _files.Add(new FileEntry { Name = name, Path = name, Size = data.Length, Data = data });
             var basePath = string.Join("/", uri.Segments.Take(uri.Segments.Length - 1));
             var baseUrl = $"{uri.Scheme}://{uri.Authority}{basePath}".TrimEnd('/');
-            if (!string.IsNullOrWhiteSpace(_webSeeds) && !_webSeeds.EndsWith("\n"))
-                _webSeeds += "\n";
-            if (!_webSeeds.Contains(baseUrl))
-                _webSeeds += baseUrl;
-
+            if (!string.IsNullOrWhiteSpace(_webSeeds) && !_webSeeds.EndsWith("\n")) _webSeeds += "\n";
+            if (!_webSeeds.Contains(baseUrl)) _webSeeds += baseUrl;
             SetStatus($"Downloaded {name} ({FormatSize(data.Length)})", false);
             _urlInput = "";
             _showUrlInput = false;
         }
-        catch (Exception ex)
-        {
-            SetStatus($"Download failed: {ex.Message}", true);
-        }
-        finally
-        {
-            _downloading = false;
-            StateHasChanged();
-        }
+        catch (Exception ex) { SetStatus($"Download failed: {ex.Message}", true); }
+        finally { _downloading = false; StateHasChanged(); }
     }
 
-    private async Task OnUrlKeyDown(KeyboardEventArgs e)
-    {
-        if (e.Key == "Enter") await AddFromUrl();
-    }
+    private async Task OnUrlKeyDown(KeyboardEventArgs e) { if (e.Key == "Enter") await AddFromUrl(); }
+    private void RemoveFile(FileEntry file) { _files.Remove(file); StateHasChanged(); }
+    private void ClearFiles() { _files.Clear(); StateHasChanged(); }
 
-    // ═══ Remove / Clear ═══
-    private void RemoveFile(FileEntry file)
-    {
-        _files.Remove(file);
-        StateHasChanged();
-    }
-
-    private void ClearFiles()
-    {
-        _files.Clear();
-        StateHasChanged();
-    }
-
-    // ═══ Create Torrent ═══
     private async Task OnCreateTorrent()
     {
         if (_files.Count == 0) return;
@@ -338,103 +289,61 @@
         _createProgress = "preparing...";
         _statusMessage = "";
         StateHasChanged();
-
         try
         {
-            // Build options
             var trackerList = _trackers.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Where(t => !string.IsNullOrWhiteSpace(t)).ToArray();
             var webSeedList = _webSeeds.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Where(w => !string.IsNullOrWhiteSpace(w)).ToArray();
-
             _options.Trackers = trackerList.Length > 0 ? trackerList : new[] { "wss://hub.spawndev.com:44365/announce" };
             _options.WebSeeds = webSeedList;
             _options.IsPrivate = _private;
 
             if (_files.Count == 1)
             {
-                // Single file torrent
                 var file = _files[0];
-                if (string.IsNullOrWhiteSpace(_options.Name))
-                    _options.Name = file.Name;
-
+                if (string.IsNullOrWhiteSpace(_options.Name)) _options.Name = file.Name;
                 _createProgress = "hashing pieces...";
                 StateHasChanged();
-
-                var (torrentBytes, metadata) = TorrentCreator.CreateFromBytes(
-                    _options.Name, file.Data!, _options);
-
-                _createProgress = "seeding...";
-                StateHasChanged();
-
-                if (_startSeeding)
-                {
-                    var swarm = await Client.SeedAsync(file.Data!, _options.Name, _options);
-                    SetStatus($"Created and seeding: {metadata.Name} ({FormatSize(metadata.TotalLength)}, {metadata.PieceCount} pieces, {metadata.PieceHashAlgorithm})", false);
-                }
-                else
-                {
-                    SetStatus($"Created: {metadata.Name} ({FormatSize(metadata.TotalLength)}, {metadata.PieceCount} pieces, {metadata.PieceHashAlgorithm})", false);
-                }
-            }
-            else
-            {
-                // Multi-file torrent with directory structure
-                var torrentName = string.IsNullOrWhiteSpace(_options.Name)
-                    ? System.IO.Path.GetDirectoryName(_files[0].Path)?.Split('/', '\\').FirstOrDefault() ?? "torrent"
-                    : _options.Name;
-
-                var multiFiles = _files.Select(f => (f.Path, f.Data!)).ToArray();
-
-                _createProgress = "hashing pieces...";
-                StateHasChanged();
-
-                var (torrentBytes, metadata) = TorrentCreator.CreateFromMultipleFiles(
-                    torrentName, multiFiles, _options);
-
+                var (torrentBytes, metadata) = TorrentCreator.CreateFromBytes(_options.Name, file.Data!, _options);
                 if (_startSeeding)
                 {
                     _createProgress = "seeding...";
                     StateHasChanged();
-
-                    // Concatenate for seeding (SeedAsync needs flat byte array)
-                    var totalSize = _files.Sum(f => f.Size);
-                    var combined = new byte[totalSize];
+                    await Client.SeedAsync(file.Data!, _options.Name, _options);
+                }
+                SetStatus($"Created: {metadata.Name} ({FormatSize(metadata.TotalLength)}, {metadata.PieceCount} pieces, {metadata.PieceHashAlgorithm})", false);
+            }
+            else
+            {
+                var torrentName = string.IsNullOrWhiteSpace(_options.Name)
+                    ? System.IO.Path.GetDirectoryName(_files[0].Path)?.Split('/', '\\').FirstOrDefault() ?? "torrent"
+                    : _options.Name;
+                _createProgress = "hashing pieces...";
+                StateHasChanged();
+                var (torrentBytes, metadata) = TorrentCreator.CreateFromMultipleFiles(
+                    torrentName, _files.Select(f => (f.Path, f.Data!)).ToArray(), _options);
+                if (_startSeeding)
+                {
+                    _createProgress = "seeding...";
+                    StateHasChanged();
+                    var combined = new byte[_files.Sum(f => f.Size)];
                     int offset = 0;
                     foreach (var f in _files)
-                    {
-                        System.Array.Copy(f.Data!, 0, combined, offset, f.Data!.Length);
-                        offset += f.Data!.Length;
-                    }
-                    var swarm = await Client.SeedAsync(combined, torrentName, _options);
-                    SetStatus($"Created and seeding: {metadata.Name} ({FormatSize(metadata.TotalLength)}, {metadata.PieceCount} pieces, {metadata.Files.Length} files)", false);
+                    { System.Array.Copy(f.Data!, 0, combined, offset, f.Data!.Length); offset += f.Data!.Length; }
+                    await Client.SeedAsync(combined, torrentName, _options);
                 }
-                else
-                {
-                    SetStatus($"Created: {metadata.Name} ({FormatSize(metadata.TotalLength)}, {metadata.PieceCount} pieces, {metadata.Files.Length} files)", false);
-                }
+                SetStatus($"Created: {metadata.Name} ({FormatSize(metadata.TotalLength)}, {metadata.PieceCount} pieces, {metadata.Files.Length} files)", false);
             }
-
             _files.Clear();
+            await Task.Delay(1500);
+            await Close();
         }
-        catch (Exception ex)
-        {
-            SetStatus($"Create failed: {ex.Message}", true);
-        }
-        finally
-        {
-            _creating = false;
-            _createProgress = "";
-            StateHasChanged();
-        }
+        catch (Exception ex) { SetStatus($"Create failed: {ex.Message}", true); }
+        finally { _creating = false; _createProgress = ""; StateHasChanged(); }
     }
 
-    // ═══ Helpers ═══
-    private void SetStatus(string msg, bool isError)
-    {
-        _statusMessage = msg;
-        _statusIsError = isError;
-    }
+    private void SetStatus(string msg, bool isError) { _statusMessage = msg; _statusIsError = isError; }
 
     private async Task<byte[]> ReadFileToBytes(File file)
     {
@@ -446,13 +355,27 @@
     private static string FormatSize(long bytes)
     {
         string[] sizes = { "B", "KB", "MB", "GB", "TB" };
-        double len = bytes;
-        int order = 0;
-        while (len >= 1024 && order < sizes.Length - 1)
-        {
-            order++;
-            len /= 1024;
-        }
+        double len = bytes; int order = 0;
+        while (len >= 1024 && order < sizes.Length - 1) { order++; len /= 1024; }
         return $"{len:0.##} {sizes[order]}";
     }
 }
+
+<style>
+    .modal-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.6);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+        backdrop-filter: blur(2px);
+    }
+    .modal-content {
+        background: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 8px;
+        box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    }
+</style>

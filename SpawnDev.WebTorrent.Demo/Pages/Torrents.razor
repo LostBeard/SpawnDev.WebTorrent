@@ -42,6 +42,7 @@
                     Open .torrent
                     <InputFile OnChange="OpenTorrentFile" accept=".torrent" style="display:none" />
                 </label>
+                <button class="qb-chip" style="border-color:#10b981;color:#10b981" @onclick="() => _showCreateTorrent = true" title="Create a new torrent">Create Torrent</button>
             </div>
         </div>
         <div class="qb-toolbar-actions">
@@ -439,9 +440,12 @@
     }
 </div>
 
+<CreateTorrent Visible="_showCreateTorrent" OnClose="() => _showCreateTorrent = false" />
+
 @code {
     // ── State ──
     private string _magnetInput = "";
+    private bool _showCreateTorrent;
     private readonly List<string> _logMessages = new();
     private WebTorrentClient? _client;
     private IAsyncFS? _asyncFs => AsyncFS;

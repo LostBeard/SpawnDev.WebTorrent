@@ -7,14 +7,18 @@ namespace SpawnDev.WebTorrent;
 
 /// <summary>
 /// Coordinates peer discovery, WebRTC signaling, and connection establishment.
-/// Ties the tracker client to the WebRTC transport, handling the full flow:
-///   1. Tracker discovers peers
-///   2. WebRTC offers/answers relay through tracker
-///   3. Data channels open
-///   4. Wire protocol handshake
-///   5. Peer added to torrent swarm
 ///
-/// This is the "glue" that makes P2P work in the browser.
+/// Implements the WebTorrent tracker protocol: offers are pre-generated and sent
+/// WITH the announce message. The tracker distributes them to existing peers,
+/// who create answers and send them back. No "discover peer → create offer" race.
+///
+/// Flow:
+///   1. Pre-generate N WebRTC offers (RTCPeerConnection + data channel + SDP)
+///   2. Send offers WITH tracker announce
+///   3. Tracker relays offers to existing peers in the swarm
+///   4. Existing peers create answers, send back via tracker
+///   5. We receive answers, match by offerId, complete ICE → data channel opens
+///   6. Wire protocol handshake, peer added to swarm
 /// </summary>
 public class PeerCoordinator : IAsyncDisposable
 {
@@ -22,8 +26,11 @@ public class PeerCoordinator : IAsyncDisposable
     private readonly IWebRtcTransport _webRtc;
     private readonly List<WebSocketTrackerClient> _trackers = new();
     private readonly ConcurrentDictionary<string, ConnectedPeer> _peers = new();
+    private readonly ConcurrentDictionary<string, IConnection> _pendingOffers = new();
     private readonly byte[] _infoHash;
     private readonly List<Func<Torrent.TorrentSwarm, WireProtocol, WireExtension>> _extensionFactories = new();
+
+    private const int OffersPerAnnounce = 5;
 
     public int PeerCount => _peers.Count;
 
@@ -40,24 +47,6 @@ public class PeerCoordinator : IAsyncDisposable
         _client = client;
         _infoHash = infoHash;
         _webRtc = webRtc;
-
-        // Wire up WebRTC offer creation → send via tracker
-        _webRtc.OnOfferCreated += async (peerId, offer) =>
-        {
-            try
-            {
-                foreach (var tracker in _trackers)
-                {
-                    var offerJson = System.Text.Json.JsonSerializer.SerializeToElement(offer);
-                    await tracker.SendOfferAsync(peerId, offerJson,
-                        Guid.NewGuid().ToString("N"));
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[PeerCoordinator] SendOffer failed: {ex.GetType().Name}: {ex.Message}");
-            }
-        };
     }
 
     /// <summary>Add a tracker and start discovering peers.</summary>
@@ -65,22 +54,20 @@ public class PeerCoordinator : IAsyncDisposable
     {
         var tracker = new WebSocketTrackerClient(trackerUrl, _client.PeerId);
 
-        tracker.OnPeer += HandleNewPeer;
-        tracker.OnAnnounceResponse += (s, l) =>
-        {
-            OnSwarmUpdate?.Invoke(s, l);
-        };
+        tracker.OnAnnounceResponse += (s, l) => OnSwarmUpdate?.Invoke(s, l);
 
         // Handle incoming WebRTC offers relayed by the tracker
+        // (from other peers who sent offers with THEIR announce)
         tracker.OnOffer += async (fromPeerId, offerId, offer) =>
         {
             try
             {
-                var (conn, answer) = await _webRtc.HandleOfferAsync(fromPeerId, offer);
-                var answerJson = System.Text.Json.JsonSerializer.SerializeToElement(answer);
+                var (conn, answerSdp) = await _webRtc.HandleOfferAsync(fromPeerId, offer);
+                var answerJson = System.Text.Json.JsonSerializer.SerializeToElement(
+                    new { type = answerSdp.Type, sdp = answerSdp.Sdp });
                 await tracker.SendAnswerAsync(fromPeerId, answerJson, offerId);
 
-                // Wait for the data channel to open (initiator processes our answer → ICE → open)
+                // Wait for the data channel to open
                 using var openCts = new CancellationTokenSource(15000);
                 if (conn is WebRtcConnection webRtcConn)
                     await webRtcConn.WaitForOpenAsync(openCts.Token);
@@ -91,17 +78,34 @@ public class PeerCoordinator : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                OnPeerDisconnected?.Invoke(new ConnectedPeer { PeerId = fromPeerId });
                 Console.WriteLine($"[PeerCoordinator] Offer handling failed: {ex.GetType().Name}: {ex.Message}");
             }
         };
 
-        // Handle incoming WebRTC answers relayed by the tracker
+        // Handle incoming WebRTC answers for our pre-generated offers
         tracker.OnAnswer += async (fromPeerId, offerId, answer) =>
         {
             try
             {
-                await _webRtc.HandleAnswerAsync(fromPeerId, answer);
+                var conn = await _webRtc.HandleAnswerByOfferIdAsync(offerId, answer);
+                if (conn == null)
+                {
+                    // Fallback: try matching by peerId (legacy)
+                    await _webRtc.HandleAnswerAsync(fromPeerId, answer);
+                    return;
+                }
+
+                // Remove from pending
+                _pendingOffers.TryRemove(offerId, out _);
+
+                // Wait for data channel to open
+                using var openCts = new CancellationTokenSource(15000);
+                if (conn is WebRtcConnection webRtcConn)
+                    await webRtcConn.WaitForOpenAsync(openCts.Token);
+                else if (conn is SipSorceryWebRtcConnection sipConn)
+                    await sipConn.WaitForOpenAsync(openCts.Token);
+
+                await SetupPeerAsync(conn);
             }
             catch (Exception ex)
             {
@@ -110,41 +114,44 @@ public class PeerCoordinator : IAsyncDisposable
         };
 
         _trackers.Add(tracker);
+
+        // Pre-generate offers and announce with them
+        var offers = await GenerateOffersAsync(OffersPerAnnounce, ct);
         await tracker.StartAsync(_infoHash, 0, ct);
+
+        // Re-announce with fresh offers (StartAsync sends the first announce without offers,
+        // so send a second announce immediately with offers)
+        if (offers.Length > 0)
+            await tracker.AnnounceAsync(_infoHash, 0, 0, 0, 0, offers, ct);
     }
 
-    private async void HandleNewPeer(PeerInfo info)
+    /// <summary>
+    /// Pre-generate N WebRTC offers for sending with tracker announce.
+    /// Each offer is a fully formed RTCPeerConnection with data channel and SDP.
+    /// </summary>
+    private async Task<object[]> GenerateOffersAsync(int count, CancellationToken ct = default)
     {
-        if (_peers.ContainsKey(info.Address)) return; // already connected
-        if (_peers.Count >= 55) return; // max peers
+        var offers = new List<object>();
+        for (int i = 0; i < count; i++)
+        {
+            try
+            {
+                var offerId = Guid.NewGuid().ToString("N");
+                var (sdp, conn) = await _webRtc.CreateOfferAsync(offerId, ct);
+                _pendingOffers[offerId] = conn;
 
-        // Polite/impolite pattern: resolve WebRTC offer collisions.
-        // When both peers discover each other simultaneously via the tracker,
-        // both would create offers, causing "Called in wrong state: stable" errors.
-        // Solution: only the peer with the higher peer ID initiates the connection.
-        // The other peer waits for the incoming offer via OnOffer.
-        var ourId = Convert.ToHexString(_client.PeerId);
-        var theirId = info.Address.Length >= 40 ? info.Address[..40] : info.Address;
-        if (string.Compare(ourId, theirId, StringComparison.OrdinalIgnoreCase) < 0)
-        {
-            // We're the "polite" peer — don't initiate, wait for their offer
-            return;
+                offers.Add(new
+                {
+                    offer = new { type = sdp.Type, sdp = sdp.Sdp },
+                    offer_id = offerId,
+                });
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[PeerCoordinator] Generate offer {i} failed: {ex.GetType().Name}: {ex.Message}");
+            }
         }
-
-        try
-        {
-            using var cts = new CancellationTokenSource(15000);
-            var conn = await _webRtc.ConnectAsync(info.Address, cts.Token);
-            await SetupPeerAsync(conn);
-        }
-        catch (OperationCanceledException)
-        {
-            Console.WriteLine($"[PeerCoordinator] Connect to {info.Address[..Math.Min(20, info.Address.Length)]}... timed out (15s)");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[PeerCoordinator] Connect to {info.Address[..Math.Min(20, info.Address.Length)]}... failed: {ex.GetType().Name}: {ex.Message}");
-        }
+        return offers.ToArray();
     }
 
     /// <summary>Register a wire extension factory. Extensions are created for every new peer BEFORE the BEP 10 handshake.</summary>
@@ -193,15 +200,14 @@ public class PeerCoordinator : IAsyncDisposable
 
         _peers[peer.PeerId] = peer;
         OnPeerConnected?.Invoke(peer);
-        // Message read loop is started by TorrentSwarm.AddConnectedPeerAsync — not here.
-        // Having two RunAsync loops on the same wire causes messages to be split randomly.
     }
 
-    /// <summary>Re-announce to all trackers (periodic or after state change).</summary>
+    /// <summary>Re-announce to all trackers with fresh offers.</summary>
     public async Task ReannounceAsync(long uploaded, long downloaded, long left)
     {
+        var offers = await GenerateOffersAsync(OffersPerAnnounce);
         foreach (var tracker in _trackers.ToArray())
-            await tracker.AnnounceAsync(_infoHash, 0, uploaded, downloaded, left);
+            await tracker.AnnounceAsync(_infoHash, 0, uploaded, downloaded, left, offers);
     }
 
     public async ValueTask DisposeAsync()
@@ -213,6 +219,10 @@ public class PeerCoordinator : IAsyncDisposable
         foreach (var peer in _peers.Values.ToArray())
             await peer.Wire.DisposeAsync();
         _peers.Clear();
+
+        foreach (var conn in _pendingOffers.Values.ToArray())
+            await conn.DisposeAsync();
+        _pendingOffers.Clear();
 
         await _webRtc.DisposeAsync();
     }

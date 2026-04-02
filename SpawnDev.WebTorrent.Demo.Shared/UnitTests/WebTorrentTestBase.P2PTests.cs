@@ -396,9 +396,12 @@ public abstract partial class WebTorrentTestBase
         {
             try
             {
-                var (conn, answer) = await responderTransport.HandleOfferAsync("initiator", offer);
+                var offerJson = System.Text.Json.JsonSerializer.SerializeToElement(offer);
+                var (conn, answerSdp) = await responderTransport.HandleOfferAsync("initiator", offerJson);
                 responderConn = conn;
-                await initiatorTransport.HandleAnswerAsync(peerId, answer);
+                var answerJson = System.Text.Json.JsonSerializer.SerializeToElement(
+                    new { type = answerSdp.Type, sdp = answerSdp.Sdp });
+                await initiatorTransport.HandleAnswerAsync(peerId, answerJson);
                 offerReceived.TrySetResult();
             }
             catch (Exception ex) { offerReceived.TrySetException(ex); }

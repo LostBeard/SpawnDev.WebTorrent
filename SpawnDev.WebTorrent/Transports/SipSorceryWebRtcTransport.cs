@@ -48,24 +48,38 @@ public class SipSorceryWebRtcTransport : IWebRtcTransport
         return conn;
     }
 
-    public async Task<(IConnection connection, object answer)> HandleOfferAsync(
-        string fromPeerId, object offer, CancellationToken ct = default)
+    public async Task<(IConnection connection, SdpMessage answer)> HandleOfferAsync(
+        string fromPeerId, JsonElement offer, CancellationToken ct = default)
     {
         var conn = new SipSorceryWebRtcConnection(fromPeerId, _options);
         _connections.Add(conn);
 
-        // Create answer but DON'T wait for data channel — the answer must be sent
-        // back to the initiator first, then ICE completes, then data channel opens.
-        // Waiting here deadlocks (same fix as WebRtcTransport.HandleOfferAsync).
-        var answer = await conn.HandleOfferAsync(offer);
-        return (conn, answer);
+        var sdpOffer = SdpMessage.FromJson(offer);
+        var answerSdp = await conn.HandleOfferSdpAsync(sdpOffer);
+        return (conn, answerSdp);
     }
 
-    public async Task HandleAnswerAsync(string fromPeerId, object answer)
+    public async Task<(SdpMessage offer, IConnection connection)> CreateOfferAsync(string offerId, CancellationToken ct = default)
+    {
+        var conn = new SipSorceryWebRtcConnection(offerId, _options);
+        _connections.Add(conn);
+        var sdp = await conn.CreateOfferSdpAsync();
+        return (sdp, conn);
+    }
+
+    public async Task HandleAnswerAsync(string fromPeerId, JsonElement answer)
     {
         var conn = _connections.Find(c => c.RemoteId == fromPeerId);
         if (conn != null)
-            await conn.HandleAnswerAsync(answer);
+            await conn.HandleAnswerSdpAsync(SdpMessage.FromJson(answer));
+    }
+
+    public async Task<IConnection?> HandleAnswerByOfferIdAsync(string offerId, JsonElement answer)
+    {
+        var conn = _connections.Find(c => c.RemoteId == offerId);
+        if (conn == null) return null;
+        await conn.HandleAnswerSdpAsync(SdpMessage.FromJson(answer));
+        return conn;
     }
 
     public async ValueTask DisposeAsync()
@@ -170,6 +184,20 @@ public class SipSorceryWebRtcConnection : IConnection
         };
     }
 
+    /// <summary>Convert a native offer/answer to SdpMessage.</summary>
+    public static SdpMessage ToSdpMessage(object desc)
+    {
+        var d = DeserializeDescription(desc);
+        return new SdpMessage(d.Type, d.Sdp);
+    }
+
+    /// <summary>Create SDP offer and return as strongly-typed SdpMessage.</summary>
+    public async Task<SdpMessage> CreateOfferSdpAsync()
+    {
+        var native = await CreateOfferAsync();
+        return ToSdpMessage(native);
+    }
+
     /// <summary>Create SDP offer (initiator side).</summary>
     public async Task<object> CreateOfferAsync()
     {
@@ -221,7 +249,36 @@ public class SipSorceryWebRtcConnection : IConnection
         return new { type = localDesc.type.ToString(), sdp = localDesc.sdp.ToString() };
     }
 
-    /// <summary>Handle incoming SDP answer (initiator side, completes signaling).</summary>
+    /// <summary>Handle incoming SDP offer (from SdpMessage) and create answer.</summary>
+    public async Task<SdpMessage> HandleOfferSdpAsync(SdpMessage offer)
+    {
+        _pc = CreatePeerConnection();
+        _pc.ondatachannel += (dc) => SetupDataChannel(dc);
+        _pc.setRemoteDescription(new RTCSessionDescriptionInit
+        {
+            type = RTCSdpType.offer,
+            sdp = offer.Sdp,
+        });
+        var answer = _pc.createAnswer();
+        await _pc.setLocalDescription(answer);
+        await WaitForIceGatheringAsync();
+        var localDesc = _pc.localDescription;
+        return new SdpMessage(localDesc.type.ToString(), localDesc.sdp.ToString());
+    }
+
+    /// <summary>Handle incoming SDP answer (from SdpMessage, completes signaling).</summary>
+    public Task HandleAnswerSdpAsync(SdpMessage answer)
+    {
+        if (_pc == null) return Task.CompletedTask;
+        _pc.setRemoteDescription(new RTCSessionDescriptionInit
+        {
+            type = RTCSdpType.answer,
+            sdp = answer.Sdp,
+        });
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Handle incoming SDP answer (initiator side). Legacy — uses object.</summary>
     public Task HandleAnswerAsync(object answer)
     {
         if (_pc == null) return Task.CompletedTask;

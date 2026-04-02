@@ -67,23 +67,47 @@ public class WebSocketTrackerClient : IDiscovery
         }
     }
 
-    public async Task AnnounceAsync(byte[] infoHash, int port,
+    public Task AnnounceAsync(byte[] infoHash, int port,
         long uploaded, long downloaded, long left, CancellationToken ct = default)
+        => AnnounceAsync(infoHash, port, uploaded, downloaded, left, null, ct);
+
+    /// <summary>Announce with pre-generated WebRTC offers (WebTorrent protocol).</summary>
+    public async Task AnnounceAsync(byte[] infoHash, int port,
+        long uploaded, long downloaded, long left,
+        object[]? offers, CancellationToken ct = default)
     {
         if (_ws?.State != WebSocketState.Open) return;
 
-        var msg = new TrackerAnnounceMessage
+        if (offers != null && offers.Length > 0)
         {
-            Action = "announce",
-            InfoHash = Convert.ToHexString(infoHash).ToLowerInvariant(),
-            PeerId = Convert.ToHexString(_peerId).ToLowerInvariant(),
-            Uploaded = uploaded,
-            Downloaded = downloaded,
-            Left = left,
-            Port = port,
-        };
-
-        await SendJsonAsync(msg, ct);
+            var msg = new
+            {
+                action = "announce",
+                info_hash = Convert.ToHexString(infoHash).ToLowerInvariant(),
+                peer_id = Convert.ToHexString(_peerId).ToLowerInvariant(),
+                uploaded,
+                downloaded,
+                left,
+                port,
+                numwant = offers.Length,
+                offers,
+            };
+            await SendJsonAsync(msg, ct);
+        }
+        else
+        {
+            var msg = new TrackerAnnounceMessage
+            {
+                Action = "announce",
+                InfoHash = Convert.ToHexString(infoHash).ToLowerInvariant(),
+                PeerId = Convert.ToHexString(_peerId).ToLowerInvariant(),
+                Uploaded = uploaded,
+                Downloaded = downloaded,
+                Left = left,
+                Port = port,
+            };
+            await SendJsonAsync(msg, ct);
+        }
     }
 
     /// <summary>Send WebRTC offer to a peer via tracker relay.</summary>

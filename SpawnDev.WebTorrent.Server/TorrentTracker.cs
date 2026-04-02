@@ -132,6 +132,40 @@ public class TorrentTracker
         });
 
         await SendText(peer.WebSocket, response);
+
+        // Relay pre-generated offers to existing peers in the swarm.
+        // WebTorrent protocol: client sends offers WITH announce, server
+        // distributes them to other peers so they can create answers.
+        if (msg.Offers is JsonElement offersElement && offersElement.ValueKind == JsonValueKind.Array)
+        {
+            var existingPeers = swarm.Peers.Values
+                .Where(p => p.PeerId != peer.PeerId && p.WebSocket.State == WebSocketState.Open)
+                .ToArray();
+
+            int offerIdx = 0;
+            foreach (var offer in offersElement.EnumerateArray())
+            {
+                if (offerIdx >= existingPeers.Length) break;
+                var target = existingPeers[offerIdx];
+
+                // Extract offer and offer_id from the offers array element
+                if (offer.TryGetProperty("offer", out var offerSdp) &&
+                    offer.TryGetProperty("offer_id", out var offerId))
+                {
+                    var forward = JsonSerializer.Serialize(new
+                    {
+                        action = "offer",
+                        info_hash = msg.InfoHash,
+                        peer_id = peer.PeerId,
+                        offer = offerSdp,
+                        offer_id = offerId,
+                    });
+                    await SendText(target.WebSocket, forward);
+                }
+
+                offerIdx++;
+            }
+        }
     }
 
     /// <summary>Forward WebRTC offer from one peer to another (signaling relay).</summary>
@@ -217,6 +251,8 @@ public class TrackerMessage
     public string? OfferId { get; set; }
     public JsonElement? Offer { get; set; }
     public JsonElement? Answer { get; set; }
+    public JsonElement? Offers { get; set; }
+    public int? Numwant { get; set; }
     public long? Downloaded { get; set; }
     public long? Uploaded { get; set; }
     public long? Left { get; set; }

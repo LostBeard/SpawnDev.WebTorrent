@@ -333,7 +333,8 @@ public class TorrentSwarm : IAsyncDisposable
         if (Metadata == null) return;
 
         var trackerUrls = Metadata.AnnounceList.SelectMany(a => a).ToArray();
-        await ConnectToTrackersAsync(trackerUrls);
+        if (trackerUrls.Length > 0)
+            _ = ConnectToTrackersAsync(trackerUrls);
     }
 
     /// <summary>

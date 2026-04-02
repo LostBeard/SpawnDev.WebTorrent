@@ -515,6 +515,13 @@
                 t.UpdateSpeed();
                 GetSpeedHistory(t).Add(t.DownloadSpeed);
                 if (GetSpeedHistory(t).Count > 60) GetSpeedHistory(t).RemoveAt(0); // 60 second window
+
+                // Auto-wire torrents added externally (e.g., via CreateTorrent dialog)
+                if (!_trackerEntries.ContainsKey(t.InfoHashHex) && t.HasMetadata && t.Announce.Length > 0)
+                {
+                    WireSwarmEvents(t);
+                    _ = InvokeAsync(() => ConnectTrackers(t, t.MagnetURI));
+                }
             }
             _globalDownSpeed = AllTorrents.Sum(t => t.DownloadSpeed);
             _globalUpSpeed = AllTorrents.Sum(t => t.UploadSpeed);

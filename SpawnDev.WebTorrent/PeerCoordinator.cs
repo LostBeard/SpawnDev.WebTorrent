@@ -118,6 +118,19 @@ public class PeerCoordinator : IAsyncDisposable
         if (_peers.ContainsKey(info.Address)) return; // already connected
         if (_peers.Count >= 55) return; // max peers
 
+        // Polite/impolite pattern: resolve WebRTC offer collisions.
+        // When both peers discover each other simultaneously via the tracker,
+        // both would create offers, causing "Called in wrong state: stable" errors.
+        // Solution: only the peer with the higher peer ID initiates the connection.
+        // The other peer waits for the incoming offer via OnOffer.
+        var ourId = Convert.ToHexString(_client.PeerId);
+        var theirId = info.Address.Length >= 40 ? info.Address[..40] : info.Address;
+        if (string.Compare(ourId, theirId, StringComparison.OrdinalIgnoreCase) < 0)
+        {
+            // We're the "polite" peer — don't initiate, wait for their offer
+            return;
+        }
+
         try
         {
             using var cts = new CancellationTokenSource(15000);

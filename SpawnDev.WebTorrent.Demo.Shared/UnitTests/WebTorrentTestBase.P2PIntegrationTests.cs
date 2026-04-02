@@ -653,15 +653,23 @@ internal class MockLoopbackConnection : SpawnDev.WebTorrent.Transports.IConnecti
 
     public async Task<int> ReceiveAsync(Memory<byte> buffer, CancellationToken ct = default)
     {
-        await _dataAvailable.WaitAsync(ct);
-        lock (_receiveBuffer)
+        while (IsConnected)
         {
-            int count = Math.Min(buffer.Length, _receiveBuffer.Count);
-            for (int i = 0; i < count; i++)
-                buffer.Span[i] = _receiveBuffer[i];
-            _receiveBuffer.RemoveRange(0, count);
-            return count;
+            await _dataAvailable.WaitAsync(ct);
+            lock (_receiveBuffer)
+            {
+                if (_receiveBuffer.Count == 0) continue; // spurious wake — retry
+                int count = Math.Min(buffer.Length, _receiveBuffer.Count);
+                for (int i = 0; i < count; i++)
+                    buffer.Span[i] = _receiveBuffer[i];
+                _receiveBuffer.RemoveRange(0, count);
+                // Keep semaphore signaled if there's still data to read
+                if (_receiveBuffer.Count > 0)
+                    _dataAvailable.Release();
+                return count;
+            }
         }
+        return 0; // disconnected
     }
 
     public Task CloseAsync()

@@ -404,6 +404,41 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
         return swarm;
     }
 
+    /// <summary>Seed multiple files as a multi-file torrent.</summary>
+    public async Task<TorrentSwarm> SeedAsync((string path, byte[] data)[] files, string torrentName,
+        TorrentCreatorOptions? createOptions = null, AddTorrentOptions? addOptions = null)
+    {
+        var (torrentBytes, metadata) = Torrent.TorrentCreator.CreateFromMultipleFiles(torrentName, files, createOptions);
+        var swarm = await AddAsync(metadata, addOptions);
+
+        // Concatenate file data for piece storage (BitTorrent stores pieces across concatenated files)
+        var combined = new byte[files.Sum(f => (long)f.data.Length)];
+        int offset = 0;
+        foreach (var f in files)
+        {
+            Array.Copy(f.data, 0, combined, offset, f.data.Length);
+            offset += f.data.Length;
+        }
+
+        // Store all pieces in the chunk store so we can serve them
+        if (swarm.Store != null && swarm.PieceManager != null)
+        {
+            for (int i = 0; i < metadata.PieceCount; i++)
+            {
+                int pieceStart = i * metadata.PieceLength;
+                int pieceLen = Math.Min(metadata.PieceLength, combined.Length - pieceStart);
+                var pieceData = new byte[pieceLen];
+                Array.Copy(combined, pieceStart, pieceData, 0, pieceLen);
+                await swarm.Store.PutAsync(i, pieceData);
+                swarm.PieceManager.MarkComplete(i);
+            }
+
+            swarm.MarkDone();
+        }
+
+        return swarm;
+    }
+
     /// <summary>Get a torrent by info hash (hex string or 20-byte array).</summary>
     public TorrentSwarm? Get(string infoHashHex)
     {

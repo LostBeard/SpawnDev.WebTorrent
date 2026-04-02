@@ -319,21 +319,21 @@
                 var torrentName = string.IsNullOrWhiteSpace(_options.Name)
                     ? System.IO.Path.GetDirectoryName(_files[0].Path)?.Split('/', '\\').FirstOrDefault() ?? "torrent"
                     : _options.Name;
+                var filesArray = _files.Select(f => (f.Path, f.Data!)).ToArray();
                 _createProgress = "hashing pieces...";
                 StateHasChanged();
-                var (torrentBytes, metadata) = TorrentCreator.CreateFromMultipleFiles(
-                    torrentName, _files.Select(f => (f.Path, f.Data!)).ToArray(), _options);
                 if (_startSeeding)
                 {
                     _createProgress = "seeding...";
                     StateHasChanged();
-                    var combined = new byte[_files.Sum(f => f.Size)];
-                    int offset = 0;
-                    foreach (var f in _files)
-                    { System.Array.Copy(f.Data!, 0, combined, offset, f.Data!.Length); offset += f.Data!.Length; }
-                    await Client.SeedAsync(combined, torrentName, _options);
+                    var swarm = await Client.SeedAsync(filesArray, torrentName, _options);
+                    SetStatus($"Created: {swarm.Name} ({FormatSize(swarm.Length)}, {swarm.Metadata?.PieceCount ?? 0} pieces, {swarm.Files?.Length ?? 0} files)", false);
                 }
-                SetStatus($"Created: {metadata.Name} ({FormatSize(metadata.TotalLength)}, {metadata.PieceCount} pieces, {metadata.Files.Length} files)", false);
+                else
+                {
+                    var (torrentBytes, metadata) = TorrentCreator.CreateFromMultipleFiles(torrentName, filesArray, _options);
+                    SetStatus($"Created: {metadata.Name} ({FormatSize(metadata.TotalLength)}, {metadata.PieceCount} pieces, {metadata.Files.Length} files)", false);
+                }
             }
             _files.Clear();
             await Task.Delay(1500);

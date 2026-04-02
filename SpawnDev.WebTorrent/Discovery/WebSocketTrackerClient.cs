@@ -74,7 +74,7 @@ public class WebSocketTrackerClient : IDiscovery
     /// <summary>Announce with pre-generated WebRTC offers (WebTorrent protocol).</summary>
     public async Task AnnounceAsync(byte[] infoHash, int port,
         long uploaded, long downloaded, long left,
-        object[]? offers, CancellationToken ct = default)
+        TrackerOffer[]? offers, CancellationToken ct = default)
     {
         if (_ws?.State != WebSocketState.Open) return;
 
@@ -90,7 +90,11 @@ public class WebSocketTrackerClient : IDiscovery
                 left,
                 port,
                 numwant = offers.Length,
-                offers,
+                offers = offers.Select(o => new
+                {
+                    offer = new { type = o.Offer.Type, sdp = o.Offer.Sdp },
+                    offer_id = o.OfferId,
+                }).ToArray(),
             };
             await SendJsonAsync(msg, ct);
         }

@@ -129,9 +129,9 @@ public class PeerCoordinator : IAsyncDisposable
     /// Pre-generate N WebRTC offers for sending with tracker announce.
     /// Each offer is a fully formed RTCPeerConnection with data channel and SDP.
     /// </summary>
-    private async Task<object[]> GenerateOffersAsync(int count, CancellationToken ct = default)
+    private async Task<TrackerOffer[]> GenerateOffersAsync(int count, CancellationToken ct = default)
     {
-        var offers = new List<object>();
+        var offers = new List<TrackerOffer>();
         for (int i = 0; i < count; i++)
         {
             try
@@ -139,12 +139,7 @@ public class PeerCoordinator : IAsyncDisposable
                 var offerId = Guid.NewGuid().ToString("N");
                 var (sdp, conn) = await _webRtc.CreateOfferAsync(offerId, ct);
                 _pendingOffers[offerId] = conn;
-
-                offers.Add(new
-                {
-                    offer = new { type = sdp.Type, sdp = sdp.Sdp },
-                    offer_id = offerId,
-                });
+                offers.Add(new TrackerOffer(sdp, offerId));
             }
             catch (Exception ex)
             {
@@ -227,6 +222,9 @@ public class PeerCoordinator : IAsyncDisposable
         await _webRtc.DisposeAsync();
     }
 }
+
+/// <summary>A pre-generated WebRTC offer for sending with tracker announce.</summary>
+public record TrackerOffer(SdpMessage Offer, string OfferId);
 
 /// <summary>A fully connected peer with wire protocol active.</summary>
 public class ConnectedPeer

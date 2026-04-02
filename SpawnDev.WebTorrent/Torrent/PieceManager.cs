@@ -215,6 +215,7 @@ public class PieceManager
     public void MarkComplete(int pieceIndex)
     {
         if (pieceIndex < 0 || pieceIndex >= PieceCount) return;
+        if (_pieces[pieceIndex].State == DownloadState.Complete) return; // idempotent
         _pieces[pieceIndex].State = DownloadState.Complete;
         Bitfield[pieceIndex] = true;
         CompletedCount++;

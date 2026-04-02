@@ -382,6 +382,9 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
         TorrentCreatorOptions? createOptions = null, AddTorrentOptions? addOptions = null)
     {
         var (torrentBytes, metadata) = Torrent.TorrentCreator.CreateFromBytes(name, data, createOptions);
+        addOptions ??= new AddTorrentOptions();
+        if (addOptions.AsyncFileSystem == null && _asyncFs != null)
+            addOptions.AsyncFileSystem = _asyncFs;
         var swarm = await AddAsync(metadata, addOptions);
 
         // Store all pieces in the chunk store so we can serve them
@@ -409,6 +412,9 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
         TorrentCreatorOptions? createOptions = null, AddTorrentOptions? addOptions = null)
     {
         var (torrentBytes, metadata) = Torrent.TorrentCreator.CreateFromMultipleFiles(torrentName, files, createOptions);
+        addOptions ??= new AddTorrentOptions();
+        if (addOptions.AsyncFileSystem == null && _asyncFs != null)
+            addOptions.AsyncFileSystem = _asyncFs;
         var swarm = await AddAsync(metadata, addOptions);
 
         // Concatenate file data for piece storage (BitTorrent stores pieces across concatenated files)

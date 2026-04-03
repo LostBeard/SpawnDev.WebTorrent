@@ -170,40 +170,19 @@ public class DownloadCoordinator : IDisposable
                     }
                 }
 
-                // 2. Web seed downloads
-                if (seeds.Length > 0)
+                // 2. Web seed downloads — always active when pieces are missing
+                if (seeds.Length > 0 && !_pieceManager.IsComplete)
                 {
-                    // Priority pieces first (from file read requests)
+                    // Priority pieces first
                     foreach (var priorityPiece in _priorityPieces.ToArray())
                     {
-                        if (_pieceManager.Bitfield[priorityPiece]) continue;
-
-                        bool peerHasIt = peers.Any(p => !p.IsChoked
-                            && p.Bitfield.Length > priorityPiece && p.Bitfield[priorityPiece]);
-
-                        if (!peerHasIt)
+                        if (!_pieceManager.Bitfield[priorityPiece])
                             await DownloadFromWebSeed(priorityPiece, seeds, ct);
                     }
 
-                    // When no peers are available, start background bulk stream + serve priority pieces
-                    bool hasPeers = peers.Any(p => !p.IsChoked);
-                    if (!hasPeers && seeds.Length > 0)
-                    {
-                        // Start bulk stream in background (fills cache sequentially)
-                        if (_bulkDownloadTask == null || _bulkDownloadTask.IsCompleted)
-                            _bulkDownloadTask = DownloadBulkFromWebSeed(seeds, ct);
-
-                        // Serve any priority pieces via individual range requests (seeking)
-                        foreach (var priorityPiece in _priorityPieces.ToArray())
-                        {
-                            if (!_pieceManager.Bitfield[priorityPiece])
-                                await DownloadFromWebSeed(priorityPiece, seeds, ct);
-                        }
-                    }
-                    else
-                    {
-                        // Suppress verbose logging after first few ticks
-                    }
+                    // Bulk stream download — always runs if not already in progress
+                    if (_bulkDownloadTask == null || _bulkDownloadTask.IsCompleted)
+                        _bulkDownloadTask = DownloadBulkFromWebSeed(seeds, ct);
                 }
 
                 // 3. Endgame mode — when few pieces remain, request from ALL peers

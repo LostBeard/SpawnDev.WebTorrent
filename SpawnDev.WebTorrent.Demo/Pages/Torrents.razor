@@ -323,9 +323,14 @@
                             case "content":
                                 @if (sel.HasMetadata)
                                 {
-                                    <div style="display:flex;gap:4px;padding:2px 0">
+                                    <div style="display:flex;gap:4px;padding:2px 0;align-items:center;">
                                         <button class="qb-action-btn" style="font-size:10px" @onclick="() => { foreach (var f in sel.Files) f.Select(); }">Select All</button>
                                         <button class="qb-action-btn" style="font-size:10px" @onclick="() => { foreach (var f in sel.Files) f.Deselect(); }">Deselect All</button>
+                                        <span style="flex:1"></span>
+                                        @if (_showDirectoryPickerSupported && sel.Done)
+                                        {
+                                            <button class="qb-action-btn" style="font-size:10px;color:#10b981;" @onclick="() => ExportToFolder(sel)">&#128194; Export to Folder</button>
+                                        }
                                     </div>
                                     <table class="qb-sub-table">
                                         <thead><tr><th>File</th><th class="qb-col-fsize">Size</th><th class="qb-col-fprog-wide">Progress</th><th class="qb-col-fdl">Downloaded</th><th class="qb-col-ftype">Type</th><th class="qb-col-fpri">Priority</th><th></th></tr></thead>
@@ -353,10 +358,14 @@
                                                             <option value="skip">Skip</option>
                                                         </select>
                                                     </td>
-                                                    <td>
+                                                    <td style="white-space:nowrap;">
                                                         @if (IsPlayable(ext))
                                                         {
-                                                            <button class="qb-play-btn" @onclick="() => OpenMedia(f, ext)">&#9654;</button>
+                                                            <button class="qb-play-btn" @onclick="() => OpenMedia(f, ext)" title="Play">&#9654;</button>
+                                                        }
+                                                        @if (f.Done)
+                                                        {
+                                                            <button class="qb-play-btn" @onclick="() => DownloadFile(f)" title="Download">&#11015;</button>
                                                         }
                                                     </td>
                                                 </tr>
@@ -526,6 +535,7 @@
     private bool _settingsOpen;
     private int _downloadLimitKBs, _uploadLimitKBs;
     private double _globalDownSpeed, _globalUpSpeed;
+    private bool _showDirectoryPickerSupported;
 
     // Toast
     private bool _toastVisible;
@@ -576,6 +586,8 @@
     protected override void OnInitialized()
     {
         _client = Client;
+        using var window = JS.Get<Window>("window");
+        _showDirectoryPickerSupported = window.ShowDirectoryPickerSupported();
         Log($"Client initialized ({AllTorrents.Count} torrent(s), storage: {(_asyncFs != null ? "OPFS" : "memory")})");
 
         _refreshTimer = new System.Threading.Timer(_ =>
@@ -975,6 +987,68 @@
     private void CloseMedia()
     {
         _mediaOpen = false; _mediaBlobUrl = "";
+    }
+
+    // ── File Export ──
+
+    private async Task DownloadFile(TorrentFileStream file)
+    {
+        try
+        {
+            var data = await file.ReadAsync(0, (int)file.Length);
+            var ext = System.IO.Path.GetExtension(file.Path).ToLowerInvariant();
+            var fileName = file.Name.Replace("'", "\\'");
+            using var blob = new Blob(new[] { data }, new BlobOptions { Type = GetMimeType(ext) });
+            var url = URL.CreateObjectURL(blob);
+            await JS.CallVoidAsync("eval", $"var a=document.createElement('a');a.href='{url}';a.download='{fileName}';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL('{url}')");
+            Log($"Downloaded: {file.Name} ({FormatBytes(file.Length)})");
+        }
+        catch (Exception ex) { Log($"Download failed: {ex.Message}"); }
+    }
+
+    private async Task ExportToFolder(TorrentSwarm swarm)
+    {
+        try
+        {
+            using var window = JS.Get<Window>("window");
+            using var dirHandle = await window.ShowDirectoryPicker();
+            if (dirHandle == null) return;
+
+            int exported = 0;
+            foreach (var file in swarm.Files)
+            {
+                if (!file.Done) continue;
+
+                // Create subdirectories as needed
+                var parts = file.Path.Split('/', '\\');
+                var currentDir = dirHandle;
+                for (int i = 0; i < parts.Length - 1; i++)
+                {
+                    var subDir = await currentDir.GetDirectoryHandle(parts[i], true);
+                    if (i > 0) currentDir.Dispose();
+                    currentDir = subDir;
+                }
+
+                // Write the file
+                var fileName = parts[^1];
+                using var fileHandle = await currentDir.GetFileHandle(fileName, true);
+                using var writable = await fileHandle.CreateWritable();
+                var data = await file.ReadAsync(0, (int)file.Length);
+                await writable.Write(data);
+                await writable.Close();
+
+                if (parts.Length > 1) currentDir.Dispose();
+                exported++;
+            }
+
+            Log($"Exported {exported} file(s) to folder");
+            ShowToast($"Exported {exported} file(s)");
+        }
+        catch (Exception ex)
+        {
+            if (!ex.Message.Contains("aborted"))
+                Log($"Export failed: {ex.Message}");
+        }
     }
 
     // ── Helpers ──

@@ -185,6 +185,14 @@ public class TorrentSwarm : IAsyncDisposable
     public event Action? OnMetadata;
     public event Action<string>? OnWarning;
 
+    /// <summary>Log to both OnLog event and Console for browser devtools visibility.</summary>
+    private void Log(string msg)
+    {
+        var tagged = $"[{Name}] {msg}";
+        OnLog?.Invoke(tagged);
+        Console.WriteLine(tagged);
+    }
+
     public TorrentSwarm(WebTorrentClient client, AddTorrentOptions options)
     {
         _client = client;
@@ -611,6 +619,7 @@ public class TorrentSwarm : IAsyncDisposable
             bool hasPieces = _pieceManager != null && _pieceManager.Bitfield.Any(b => b);
             if (hasPieces)
             {
+                Log($"Sending bitfield to peer ({_pieceManager!.Bitfield.Count(b => b)} pieces)");
                 await wire.SendBitfieldAsync(BoolBitfieldToBytes(_pieceManager!.Bitfield));
             }
             else if (_pieceManager != null)
@@ -618,16 +627,22 @@ public class TorrentSwarm : IAsyncDisposable
                 // No pieces yet — tell the peer so it can unchoke us
                 if (wire.SupportsFastExtension)
                 {
+                    Log("Sending HaveNone (Fast Extension)");
                     await wire.SendHaveNoneAsync();
                 }
                 else
                 {
-                    // Standard BEP 3: send all-zero bitfield
+                    Log("Sending empty bitfield (no pieces yet)");
                     await wire.SendBitfieldAsync(new byte[(int)Math.Ceiling(_pieceManager.Bitfield.Length / 8.0)]);
                 }
             }
+            else
+            {
+                Log("No piece manager yet — skipping bitfield (metadata not received)");
+            }
 
             // Then send interested + unchoke
+            Log("Sending Interested + Unchoke");
             await wire.SendMessageAsync(MessageType.Interested);
             await wire.SendMessageAsync(MessageType.Unchoke);
 
@@ -635,11 +650,20 @@ public class TorrentSwarm : IAsyncDisposable
             // remote's BEP 10 handshake (which sets RemoteId and MetadataSize)
             if (Metadata == null)
             {
+                Log($"Waiting for BEP 10 handshake from peer to get metadata...");
                 wire.Extensions.OnRemoteHandshake += () =>
                 {
                     var utMeta = wire.Extensions.Get<Wire.UtMetadataExtension>();
+                    Log($"BEP 10 handshake received. ut_metadata: supported={utMeta?.IsSupported}, size={utMeta?.MetadataSize}");
                     if (utMeta != null && utMeta.IsSupported && utMeta.MetadataSize > 0)
+                    {
+                        Log($"Requesting metadata ({utMeta.MetadataSize} bytes)...");
                         utMeta.RequestAllPieces();
+                    }
+                    else
+                    {
+                        Log("Peer does not support ut_metadata or has no metadata — cannot resolve torrent info");
+                    }
                 };
             }
 

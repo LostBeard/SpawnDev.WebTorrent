@@ -74,6 +74,9 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
         set => DownloadLimiter.Rate = value;
     }
 
+    /// <summary>Client options.</summary>
+    public WebTorrentOptions Options => _options;
+
     /// <summary>Maximum peers per torrent.</summary>
     public int MaxConns => _options.MaxConns;
 
@@ -608,6 +611,14 @@ public class WebTorrentOptions
         "wss://tracker.openwebtorrent.com",
         "wss://tracker.files.fm:7073/announce",
     };
+
+    /// <summary>
+    /// Disable web seed (HTTP) downloads globally for all torrents.
+    /// When true, pieces will only be downloaded from WebRTC/TCP peers.
+    /// Useful for debugging peer-to-peer data transfer without HTTP fallback masking issues.
+    /// Per-torrent override available in AddTorrentOptions.
+    /// </summary>
+    public bool DisableWebSeeds { get; set; }
 }
 
 /// <summary>Per-torrent options.</summary>
@@ -633,4 +644,11 @@ public class AddTorrentOptions
     /// If provided, AsyncFSChunkStore is used instead of MemoryChunkStore.
     /// </summary>
     public SpawnDev.AsyncFileSystem.IAsyncFS? AsyncFileSystem { get; set; }
+
+    /// <summary>
+    /// Disable web seed (HTTP) downloads for this torrent.
+    /// When true, pieces will only be downloaded from WebRTC/TCP peers.
+    /// Overrides the global WebTorrentOptions.DisableWebSeeds setting when set to true.
+    /// </summary>
+    public bool DisableWebSeeds { get; set; }
 }

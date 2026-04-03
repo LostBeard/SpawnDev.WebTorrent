@@ -603,11 +603,27 @@ public class TorrentSwarm : IAsyncDisposable
                 await wire.SendExtensionMessageAsync(0, encoded);
             }
 
-            // BEP 3: Bitfield MUST be the first message after handshake
+            // BEP 3: Bitfield MUST be the first message after handshake.
+            // Must send piece state even when we have no pieces — without it,
+            // the remote peer won't unchoke us, and IsChoked stays true forever,
+            // blocking all piece requests in DownloadCoordinator.
             bool hasPieces = _pieceManager != null && _pieceManager.Bitfield.Any(b => b);
             if (hasPieces)
             {
                 await wire.SendBitfieldAsync(BoolBitfieldToBytes(_pieceManager!.Bitfield));
+            }
+            else if (_pieceManager != null)
+            {
+                // No pieces yet — tell the peer so it can unchoke us
+                if (wire.SupportsFastExtension)
+                {
+                    await wire.SendHaveNoneAsync();
+                }
+                else
+                {
+                    // Standard BEP 3: send all-zero bitfield
+                    await wire.SendBitfieldAsync(new byte[(int)Math.Ceiling(_pieceManager.Bitfield.Length / 8.0)]);
+                }
             }
 
             // Then send interested + unchoke
@@ -987,9 +1003,17 @@ public class TorrentSwarm : IAsyncDisposable
             wire.Extensions.Register(factory(this, wire));
     }
 
-    /// <summary>Add a web seed URL.</summary>
+    /// <summary>Whether web seed downloads are disabled (per-torrent or global).</summary>
+    public bool WebSeedsDisabled => _options.DisableWebSeeds || _client.Options.DisableWebSeeds;
+
+    /// <summary>Add a web seed URL. Skipped if DisableWebSeeds is set.</summary>
     public void AddWebSeed(string url)
     {
+        if (WebSeedsDisabled)
+        {
+            OnLog?.Invoke($"[WebSeed] Skipped (disabled): {url}");
+            return;
+        }
         _coordinator?.AddWebSeed(new HttpClient { Timeout = TimeSpan.FromSeconds(30) }, url);
     }
 

@@ -69,9 +69,21 @@ public class DownloadCoordinator : IDisposable
         lock (_seedsLock) _webSeeds.Add(seed);
     }
 
-    /// <summary>Add an active peer with its wire protocol and bitfield.</summary>
+    /// <summary>Add an active peer with its wire protocol and bitfield.
+    /// If the wire already exists, updates its bitfield instead of creating a duplicate.</summary>
     public void AddPeer(WireProtocol wire, bool[] peerBitfield)
     {
+        lock (_peersLock)
+        {
+            var existing = _activePeers.Find(p => p.Wire == wire);
+            if (existing != null)
+            {
+                // Update bitfield — don't create duplicate ActivePeer or re-subscribe events
+                existing.Bitfield = peerBitfield;
+                return;
+            }
+        }
+
         var peer = new ActivePeer
         {
             Wire = wire,
@@ -83,6 +95,7 @@ public class DownloadCoordinator : IDisposable
         {
             try
             {
+                OnLog?.Invoke($"[Piece] RECEIVED piece={pieceIdx} offset={offset} len={data.Length}");
                 peer.OutstandingRequests.RemoveAll(r => r.piece == pieceIdx && r.offset == offset);
                 await _pieceManager.ReceiveBlockAsync(pieceIdx, offset, data);
             }
@@ -98,7 +111,6 @@ public class DownloadCoordinator : IDisposable
         // If the remote already sent Unchoke before we subscribed, start unchoked.
         if (!wire.PeerChoking)
             peer.IsChoked = false;
-
 
         lock (_peersLock) _activePeers.Add(peer);
     }
@@ -150,7 +162,11 @@ public class DownloadCoordinator : IDisposable
                 foreach (var peer in peers)
                 {
                     if (peer.IsChoked || peer.OutstandingRequests.Count >= MaxRequestsPerPeer)
+                    {
+                        if (_tickCount % 50 == 0) // log every 5 seconds
+                            OnLog?.Invoke($"[Peer] {(peer.IsChoked ? "CHOKED" : $"full ({peer.OutstandingRequests.Count} reqs)")} — skipping peer with {peer.Bitfield.Count(b => b)} pieces");
                         continue;
+                    }
 
                     // Try priority pieces first
                     foreach (var priorityPiece in _priorityPieces.ToArray())
@@ -231,6 +247,7 @@ public class DownloadCoordinator : IDisposable
             if (offset < 0) break;
 
             peer.OutstandingRequests.Add((pieceIndex, offset, length));
+            OnLog?.Invoke($"[Request] piece={pieceIndex} offset={offset} len={length}");
             await peer.Wire.SendRequestAsync(pieceIndex, offset, length);
         }
     }

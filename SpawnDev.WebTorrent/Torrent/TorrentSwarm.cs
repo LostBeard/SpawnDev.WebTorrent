@@ -312,13 +312,28 @@ public class TorrentSwarm : IAsyncDisposable
         // Create file stream abstractions
         Files = metadata.Files.Select(f => new TorrentFileStream(this, f, _store)).ToArray();
 
-        // Add web seeds from metadata
-        foreach (var ws in metadata.UrlList)
+        // Add web seeds from metadata + pending (from magnet ws= parameter)
+        var allWebSeeds = metadata.UrlList.ToList();
+        if (_pendingUrlList != null && _pendingUrlList.Length > 0)
+        {
+            allWebSeeds.AddRange(_pendingUrlList);
+            _pendingUrlList = null;
+        }
+        foreach (var ws in allWebSeeds.Distinct())
             AddWebSeed(ws.TrimEnd('/'));
 
-        // Add any already-connected peers to the coordinator
+        // Add any already-connected peers to the coordinator.
+        // If a peer sent HaveAll before metadata arrived, its bitfield is empty.
+        // Now that we have metadata, fill it with all-true.
         foreach (var peer in _peers)
         {
+            if (peer.PeerBitfield.Length == 0 && metadata.PieceCount > 0)
+            {
+                // Peer was connected before metadata — assume it has all pieces
+                // (it sent HaveAll which we couldn't process without PieceCount)
+                peer.PeerBitfield = new bool[metadata.PieceCount];
+                Array.Fill(peer.PeerBitfield, true);
+            }
             _coordinator.AddPeer(peer.Wire, peer.PeerBitfield);
         }
 

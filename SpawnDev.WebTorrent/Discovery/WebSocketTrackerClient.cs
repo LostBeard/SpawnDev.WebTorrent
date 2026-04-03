@@ -2,7 +2,23 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+
 namespace SpawnDev.WebTorrent.Discovery;
+
+/// <summary>
+/// Convert bytes to binary string (latin1, one char per byte) for WebTorrent tracker protocol.
+/// JS WebTorrent uses hex2bin() — NOT hex encoding.
+/// </summary>
+public static class TrackerEncoding
+{
+    /// <summary>Convert bytes to binary string (latin1). Each byte becomes one char.</summary>
+    public static string ToBinaryString(byte[] bytes)
+        => new string(bytes.Select(b => (char)b).ToArray());
+
+    /// <summary>Convert binary string back to bytes.</summary>
+    public static byte[] FromBinaryString(string binaryStr)
+        => binaryStr.Select(c => (byte)c).ToArray();
+}
 
 /// <summary>
 /// WebSocket tracker client compatible with WebTorrent tracker protocol.
@@ -83,8 +99,8 @@ public class WebSocketTrackerClient : IDiscovery
             var msg = new
             {
                 action = "announce",
-                info_hash = Convert.ToHexString(infoHash).ToLowerInvariant(),
-                peer_id = Convert.ToHexString(_peerId).ToLowerInvariant(),
+                info_hash = TrackerEncoding.ToBinaryString(infoHash),
+                peer_id = TrackerEncoding.ToBinaryString(_peerId),
                 uploaded,
                 downloaded,
                 left,
@@ -103,8 +119,8 @@ public class WebSocketTrackerClient : IDiscovery
             var msg = new TrackerAnnounceMessage
             {
                 Action = "announce",
-                InfoHash = Convert.ToHexString(infoHash).ToLowerInvariant(),
-                PeerId = Convert.ToHexString(_peerId).ToLowerInvariant(),
+                InfoHash = TrackerEncoding.ToBinaryString(infoHash),
+                PeerId = TrackerEncoding.ToBinaryString(_peerId),
                 Uploaded = uploaded,
                 Downloaded = downloaded,
                 Left = left,
@@ -123,8 +139,8 @@ public class WebSocketTrackerClient : IDiscovery
         var msg = new
         {
             action = "offer",
-            info_hash = Convert.ToHexString(_currentInfoHash).ToLowerInvariant(),
-            peer_id = Convert.ToHexString(_peerId).ToLowerInvariant(),
+            info_hash = TrackerEncoding.ToBinaryString(_currentInfoHash),
+            peer_id = TrackerEncoding.ToBinaryString(_peerId),
             to_peer_id = toPeerId,
             offer,
             offer_id = offerId,
@@ -142,8 +158,8 @@ public class WebSocketTrackerClient : IDiscovery
         var msg = new
         {
             action = "answer",
-            info_hash = Convert.ToHexString(_currentInfoHash).ToLowerInvariant(),
-            peer_id = Convert.ToHexString(_peerId).ToLowerInvariant(),
+            info_hash = TrackerEncoding.ToBinaryString(_currentInfoHash),
+            peer_id = TrackerEncoding.ToBinaryString(_peerId),
             to_peer_id = toPeerId,
             answer,
             offer_id = offerId,

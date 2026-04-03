@@ -232,6 +232,10 @@ public class TorrentSwarm : IAsyncDisposable
             var parsed = TorrentParser.ParseMagnet(magnetOrInfoHash);
             InfoHash = parsed.InfoHash;
 
+            // Merge magnet web seeds and trackers regardless of xs= path
+            var magnetWebSeeds = parsed.UrlList;
+            var magnetTrackers = parsed.AnnounceList.SelectMany(a => a).ToArray();
+
             // If magnet has xs= (exact source), fetch full .torrent metadata from it
             if (parsed.ExactSource != null)
             {
@@ -240,26 +244,28 @@ public class TorrentSwarm : IAsyncDisposable
                     using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
                     var torrentBytes = await http.GetByteArrayAsync(parsed.ExactSource);
                     var fullMetadata = TorrentParser.Parse(torrentBytes);
+                    // Merge magnet web seeds into metadata (xs= .torrent may not have them)
+                    if (magnetWebSeeds.Length > 0)
+                        fullMetadata.UrlList = fullMetadata.UrlList.Concat(magnetWebSeeds).Distinct().ToArray();
                     await SetMetadataAsync(fullMetadata);
                     OnLog?.Invoke($"xs= metadata loaded: {fullMetadata.Name}, {fullMetadata.PieceCount} pieces");
                 }
                 catch (Exception ex)
                 {
                     OnLog?.Invoke($"xs= fetch failed: {ex.Message} — will rely on peers for metadata");
+                    // Fall through to tracker/peer path
+                    _pendingUrlList = magnetWebSeeds;
                 }
             }
             else
             {
                 // Store web seeds for when metadata arrives via peers
-                _pendingUrlList = parsed.UrlList;
-                _pendingTrackers = parsed.AnnounceList.SelectMany(a => a).ToArray();
-
-                // Connect to trackers immediately — we only need InfoHash for announce,
-                // not full metadata. This breaks the chicken-and-egg: worker needs tracker
-                // to find seeder to get metadata, but tracker only needs info hash + peer ID.
-                if (_pendingTrackers.Length > 0)
-                    _ = ConnectToTrackersAsync(_pendingTrackers);
+                _pendingUrlList = magnetWebSeeds;
             }
+
+            // Connect to trackers (needed for both xs= and peer paths)
+            if (magnetTrackers.Length > 0)
+                _ = ConnectToTrackersAsync(magnetTrackers);
         }
         else if (magnetOrInfoHash.Length == 40)
         {

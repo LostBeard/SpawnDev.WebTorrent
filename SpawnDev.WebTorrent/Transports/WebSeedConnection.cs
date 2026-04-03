@@ -199,6 +199,7 @@ public class WebSeedConnection
     }
 
     /// <summary>Escape a file path for URL while preserving / separators.</summary>
+    public static string EscapePathPublic(string path) => EscapePath(path);
     private static string EscapePath(string path)
     {
         return string.Join("/", path.Split('/').Select(Uri.EscapeDataString));

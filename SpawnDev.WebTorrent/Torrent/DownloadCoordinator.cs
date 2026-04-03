@@ -278,12 +278,21 @@ public class DownloadCoordinator : IDisposable
         }
         else
         {
-            // Multi-file — download per piece (existing path)
-            for (int i = 0; i < _pieceManager.PieceCount; i++)
+            // Multi-file — stream each file individually, split into pieces.
+            // One HTTP request per file instead of one per piece.
+            foreach (var file in _metadata.Files)
             {
-                if (!_pieceManager.Bitfield[i])
+                // Check if all pieces for this file are already complete
+                bool allDone = true;
+                for (int p = file.StartPiece; p <= file.EndPiece; p++)
+                    if (!_pieceManager.Bitfield[p]) { allDone = false; break; }
+                if (allDone) continue;
+
+                foreach (var seed in seeds)
                 {
-                    await DownloadFromWebSeed(i, seeds, ct);
+                    if (!seed.IsAvailable || ct.IsCancellationRequested) continue;
+                    if (await StreamDownloadFileAndVerify(seed, file, ct))
+                        break; // success with this seed
                 }
             }
         }
@@ -346,6 +355,96 @@ public class DownloadCoordinator : IDisposable
         catch (Exception ex)
         {
             OnLog?.Invoke($"Stream download failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Stream a single file from a web seed, splitting into pieces and verifying as they arrive.
+    /// One HTTP request per file — handles pieces that span file boundaries by accumulating bytes.
+    /// </summary>
+    private async Task<bool> StreamDownloadFileAndVerify(WebSeedConnection seed, TorrentFile file, CancellationToken ct)
+    {
+        try
+        {
+            var filePath = file.Path.Contains('/') ? file.Path : $"{_metadata.Name}/{file.Path}";
+            var url = $"{seed.BaseUrl}/{WebSeedConnection.EscapePathPublic(filePath)}";
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+
+            if (!response.IsSuccessStatusCode) return false;
+
+            using var stream = await response.Content.ReadAsStreamAsync(ct);
+
+            // Stream through the file's bytes, splitting into pieces
+            long filePos = 0;
+            for (int p = file.StartPiece; p <= file.EndPiece && !ct.IsCancellationRequested; p++)
+            {
+                int pieceLen = (p == _metadata.PieceCount - 1)
+                    ? (int)(_metadata.TotalLength - (long)p * _metadata.PieceLength)
+                    : _metadata.PieceLength;
+
+                // How many bytes of this piece are in this file?
+                long pieceStart = (long)p * _metadata.PieceLength;
+                long overlapStart = Math.Max(pieceStart, file.Offset);
+                long overlapEnd = Math.Min(pieceStart + pieceLen, file.Offset + file.Length);
+                int bytesInFile = (int)(overlapEnd - overlapStart);
+
+                if (_pieceManager.Bitfield[p])
+                {
+                    // Skip bytes we already have
+                    int skipped = 0;
+                    var skipBuf = new byte[Math.Min(bytesInFile, 65536)];
+                    while (skipped < bytesInFile)
+                    {
+                        int toSkip = Math.Min(skipBuf.Length, bytesInFile - skipped);
+                        int read = await stream.ReadAsync(skipBuf.AsMemory(0, toSkip), ct);
+                        if (read == 0) return false;
+                        skipped += read;
+                    }
+                    continue;
+                }
+
+                // For pieces that are entirely within this file, download and verify directly
+                if (overlapStart == pieceStart && bytesInFile == pieceLen)
+                {
+                    var pieceData = new byte[pieceLen];
+                    int filled = 0;
+                    while (filled < pieceLen)
+                    {
+                        int read = await stream.ReadAsync(pieceData.AsMemory(filled, pieceLen - filled), ct);
+                        if (read == 0) return false;
+                        filled += read;
+                    }
+                    await _pieceManager.ReceiveCompletePieceAsync(p, pieceData);
+                }
+                else
+                {
+                    // Piece spans file boundary — read our portion, let the next file fill the rest
+                    // Fall back to individual piece download for boundary pieces
+                    int skipped = 0;
+                    var skipBuf = new byte[Math.Min(bytesInFile, 65536)];
+                    while (skipped < bytesInFile)
+                    {
+                        int toSkip = Math.Min(skipBuf.Length, bytesInFile - skipped);
+                        int read = await stream.ReadAsync(skipBuf.AsMemory(0, toSkip), ct);
+                        if (read == 0) return false;
+                        skipped += read;
+                    }
+                    // Download this boundary piece via individual range request
+                    await seed.DownloadPieceAsync(p, ct).ContinueWith(async t =>
+                    {
+                        var data = t.Result;
+                        if (data != null) await _pieceManager.ReceiveCompletePieceAsync(p, data);
+                    }, ct);
+                }
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            OnLog?.Invoke($"Stream file download failed: {ex.Message}");
             return false;
         }
     }

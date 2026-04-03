@@ -148,12 +148,9 @@ public class PieceManager
 
         if (verified)
         {
-            // Store verified piece
             await _store.PutAsync(pieceIndex, pieceData);
-            piece.State = DownloadState.Complete;
-            piece.ClearBlockData(); // free memory
-            Bitfield[pieceIndex] = true;
-            CompletedCount++;
+            piece.ClearBlockData();
+            MarkComplete(pieceIndex);
             OnPieceComplete?.Invoke(pieceIndex);
             return true;
         }
@@ -183,10 +180,8 @@ public class PieceManager
         if (verified)
         {
             await _store.PutAsync(pieceIndex, pieceData);
-            piece.State = DownloadState.Complete;
             piece.ClearBlockData();
-            Bitfield[pieceIndex] = true;
-            CompletedCount++;
+            MarkComplete(pieceIndex);
             OnPieceComplete?.Invoke(pieceIndex);
             return true;
         }

@@ -503,6 +503,7 @@
                     <h4>Transfer</h4>
                     <div class="qb-setting"><label>Download Limit (KB/s)</label><input type="number" class="qb-input qb-input-sm" value="@_downloadLimitKBs" @onchange="e => SetDownloadLimit(e)" placeholder="0 = unlimited" /></div>
                     <div class="qb-setting"><label>Upload Limit (KB/s)</label><input type="number" class="qb-input qb-input-sm" value="@_uploadLimitKBs" @onchange="e => SetUploadLimit(e)" placeholder="0 = unlimited" /></div>
+                    <div class="qb-setting"><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" checked="@_disableWebSeeds" @onchange="ToggleWebSeeds" /> Disable Web Seeds (WebRTC peers only)</label></div>
                     <h4>Default Trackers</h4>
                     @foreach (var t in _defaultTrackers) { <div class="qb-mono" style="font-size:0.7rem;color:#475569">@t</div> }
                     <h4>Client</h4>
@@ -536,6 +537,7 @@
     private int _downloadLimitKBs, _uploadLimitKBs;
     private double _globalDownSpeed, _globalUpSpeed;
     private bool _showDirectoryPickerSupported;
+    private bool _disableWebSeeds;
 
     // Toast
     private bool _toastVisible;
@@ -688,7 +690,7 @@
             var hash = Convert.ToHexString(metadata.InfoHash).ToLowerInvariant();
             if (AllTorrents.Any(t => t.InfoHashHex == hash)) { Log($"Already added: {metadata.Name}"); return; }
 
-            var swarm = await _client.AddAsync(metadata, new AddTorrentOptions { AsyncFileSystem = _asyncFs });
+            var swarm = await _client.AddAsync(metadata, new AddTorrentOptions { AsyncFileSystem = _asyncFs, DisableWebSeeds = _disableWebSeeds });
             _selectedTorrent = swarm;
 
             foreach (var ws in metadata.UrlList) swarm.AddWebSeed(ws.TrimEnd('/'));
@@ -708,13 +710,14 @@
     private void SelectTorrent(TorrentSwarm e) { _selectedTorrent = e; _detailTab = "general"; }
     private void SetDownloadLimit(ChangeEventArgs e) { if (int.TryParse(e.Value?.ToString(), out var v)) { _downloadLimitKBs = v; if (_client != null) _client.DownloadLimit = v <= 0 ? -1 : v * 1024; } }
     private void SetUploadLimit(ChangeEventArgs e) { if (int.TryParse(e.Value?.ToString(), out var v)) { _uploadLimitKBs = v; if (_client != null) _client.UploadLimit = v <= 0 ? -1 : v * 1024; } }
+    private void ToggleWebSeeds(ChangeEventArgs e) { _disableWebSeeds = e.Value is bool b && b; if (_client != null) _client.Options.DisableWebSeeds = _disableWebSeeds; }
 
     private async Task AddMagnetInternal(string magnetUri, string? displayName)
     {
         if (_client == null) return;
         try
         {
-            var swarm = await _client.AddAsync(magnetUri, new AddTorrentOptions { AsyncFileSystem = _asyncFs });
+            var swarm = await _client.AddAsync(magnetUri, new AddTorrentOptions { AsyncFileSystem = _asyncFs, DisableWebSeeds = _disableWebSeeds });
             _selectedTorrent ??= swarm;
             Log($"Added: {swarm.Name}");
             _ = ConnectTrackers(swarm, magnetUri);

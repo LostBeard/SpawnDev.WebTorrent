@@ -153,6 +153,11 @@ public class WebRtcConnection : IConnection
         var pc = new RTCPeerConnection(config);
 
         pc.OnConnectionStateChange += OnPeerConnectionStateChange;
+        pc.OnIceConnectionStateChange += (e) =>
+        {
+            if (WebTorrentClient.VerboseLogging)
+                Console.WriteLine($"[WebRTC {RemoteId[..Math.Min(8, RemoteId.Length)]}] ICE: {_pc?.IceConnectionState}");
+        };
 
         return pc;
     }
@@ -327,8 +332,12 @@ public class WebRtcConnection : IConnection
     {
         if (_pc == null) throw new Exception("RTCPeerConnection is null");
         if (string.IsNullOrEmpty(answer.Sdp)) throw new Exception("Answer SDP is empty");
+        if (WebTorrentClient.VerboseLogging)
+            Console.WriteLine($"[WebRTC {RemoteId[..Math.Min(8, RemoteId.Length)]}] Applying answer: type={answer.Type}, sdp length={answer.Sdp.Length}, signalingState={_pc.SignalingState}");
         var answerDesc = new RTCSessionDescription { Type = answer.Type, Sdp = answer.Sdp };
         await _pc.SetRemoteDescription(answerDesc);
+        if (WebTorrentClient.VerboseLogging)
+            Console.WriteLine($"[WebRTC {RemoteId[..Math.Min(8, RemoteId.Length)]}] Answer applied, signalingState={_pc.SignalingState}, iceState={_pc.IceConnectionState}");
     }
 
     /// <summary>Handle incoming SDP answer (initiator side, completes signaling). Legacy — uses object.</summary>

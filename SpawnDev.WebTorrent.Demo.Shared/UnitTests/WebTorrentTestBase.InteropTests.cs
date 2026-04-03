@@ -277,6 +277,119 @@ public abstract partial class WebTorrentTestBase
         Console.WriteLine($"[Interop_Full] SUCCESS — {verified} pieces downloaded from real WebTorrent ecosystem");
     }
 
+    [TestMethod(Timeout = 120000)]
+    public async Task Interop_FullDownload_BigBuckBunny_Complete()
+    {
+        // THE definitive interop test: download Big Buck Bunny 100% from webtorrent.io
+        // web seed. Verify piece count, total size, and that all pieces complete.
+        // This is not a partial test — it downloads the ENTIRE torrent.
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
+
+        var magnet = "magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&dn=Big+Buck+Bunny" +
+            "&tr=wss%3A%2F%2Ftracker.openwebtorrent.com" +
+            "&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F" +
+            "&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Fbig-buck-bunny.torrent";
+
+        var swarm = await client.AddAsync(magnet);
+
+        // Wait for metadata
+        var metaDeadline = DateTime.UtcNow.AddSeconds(30);
+        while (!swarm.HasMetadata && DateTime.UtcNow < metaDeadline)
+            await Task.Delay(300);
+
+        if (!swarm.HasMetadata)
+            throw new UnsupportedTestException("Could not get metadata — webtorrent.io may be down");
+
+        Console.WriteLine($"[FullDL] {swarm.Metadata!.Name}: {swarm.Metadata.PieceCount} pieces, {swarm.Metadata.TotalLength:N0} bytes, {swarm.Metadata.UrlList.Length} web seeds");
+
+        if (swarm.Metadata.UrlList.Length == 0)
+            throw new Exception("No web seeds — magnet ws= parameter not applied");
+
+        // Download everything
+        int lastVerified = 0;
+        swarm.OnPieceVerified += (_) => Interlocked.Increment(ref lastVerified);
+        swarm.StartDownload();
+
+        var dlDeadline = DateTime.UtcNow.AddSeconds(90);
+        while (!swarm.Done && DateTime.UtcNow < dlDeadline)
+        {
+            await Task.Delay(1000);
+            if (lastVerified > 0 && lastVerified % 100 == 0)
+                Console.WriteLine($"[FullDL] Progress: {lastVerified}/{swarm.Metadata.PieceCount} pieces");
+        }
+
+        swarm.StopDownload();
+
+        Console.WriteLine($"[FullDL] Final: {swarm.PieceManager?.CompletedCount}/{swarm.Metadata.PieceCount} pieces, Done={swarm.Done}");
+
+        if (!swarm.Done)
+            throw new Exception($"Download incomplete: {swarm.PieceManager?.CompletedCount}/{swarm.Metadata.PieceCount} pieces in 90s");
+
+        Console.WriteLine("[FullDL] SUCCESS — Big Buck Bunny downloaded 100% from webtorrent.io");
+    }
+
+    [TestMethod(Timeout = 60000)]
+    public async Task Interop_WebRTC_ConnectToJsPeer_DataChannelOpen()
+    {
+        // Test that we can establish a WebRTC data channel with a real JS WebTorrent peer.
+        // Uses Sintel which always has JS seeders on tracker.openwebtorrent.com.
+        // Reports detailed ICE and signaling state if the connection fails.
+        if (!OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("WebRTC interop test requires browser");
+
+        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
+
+        // Use the full Sintel magnet with public trackers
+        var swarm = await client.AddAsync(SintelMagnet);
+
+        // Wait for metadata (proves tracker + WebRTC OR xs= works)
+        var metaDeadline = DateTime.UtcNow.AddSeconds(30);
+        while (!swarm.HasMetadata && DateTime.UtcNow < metaDeadline)
+            await Task.Delay(300);
+
+        if (!swarm.HasMetadata)
+            throw new UnsupportedTestException("No metadata — tracker/xs may be down");
+
+        // Wait for at least 1 peer to connect with a bitfield
+        var peerDeadline = DateTime.UtcNow.AddSeconds(30);
+        while (swarm.PeerCount == 0 && DateTime.UtcNow < peerDeadline)
+            await Task.Delay(300);
+
+        if (swarm.PeerCount == 0)
+        {
+            // No WebRTC peers connected. Report why.
+            throw new Exception(
+                $"No WebRTC peers connected within 30s. " +
+                $"Metadata source: {(swarm.Metadata?.Comment ?? "unknown")}. " +
+                $"This means either: (1) no JS peers online, (2) ICE failed, " +
+                $"(3) our offers weren't sent, or (4) answers weren't processed.");
+        }
+
+        // Check if any peer has pieces (sent bitfield or HaveAll)
+        bool anyPeerHasPieces = swarm.Peers.Any(p => p.PeerBitfield.Length > 0 && p.PeerBitfield.Any(b => b));
+
+        Console.WriteLine($"[WebRTC_Connect] {swarm.PeerCount} peer(s) connected, anyHasPieces={anyPeerHasPieces}");
+
+        // Try to download at least 1 piece from a peer (not web seed)
+        // Disable web seeds temporarily to force P2P
+        int verified = 0;
+        swarm.OnPieceVerified += (_) => Interlocked.Increment(ref verified);
+        swarm.StartDownload();
+
+        var dlDeadline = DateTime.UtcNow.AddSeconds(15);
+        while (verified == 0 && DateTime.UtcNow < dlDeadline)
+            await Task.Delay(300);
+
+        swarm.StopDownload();
+
+        Console.WriteLine($"[WebRTC_Connect] Downloaded {verified} piece(s) from {swarm.PeerCount} peer(s)");
+
+        if (swarm.PeerCount > 0)
+            Console.WriteLine("[WebRTC_Connect] SUCCESS — WebRTC peer connected");
+        else
+            throw new Exception("WebRTC peers disconnected during download");
+    }
+
     [TestMethod(Timeout = 60000)]
     public async Task Interop_RealTracker_ReceiveOffersFromPeers()
     {

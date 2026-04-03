@@ -67,14 +67,10 @@ public class PeerCoordinator : IAsyncDisposable
                     new { type = answerSdp.Type, sdp = answerSdp.Sdp });
                 await tracker.SendAnswerAsync(fromPeerId, answerJson, offerId);
 
-                // Wait for the data channel to open
-                using var openCts = new CancellationTokenSource(15000);
-                if (conn is WebRtcConnection webRtcConn)
-                    await webRtcConn.WaitForOpenAsync(openCts.Token);
-                else if (conn is SipSorceryWebRtcConnection sipConn)
-                    await sipConn.WaitForOpenAsync(openCts.Token);
-
-                await SetupPeerAsync(conn);
+                // Don't block — let ICE complete asynchronously.
+                // Blocking here prevents other offers/answers from being processed
+                // on Wasm single-threaded, which can also prevent ICE events from firing.
+                _ = WaitAndSetupPeerAsync(conn);
             }
             catch (Exception ex)
             {
@@ -90,22 +86,14 @@ public class PeerCoordinator : IAsyncDisposable
                 var conn = await _webRtc.HandleAnswerByOfferIdAsync(offerId, answer);
                 if (conn == null)
                 {
-                    // Fallback: try matching by peerId (legacy)
                     await _webRtc.HandleAnswerAsync(fromPeerId, answer);
                     return;
                 }
 
-                // Remove from pending
                 _pendingOffers.TryRemove(offerId, out _);
 
-                // Wait for data channel to open
-                using var openCts = new CancellationTokenSource(15000);
-                if (conn is WebRtcConnection webRtcConn)
-                    await webRtcConn.WaitForOpenAsync(openCts.Token);
-                else if (conn is SipSorceryWebRtcConnection sipConn)
-                    await sipConn.WaitForOpenAsync(openCts.Token);
-
-                await SetupPeerAsync(conn);
+                // Don't block — let ICE complete asynchronously
+                _ = WaitAndSetupPeerAsync(conn);
             }
             catch (Exception ex)
             {
@@ -142,6 +130,31 @@ public class PeerCoordinator : IAsyncDisposable
             }
         }
         return offers.ToArray();
+    }
+
+    /// <summary>Wait for data channel to open, then setup the peer. Fire-and-forget — never blocks the tracker message loop.</summary>
+    private async Task WaitAndSetupPeerAsync(IConnection conn)
+    {
+        try
+        {
+            using var openCts = new CancellationTokenSource(25000);
+            if (conn is WebRtcConnection webRtcConn)
+                await webRtcConn.WaitForOpenAsync(openCts.Token);
+            else if (conn is SipSorceryWebRtcConnection sipConn)
+                await sipConn.WaitForOpenAsync(openCts.Token);
+
+            await SetupPeerAsync(conn);
+        }
+        catch (OperationCanceledException)
+        {
+            // ICE failed — this peer is unreachable. Silent cleanup.
+            await conn.DisposeAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[PeerCoordinator] Peer setup failed: {ex.GetType().Name}: {ex.Message}");
+            await conn.DisposeAsync();
+        }
     }
 
     /// <summary>Register a wire extension factory. Extensions are created for every new peer BEFORE the BEP 10 handshake.</summary>

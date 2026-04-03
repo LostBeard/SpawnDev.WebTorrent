@@ -391,6 +391,96 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod(Timeout = 60000)]
+    public async Task Interop_WebRTC_DiagnoseConnectionToJsPeer()
+    {
+        // Diagnostic: captures EVERY ICE/signaling state change and reports in test output.
+        if (!OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("Requires browser WebRTC");
+
+        var infoHash = Convert.FromHexString("08ada5a7a6183aae1e09d831df6748d566095a10");
+        var webRtc = Transports.IWebRtcTransport.Create();
+        var states = new List<string>();
+
+        // Generate 1 offer
+        var offerId = Guid.NewGuid().ToString("N");
+        var (offerSdp, conn) = await webRtc.CreateOfferAsync(offerId);
+        states.Add($"OFFER: type={offerSdp.Type}, sdp_len={offerSdp.Sdp.Length}");
+        states.Add($"OFFER_SDP_START: {offerSdp.Sdp[..Math.Min(200, offerSdp.Sdp.Length)]}");
+
+        // Check if offer has ICE candidates
+        bool hasCandidates = offerSdp.Sdp.Contains("a=candidate:");
+        states.Add($"OFFER_HAS_CANDIDATES: {hasCandidates}");
+
+        // Connect to tracker and announce
+        var tracker = new WebSocketTrackerClient("wss://tracker.openwebtorrent.com", Client!.PeerId);
+        bool gotAnswer = false;
+        string answerSdp = "";
+
+        tracker.OnAnswer += async (fromPeerId, answOfferId, answer) =>
+        {
+            if (answOfferId != offerId) return;
+            gotAnswer = true;
+            var sdp = Transports.SdpMessage.FromJson(answer);
+            answerSdp = sdp.Sdp;
+            states.Add($"ANSWER: from={fromPeerId[..Math.Min(8, fromPeerId.Length)]}, type={sdp.Type}, sdp_len={sdp.Sdp.Length}");
+            states.Add($"ANSWER_HAS_CANDIDATES: {sdp.Sdp.Contains("a=candidate:")}");
+
+            try
+            {
+                var result = await webRtc.HandleAnswerByOfferIdAsync(offerId, answer);
+                states.Add($"ANSWER_APPLIED: conn={result != null}");
+            }
+            catch (Exception ex)
+            {
+                states.Add($"ANSWER_FAILED: {ex.GetType().Name}: {ex.Message}");
+            }
+        };
+
+        tracker.OnOffer += (fromPeerId, offId, offer) =>
+        {
+            states.Add($"GOT_OFFER: from={fromPeerId[..Math.Min(8, fromPeerId.Length)]}");
+        };
+
+        int seeders = 0;
+        tracker.OnAnnounceResponse += (s, l) => { seeders = s; states.Add($"ANNOUNCE_RESP: {s}S/{l}L"); };
+
+        var offers = new[] { new TrackerOffer(offerSdp, offerId) };
+        await tracker.StartAsync(infoHash, 0, offers);
+
+        // Wait for answer
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (!gotAnswer && DateTime.UtcNow < deadline)
+            await Task.Delay(500);
+
+        // Wait a bit more for ICE to complete
+        if (gotAnswer)
+            await Task.Delay(5000);
+
+        // Check connection state
+        if (conn is Transports.WebRtcConnection wc)
+        {
+            states.Add($"CONN_STATE: connected={wc.IsConnected}, remoteId={wc.RemoteId[..Math.Min(8, wc.RemoteId.Length)]}");
+        }
+
+        await tracker.DisposeAsync();
+
+        // Report everything
+        var report = string.Join(" | ", states);
+
+        if (seeders == 0)
+            throw new UnsupportedTestException($"Tracker down. States: {report}");
+
+        if (!gotAnswer)
+            throw new Exception($"No answer received within 30s. States: {report}");
+
+        if (conn is Transports.WebRtcConnection wc2 && !wc2.IsConnected)
+            throw new Exception($"Data channel NOT open after answer + 5s ICE. States: {report}");
+
+        // If we get here, the data channel opened!
+        states.Add("SUCCESS: Data channel open to JS peer");
+    }
+
+    [TestMethod(Timeout = 60000)]
     public async Task Interop_RealTracker_ReceiveOffersFromPeers()
     {
         // Connect to tracker.openwebtorrent.com for Big Buck Bunny.

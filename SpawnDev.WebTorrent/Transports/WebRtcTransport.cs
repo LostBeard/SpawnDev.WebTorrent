@@ -235,11 +235,16 @@ public class WebRtcConnection : IConnection
         return new SdpMessage(d.Type, d.Sdp);
     }
 
+    /// <summary>Remove trickle ICE option from SDP (matches simple-peer trickle:false).</summary>
+    private static string FilterTrickle(string sdp)
+        => System.Text.RegularExpressions.Regex.Replace(sdp, @"a=ice-options:trickle\s*\r?\n?", "");
+
     /// <summary>Create SDP offer and return as strongly-typed SdpMessage.</summary>
     public async Task<SdpMessage> CreateOfferSdpAsync()
     {
         var native = await CreateOfferAsync();
-        return ToSdpMessage(native);
+        var sdp = ToSdpMessage(native);
+        return new SdpMessage(sdp.Type, FilterTrickle(sdp.Sdp));
     }
 
     /// <summary>Create SDP offer (initiator side).</summary>
@@ -248,6 +253,9 @@ public class WebRtcConnection : IConnection
         _pc = CreatePeerConnection();
 
         // Create data channel BEFORE creating offer (required by WebRTC spec)
+        // Channel label: random hex (matches simple-peer) or custom
+        var channelLabel = _options.ChannelLabel
+            ?? Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(20));
         var dcOptions = new RTCDataChannelOptions
         {
             Ordered = _options.Ordered,
@@ -255,7 +263,7 @@ public class WebRtcConnection : IConnection
         if (_options.MaxRetransmits.HasValue)
             dcOptions.MaxRetransmits = (ushort)_options.MaxRetransmits.Value;
 
-        var dc = _pc.CreateDataChannel(_options.ChannelLabel, dcOptions);
+        var dc = _pc.CreateDataChannel(channelLabel, dcOptions);
         SetupDataChannel(dc);
 
         // Create offer and set as local description
@@ -300,6 +308,8 @@ public class WebRtcConnection : IConnection
     /// <summary>Handle incoming SDP offer (from SdpMessage) and create answer.</summary>
     public async Task<SdpMessage> HandleOfferSdpAsync(SdpMessage offer)
     {
+        if (string.IsNullOrEmpty(offer.Sdp))
+            throw new Exception("Offer SDP is empty");
         _pc = CreatePeerConnection();
         _pc.OnDataChannel += OnRemoteDataChannel;
         var offerDesc = new RTCSessionDescription { Type = offer.Type, Sdp = offer.Sdp };
@@ -307,14 +317,16 @@ public class WebRtcConnection : IConnection
         var answer = await _pc.CreateAnswer();
         await _pc.SetLocalDescription(answer);
         await WaitForIceGatheringAsync();
-        var local = _pc.LocalDescription!;
-        return new SdpMessage(local.Type, local.Sdp);
+        var local = _pc.LocalDescription
+            ?? throw new Exception("localDescription is null after ICE gathering");
+        return new SdpMessage(local.Type, FilterTrickle(local.Sdp));
     }
 
     /// <summary>Handle incoming SDP answer (from SdpMessage, completes signaling).</summary>
     public async Task HandleAnswerSdpAsync(SdpMessage answer)
     {
-        if (_pc == null) return;
+        if (_pc == null) throw new Exception("RTCPeerConnection is null");
+        if (string.IsNullOrEmpty(answer.Sdp)) throw new Exception("Answer SDP is empty");
         var answerDesc = new RTCSessionDescription { Type = answer.Type, Sdp = answer.Sdp };
         await _pc.SetRemoteDescription(answerDesc);
     }
@@ -478,11 +490,11 @@ public class WebRtcTransportOptions
         "stun:global.stun.twilio.com:3478",
     };
 
-    /// <summary>Data channel label.</summary>
-    public string ChannelLabel { get; set; } = "spawndev-webtorrent";
+    /// <summary>Data channel label. Null = random hex (matches simple-peer).</summary>
+    public string? ChannelLabel { get; set; } = null;
 
-    /// <summary>Whether to use ordered delivery (slower but reliable).</summary>
-    public bool Ordered { get; set; } = false;
+    /// <summary>Whether to use ordered delivery. Must be true for BitTorrent wire protocol.</summary>
+    public bool Ordered { get; set; } = true;
 
     /// <summary>Max retransmits (null = browser default).</summary>
     public int? MaxRetransmits { get; set; } = null;

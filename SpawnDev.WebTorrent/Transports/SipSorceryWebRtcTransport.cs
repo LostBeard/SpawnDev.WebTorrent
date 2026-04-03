@@ -196,7 +196,9 @@ public class SipSorceryWebRtcConnection : IConnection
     {
         _pc = CreatePeerConnection();
 
-        var dc = await _pc.createDataChannel(_options.ChannelLabel, new RTCDataChannelInit
+        var channelLabel = _options.ChannelLabel
+            ?? Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(20));
+        var dc = await _pc.createDataChannel(channelLabel, new RTCDataChannelInit
         {
             ordered = _options.Ordered,
             maxRetransmits = _options.MaxRetransmits.HasValue ? (ushort?)_options.MaxRetransmits.Value : null,
@@ -212,8 +214,12 @@ public class SipSorceryWebRtcConnection : IConnection
         var sdp = localDesc.sdp?.ToString()
             ?? throw new Exception("localDescription.sdp is null");
 
-        return new SdpMessage(localDesc.type.ToString(), sdp);
+        return new SdpMessage(localDesc.type.ToString(), FilterTrickle(sdp));
     }
+
+    /// <summary>Remove trickle ICE option from SDP.</summary>
+    private static string FilterTrickle(string sdp)
+        => System.Text.RegularExpressions.Regex.Replace(sdp, @"a=ice-options:trickle\s*\r?\n?", "");
 
     /// <summary>Create SDP offer (initiator side). Legacy — returns object.</summary>
     public async Task<object> CreateOfferAsync()
@@ -252,6 +258,7 @@ public class SipSorceryWebRtcConnection : IConnection
     /// <summary>Handle incoming SDP offer (from SdpMessage) and create answer.</summary>
     public async Task<SdpMessage> HandleOfferSdpAsync(SdpMessage offer)
     {
+        if (string.IsNullOrEmpty(offer.Sdp)) throw new Exception("Offer SDP is empty");
         _pc = CreatePeerConnection();
         _pc.ondatachannel += (dc) => SetupDataChannel(dc);
         var setResult = _pc.setRemoteDescription(new RTCSessionDescriptionInit
@@ -261,25 +268,27 @@ public class SipSorceryWebRtcConnection : IConnection
         });
         if (setResult != SetDescriptionResultEnum.OK)
             throw new Exception($"setRemoteDescription failed: {setResult}");
-        var answer = _pc.createAnswer();
-        if (answer == null)
-            throw new Exception("createAnswer returned null");
+        var answer = _pc.createAnswer()
+            ?? throw new Exception("createAnswer returned null");
         await _pc.setLocalDescription(answer);
         await WaitForIceGatheringAsync();
         var localDesc = _pc.localDescription
             ?? throw new Exception("localDescription is null after setLocalDescription");
-        return new SdpMessage(localDesc.type.ToString(), localDesc.sdp.ToString());
+        return new SdpMessage(localDesc.type.ToString(), FilterTrickle(localDesc.sdp.ToString()));
     }
 
     /// <summary>Handle incoming SDP answer (from SdpMessage, completes signaling).</summary>
     public Task HandleAnswerSdpAsync(SdpMessage answer)
     {
-        if (_pc == null) return Task.CompletedTask;
-        _pc.setRemoteDescription(new RTCSessionDescriptionInit
+        if (_pc == null) throw new Exception("RTCPeerConnection is null");
+        if (string.IsNullOrEmpty(answer.Sdp)) throw new Exception("Answer SDP is empty");
+        var result = _pc.setRemoteDescription(new RTCSessionDescriptionInit
         {
             type = RTCSdpType.answer,
             sdp = answer.Sdp,
         });
+        if (result != SetDescriptionResultEnum.OK)
+            throw new Exception($"setRemoteDescription(answer) failed: {result}");
         return Task.CompletedTask;
     }
 

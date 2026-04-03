@@ -369,8 +369,8 @@ public abstract partial class WebTorrentTestBase
     {
         var opts = new WebRtcTransportOptions();
         if (opts.IceServers.Length < 1) throw new Exception("Should have default ICE servers");
-        if (opts.ChannelLabel != "spawndev-webtorrent") throw new Exception($"Label: {opts.ChannelLabel}");
-        if (opts.Ordered) throw new Exception("Should default to unordered");
+        if (opts.ChannelLabel != null) throw new Exception($"Label should be null (random), got: {opts.ChannelLabel}");
+        if (!opts.Ordered) throw new Exception("Should default to ordered (required for BitTorrent wire protocol)");
         if (opts.MaxRetransmits != null) throw new Exception("MaxRetransmits should be null by default");
     }
 

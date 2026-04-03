@@ -115,14 +115,9 @@ public class PeerCoordinator : IAsyncDisposable
 
         _trackers.Add(tracker);
 
-        // Pre-generate offers and announce with them
+        // Pre-generate offers and send WITH the first announce (one message, not two)
         var offers = await GenerateOffersAsync(OffersPerAnnounce, ct);
-        await tracker.StartAsync(_infoHash, 0, ct);
-
-        // Re-announce with fresh offers (StartAsync sends the first announce without offers,
-        // so send a second announce immediately with offers)
-        if (offers.Length > 0)
-            await tracker.AnnounceAsync(_infoHash, 0, 0, 0, 0, offers, ct);
+        await tracker.StartAsync(_infoHash, 0, offers, ct);
     }
 
     /// <summary>

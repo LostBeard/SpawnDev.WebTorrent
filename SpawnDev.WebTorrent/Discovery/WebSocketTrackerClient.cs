@@ -62,6 +62,9 @@ public class WebSocketTrackerClient : IDiscovery
     }
 
     public async Task StartAsync(byte[] infoHash, int port, CancellationToken ct = default)
+        => await StartAsync(infoHash, port, null, ct);
+
+    public async Task StartAsync(byte[] infoHash, int port, TrackerOffer[]? offers, CancellationToken ct = default)
     {
         _currentInfoHash = infoHash;
         _ws = new ClientWebSocket();
@@ -72,7 +75,7 @@ public class WebSocketTrackerClient : IDiscovery
             await _ws.ConnectAsync(new Uri(_trackerUrl), ct);
             OnConnected?.Invoke();
             _readLoop = ReadLoopAsync(_readCts.Token);
-            await AnnounceAsync(infoHash, port, 0, 0, 0, ct);
+            await AnnounceAsync(infoHash, port, 0, 0, 0, offers, ct);
 
             // Start periodic re-announce loop
             _ = ReannounceLoopAsync(_readCts.Token);
@@ -246,17 +249,30 @@ public class WebSocketTrackerClient : IDiscovery
             if (!root.TryGetProperty("action", out var actionProp)) return;
             var action = actionProp.GetString();
 
-            switch (action)
+            // JS WebTorrent protocol multiplexes offers/answers under action:"announce".
+            // Check for offer/answer fields FIRST, regardless of action value.
+            if (root.TryGetProperty("offer", out _) && root.TryGetProperty("offer_id", out _))
             {
-                case "announce":
-                    ProcessAnnounce(root);
-                    break;
-                case "offer":
-                    ProcessOffer(root);
-                    break;
-                case "answer":
-                    ProcessAnswer(root);
-                    break;
+                ProcessOffer(root);
+            }
+            else if (root.TryGetProperty("answer", out _) && root.TryGetProperty("offer_id", out _))
+            {
+                ProcessAnswer(root);
+            }
+            else
+            {
+                switch (action)
+                {
+                    case "announce":
+                        ProcessAnnounce(root);
+                        break;
+                    case "offer":
+                        ProcessOffer(root);
+                        break;
+                    case "answer":
+                        ProcessAnswer(root);
+                        break;
+                }
             }
         }
         catch (Exception ex)

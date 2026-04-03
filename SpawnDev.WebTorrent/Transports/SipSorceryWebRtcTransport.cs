@@ -194,16 +194,8 @@ public class SipSorceryWebRtcConnection : IConnection
     /// <summary>Create SDP offer and return as strongly-typed SdpMessage.</summary>
     public async Task<SdpMessage> CreateOfferSdpAsync()
     {
-        var native = await CreateOfferAsync();
-        return ToSdpMessage(native);
-    }
-
-    /// <summary>Create SDP offer (initiator side).</summary>
-    public async Task<object> CreateOfferAsync()
-    {
         _pc = CreatePeerConnection();
 
-        // Create data channel before offer (same as browser)
         var dc = await _pc.createDataChannel(_options.ChannelLabel, new RTCDataChannelInit
         {
             ordered = _options.Ordered,
@@ -211,15 +203,23 @@ public class SipSorceryWebRtcConnection : IConnection
         });
         SetupDataChannel(dc);
 
-        // Create offer
         var offer = _pc.createOffer();
         await _pc.setLocalDescription(offer);
-
-        // Wait for ICE gathering to complete
         await WaitForIceGatheringAsync();
 
-        var localDesc = _pc.localDescription;
-        return new { type = localDesc.type.ToString(), sdp = localDesc.sdp.ToString() };
+        var localDesc = _pc.localDescription
+            ?? throw new Exception("localDescription is null after ICE gathering");
+        var sdp = localDesc.sdp?.ToString()
+            ?? throw new Exception("localDescription.sdp is null");
+
+        return new SdpMessage(localDesc.type.ToString(), sdp);
+    }
+
+    /// <summary>Create SDP offer (initiator side). Legacy — returns object.</summary>
+    public async Task<object> CreateOfferAsync()
+    {
+        var sdp = await CreateOfferSdpAsync();
+        return new { type = sdp.Type, sdp = sdp.Sdp };
     }
 
     /// <summary>Handle incoming SDP offer (responder side) and create answer.</summary>
@@ -254,15 +254,20 @@ public class SipSorceryWebRtcConnection : IConnection
     {
         _pc = CreatePeerConnection();
         _pc.ondatachannel += (dc) => SetupDataChannel(dc);
-        _pc.setRemoteDescription(new RTCSessionDescriptionInit
+        var setResult = _pc.setRemoteDescription(new RTCSessionDescriptionInit
         {
             type = RTCSdpType.offer,
             sdp = offer.Sdp,
         });
+        if (setResult != SetDescriptionResultEnum.OK)
+            throw new Exception($"setRemoteDescription failed: {setResult}");
         var answer = _pc.createAnswer();
+        if (answer == null)
+            throw new Exception("createAnswer returned null");
         await _pc.setLocalDescription(answer);
         await WaitForIceGatheringAsync();
-        var localDesc = _pc.localDescription;
+        var localDesc = _pc.localDescription
+            ?? throw new Exception("localDescription is null after setLocalDescription");
         return new SdpMessage(localDesc.type.ToString(), localDesc.sdp.ToString());
     }
 

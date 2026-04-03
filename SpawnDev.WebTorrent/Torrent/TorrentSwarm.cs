@@ -68,6 +68,9 @@ public class TorrentSwarm : IAsyncDisposable
     /// <summary>Connected peer count.</summary>
     public int PeerCount => _peers.Count;
 
+    /// <summary>Connected peers (for UI display).</summary>
+    public IReadOnlyList<PeerConnection> Peers => _peers;
+
     /// <summary>Bitfield of verified pieces.</summary>
     public bool[]? Bitfield => _pieceManager?.Bitfield;
 

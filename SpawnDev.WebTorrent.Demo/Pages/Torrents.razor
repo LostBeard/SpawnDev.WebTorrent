@@ -265,10 +265,57 @@
 
                             case "peers":
                                 <div style="padding:0.5rem">
-                                    <div style="margin-bottom:0.5rem;color:#64748b;font-size:12px">@(sel.PeerCount + (_peerCoordinators.GetValueOrDefault(sel.InfoHashHex)?.PeerCount ?? 0)) connected peer(s) — Web seeds: @sel.WebSeedCount</div>
-                                    @if (sel.PeerCount + (_peerCoordinators.GetValueOrDefault(sel.InfoHashHex)?.PeerCount ?? 0) == 0)
+                                    <div style="margin-bottom:0.5rem;color:#64748b;font-size:12px">@sel.PeerCount connected peer(s) — Web seeds: @sel.WebSeedCount</div>
+                                    @if (sel.PeerCount == 0)
                                     {
-                                        <div class="qb-muted">Peers connect via WebSocket tracker signaling and WebRTC data channels.<br/>Desktop peers use SIPSorcery, browser peers use SpawnDev.BlazorJS.</div>
+                                        <div class="qb-muted">No peers connected.</div>
+                                    }
+                                    else
+                                    {
+                                        <table class="qb-sub-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>Peer ID</th>
+                                                    <th>Address</th>
+                                                    <th>Type</th>
+                                                    <th class="qb-col-fsize">DL Speed</th>
+                                                    <th class="qb-col-fsize">UL Speed</th>
+                                                    <th class="qb-col-fdl">Downloaded</th>
+                                                    <th class="qb-col-fdl">Uploaded</th>
+                                                    <th>Progress</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                @foreach (var peer in sel.Peers)
+                                                {
+                                                    var peerId = peer.Wire.RemotePeerId != null
+                                                        ? Convert.ToHexString(peer.Wire.RemotePeerId).ToLowerInvariant()
+                                                        : peer.Info.Address;
+                                                    var peerAddr = peer.Info.Address.Length > 24
+                                                        ? peer.Info.Address[..24] + "..."
+                                                        : peer.Info.Address;
+                                                    var peerType = peer.Info.Source;
+                                                    var peerProgress = peer.PeerBitfield.Length > 0
+                                                        ? (double)peer.PeerBitfield.Count(b => b) / peer.PeerBitfield.Length
+                                                        : 0;
+                                                    <tr>
+                                                        <td class="qb-mono" style="font-size:10px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@peerId">@peerId</td>
+                                                        <td class="qb-mono" style="font-size:11px;" title="@peer.Info.Address">@peerAddr</td>
+                                                        <td><span class="qb-ext">@peerType</span></td>
+                                                        <td class="qb-col-fsize qb-mono">@FormatSpeed(0)</td>
+                                                        <td class="qb-col-fsize qb-mono">@FormatSpeed(peer.UploadRate)</td>
+                                                        <td class="qb-col-fdl qb-mono">0 B</td>
+                                                        <td class="qb-col-fdl qb-mono">@FormatBytes(peer.BytesUploaded)</td>
+                                                        <td>
+                                                            <div class="qb-file-progress" style="width:60px;">
+                                                                <div class="qb-file-progress-fill @(peerProgress >= 1.0 ? "done" : "")" style="width:@((peerProgress * 100).ToString("F0"))%"></div>
+                                                                <span style="font-size:10px;">@((peerProgress * 100).ToString("F0"))%</span>
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                }
+                                            </tbody>
+                                        </table>
                                     }
                                 </div>
                                 break;

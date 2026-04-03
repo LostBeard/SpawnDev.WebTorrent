@@ -304,6 +304,73 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod(Timeout = 30000)]
+    public async Task UtMetadata_FullExchange_ThenDownload_ShortLastPiece()
+    {
+        // Critical: test with non-aligned data size so the LAST piece is shorter than PieceLength.
+        // 50000 bytes / 16384 = 3.05 → 4 pieces, last piece is 914 bytes.
+        // This catches bugs where the last piece request/response uses the wrong size.
+        var data = new byte[50000];
+        for (int i = 0; i < data.Length; i++) data[i] = (byte)((i * 31 + 17) % 256);
+
+        int expectedPieceCount = (50000 + 16383) / 16384; // 4
+        int lastPieceSize = 50000 - (expectedPieceCount - 1) * 16384; // 914
+
+        await using var seeder = new WebTorrentClient(crypto: Client!.Crypto);
+        var seederSwarm = await seeder.SeedAsync(data, "short-last.bin",
+            new TorrentCreatorOptions { PieceLength = 16384 });
+
+        if (seederSwarm.Metadata!.PieceCount != expectedPieceCount)
+            throw new Exception($"Expected {expectedPieceCount} pieces, got {seederSwarm.Metadata.PieceCount}");
+
+        var infoHashHex = Convert.ToHexString(seederSwarm.InfoHash).ToLowerInvariant();
+
+        await using var downloader = new WebTorrentClient(crypto: Client!.Crypto);
+        var dlSwarm = await downloader.AddAsync($"magnet:?xt=urn:btih:{infoHashHex}");
+
+        var (connA, connB) = MockLoopbackConnection.CreatePair();
+        var wA = new WireProtocol(connA);
+        var wB = new WireProtocol(connB);
+        await Task.WhenAll(
+            wA.SendHandshakeAsync(seederSwarm.InfoHash, seeder.PeerId),
+            wB.SendHandshakeAsync(seederSwarm.InfoHash, downloader.PeerId));
+        await Task.WhenAll(wA.ReceiveHandshakeAsync(), wB.ReceiveHandshakeAsync());
+
+        var metadataReceived = new TaskCompletionSource<bool>();
+        dlSwarm.OnMetadata += () => metadataReceived.TrySetResult(true);
+
+        await seederSwarm.AddConnectedPeerAsync(wA, new PeerInfo { Address = "dl", Source = "test" });
+        await dlSwarm.AddConnectedPeerAsync(wB, new PeerInfo { Address = "seeder", Source = "test" });
+
+        if (await Task.WhenAny(metadataReceived.Task, Task.Delay(20000)) != metadataReceived.Task)
+            throw new Exception("Metadata exchange timed out");
+
+        int verified = 0;
+        int lastVerified = -1;
+        dlSwarm.OnPieceVerified += (idx) =>
+        {
+            Interlocked.Increment(ref verified);
+            if (idx == expectedPieceCount - 1) lastVerified = idx;
+        };
+        dlSwarm.StartDownload();
+
+        var deadline = DateTime.UtcNow.AddSeconds(20);
+        while (verified < expectedPieceCount && DateTime.UtcNow < deadline)
+            await Task.Delay(100);
+
+        dlSwarm.StopDownload();
+
+        if (verified != expectedPieceCount)
+            throw new Exception($"Download incomplete: {verified}/{expectedPieceCount} pieces. Last piece (idx {expectedPieceCount - 1}, size {lastPieceSize} bytes) verified={lastVerified >= 0}");
+
+        // Verify every byte including the short last piece
+        var result = await dlSwarm.Files[0].ReadAsync(0, data.Length);
+        if (!result.SequenceEqual(data))
+            throw new Exception("Data mismatch — short last piece corrupted");
+
+        Console.WriteLine($"[ShortLastPiece] SUCCESS — {verified}/{expectedPieceCount} pieces, last piece {lastPieceSize} bytes, data verified byte-for-byte");
+    }
+
+    [TestMethod(Timeout = 30000)]
     public async Task UtMetadata_FullExchange_MultiFileTorrent()
     {
         // Multi-file torrent: metadata exchange must work for larger info dicts

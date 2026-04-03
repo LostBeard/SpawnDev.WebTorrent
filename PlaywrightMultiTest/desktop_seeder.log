@@ -1,0 +1,6 @@
+[15:50:22.285] [DesktopSeeder] TorrentAdd: 
+[15:50:22.292] [DesktopSeeder] [Swarm] Download loop started
+[15:50:22.293] [DesktopSeeder] [Swarm] Download loop ended
+[15:50:22.476] [DesktopSeeder] Seeding: magnet:?xt=urn:btih:30672c7623ba089fc8a74541cc45f55ffcdfcb99&dn=crossplatform-test.bin&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce
+[15:50:22.477] [DesktopSeeder] InfoHash: 30672c7623ba089fc8a74541cc45f55ffcdfcb99
+[15:50:32.597] [DesktopSeeder] After tracker wait: Ready=True, Done=True, Peers=0

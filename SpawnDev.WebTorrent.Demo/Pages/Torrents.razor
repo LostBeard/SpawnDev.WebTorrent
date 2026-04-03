@@ -290,17 +290,17 @@
                                                 {
                                                     var peerId = peer.Wire.RemotePeerId != null
                                                         ? Convert.ToHexString(peer.Wire.RemotePeerId).ToLowerInvariant()
-                                                        : peer.Info.Address;
-                                                    var peerAddr = peer.Info.Address.Length > 24
-                                                        ? peer.Info.Address[..24] + "..."
-                                                        : peer.Info.Address;
+                                                        : peer.Address;
+                                                    var peerAddr = peer.Address.Length > 24
+                                                        ? peer.Address[..24] + "..."
+                                                        : peer.Address;
                                                     var peerType = peer.Info.Source;
                                                     var peerProgress = peer.PeerBitfield.Length > 0
                                                         ? (double)peer.PeerBitfield.Count(b => b) / peer.PeerBitfield.Length
                                                         : 0;
                                                     <tr>
                                                         <td class="qb-mono" style="font-size:10px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@peerId">@peerId</td>
-                                                        <td class="qb-mono" style="font-size:11px;" title="@peer.Info.Address">@peerAddr</td>
+                                                        <td class="qb-mono" style="font-size:11px;" title="@peer.Address">@peerAddr</td>
                                                         <td><span class="qb-ext">@peerType</span></td>
                                                         <td class="qb-col-fsize qb-mono">@FormatSpeed(0)</td>
                                                         <td class="qb-col-fsize qb-mono">@FormatSpeed(peer.UploadRate)</td>

@@ -1,6 +1,7 @@
 using SpawnDev.BlazorJS;
 using SpawnDev.WebTorrent.Discovery;
 using SpawnDev.WebTorrent.Storage;
+using SpawnDev.WebTorrent.Transports;
 using SpawnDev.WebTorrent.Wire;
 
 namespace SpawnDev.WebTorrent.Torrent;
@@ -386,7 +387,7 @@ public class TorrentSwarm : IAsyncDisposable
                 {
                     try
                     {
-                        await AddConnectedPeerAsync(peer.Wire, new PeerInfo { Address = peer.Connection.RemoteAddress ?? peer.PeerId, Source = "webrtc" });
+                        await AddConnectedPeerAsync(peer.Wire, new PeerInfo { Address = peer.PeerId, Source = "webrtc" }, peer.Connection);
                     }
                     catch (Exception ex)
                     {
@@ -497,7 +498,7 @@ public class TorrentSwarm : IAsyncDisposable
     }
 
     /// <summary>Add a peer that has already completed the handshake (from PeerCoordinator or incoming).</summary>
-    public async Task AddConnectedPeerAsync(WireProtocol wire, PeerInfo info)
+    public async Task AddConnectedPeerAsync(WireProtocol wire, PeerInfo info, IConnection? connection = null)
     {
         if (_disposed)
         {
@@ -513,7 +514,7 @@ public class TorrentSwarm : IAsyncDisposable
                 return;
             }
 
-            var peer = new PeerConnection(wire, info);
+            var peer = new PeerConnection(wire, info) { Connection = connection };
 
             // Wire up events
             wire.OnBitfield += (bf) =>
@@ -1044,6 +1045,12 @@ public class PeerConnection : IAsyncDisposable
 {
     public WireProtocol Wire { get; }
     public PeerInfo Info { get; }
+
+    /// <summary>The underlying transport connection. Used to read RemoteAddress after ICE resolves.</summary>
+    public IConnection? Connection { get; internal set; }
+
+    /// <summary>Remote peer's IP address. Reads live from the transport connection (resolves async after WebRTC ICE completes). Falls back to PeerInfo.Address.</summary>
+    public string Address => Connection?.RemoteAddress ?? Info.Address;
     public bool[] PeerBitfield { get; set; } = Array.Empty<bool>();
     public bool IsChoked { get; set; } = true;
     public bool IsInterested { get; set; }

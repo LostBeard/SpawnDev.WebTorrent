@@ -430,6 +430,7 @@ public abstract partial class WebTorrentTestBase
     {
         private readonly List<byte> _captured;
         public string RemoteId => "mock";
+        public string? RemoteAddress => null;
         public string TransportType => "mock";
         public bool IsConnected => true;
         public event Action? OnDataAvailable;

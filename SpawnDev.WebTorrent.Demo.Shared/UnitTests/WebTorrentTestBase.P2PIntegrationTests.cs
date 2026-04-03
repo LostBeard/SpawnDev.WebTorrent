@@ -236,6 +236,7 @@ internal class MockLoopbackConnection : SpawnDev.WebTorrent.Transports.IConnecti
     private readonly SemaphoreSlim _dataAvailable = new(0);
 
     public string RemoteId { get; set; } = "";
+    public string? RemoteAddress => null;
     public string TransportType => "loopback";
     public bool IsConnected { get; private set; } = true;
 

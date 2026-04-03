@@ -74,6 +74,7 @@ public class TcpConnection : IConnection
     private readonly NetworkStream _stream;
 
     public string RemoteId { get; }
+    public string? RemoteAddress => RemoteId?.Split(':').FirstOrDefault();
     public string TransportType => "tcp";
     public bool IsConnected => _client.Connected;
 

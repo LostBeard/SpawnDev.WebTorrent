@@ -33,6 +33,9 @@ public interface IConnection : IAsyncDisposable
     /// <summary>Remote peer identifier (IP:port for TCP, peer ID for WebRTC).</summary>
     string RemoteId { get; }
 
+    /// <summary>Remote peer's IP address. For WebRTC: extracted from ICE stats after connection. For TCP: IP from RemoteId. Null if not yet resolved.</summary>
+    string? RemoteAddress { get; }
+
     /// <summary>Transport type this connection uses.</summary>
     string TransportType { get; }
 

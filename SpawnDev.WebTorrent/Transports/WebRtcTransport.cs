@@ -139,6 +139,9 @@ public class WebRtcConnection : IConnection
     public string TransportType => "webrtc";
     public bool IsConnected { get; private set; }
 
+    /// <summary>Remote peer's IP address, extracted from WebRTC ICE candidate after connection.</summary>
+    public string? RemoteAddress { get; private set; }
+
     public event Action? OnDataAvailable;
     public event Action? OnDisconnected;
 
@@ -197,6 +200,32 @@ public class WebRtcConnection : IConnection
     {
         IsConnected = true;
         _openTcs.TrySetResult();
+        // Extract remote IP from ICE stats (fire-and-forget, non-blocking)
+        _ = ExtractRemoteAddressAsync();
+    }
+
+    private async Task ExtractRemoteAddressAsync()
+    {
+        try
+        {
+            if (_pc == null) return;
+            using var stats = await _pc.GetStats();
+            // Find the succeeded candidate pair
+            foreach (var key in stats.Keys())
+            {
+                using var stat = stats.Get<SpawnDev.BlazorJS.JSObjects.WebRTC.RTCIceCandidatePairStats>(key);
+                if (stat == null || stat.Type != "candidate-pair") continue;
+                if (stat.State != "succeeded") continue;
+                var remoteCandidateId = stat.RemoteCandidateId;
+                if (string.IsNullOrEmpty(remoteCandidateId)) continue;
+                // Get the remote candidate stats to read the IP
+                using var remoteCandidate = stats.Get<SpawnDev.BlazorJS.JSObjects.WebRTC.RTCIceCandidateStats>(remoteCandidateId);
+                if (remoteCandidate == null) continue;
+                RemoteAddress = remoteCandidate.Address;
+                if (!string.IsNullOrEmpty(RemoteAddress)) return;
+            }
+        }
+        catch { /* Non-critical — address is for display only */ }
     }
 
     private void OnDataChannelClose(Event e)

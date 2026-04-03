@@ -111,6 +111,7 @@ public class SipSorceryWebRtcConnection : IConnection
     private bool _disposed;
 
     public string RemoteId { get; }
+    public string? RemoteAddress { get; private set; }
     public string TransportType => "webrtc";
     public bool IsConnected { get; private set; }
 

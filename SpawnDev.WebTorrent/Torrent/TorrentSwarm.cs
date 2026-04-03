@@ -386,7 +386,7 @@ public class TorrentSwarm : IAsyncDisposable
                 {
                     try
                     {
-                        await AddConnectedPeerAsync(peer.Wire, new PeerInfo { Address = peer.PeerId, Source = "webrtc" });
+                        await AddConnectedPeerAsync(peer.Wire, new PeerInfo { Address = peer.Connection.RemoteAddress ?? peer.PeerId, Source = "webrtc" });
                     }
                     catch (Exception ex)
                     {

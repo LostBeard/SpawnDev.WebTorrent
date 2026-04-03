@@ -74,6 +74,9 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
         set => DownloadLimiter.Rate = value;
     }
 
+    /// <summary>Maximum peers per torrent.</summary>
+    public int MaxConns => _options.MaxConns;
+
     // Events
     public event Action<TorrentSwarm>? OnTorrentAdd;
     public event Action<TorrentSwarm>? OnTorrentRemove;
@@ -107,11 +110,14 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
         UploadLimit = _options.UploadLimit;
         DownloadLimit = _options.DownloadLimit;
 
-        // Generate peer ID: -SDMMNN- + 12 random bytes (Azureus-style)
-        // SD = SpawnDev, MMNN = major*10+minor, patch (from assembly version)
+        // Generate peer ID: -SDMmBB- + 12 random bytes (Azureus-style)
+        // SD = SpawnDev, M = major (0-9), m = minor (0-9), BB = build (00-99)
         _peerId = new byte[20];
         var v = typeof(WebTorrentClient).Assembly.GetName().Version ?? new Version(0, 0, 0);
-        var versionStr = $"-SD{v.Major * 10 + v.Minor:D2}{v.Build:D2}-";
+        int major = Math.Min(v.Major, 9);
+        int minor = Math.Min(v.Minor, 9);
+        int build = Math.Min(Math.Max(v.Build, 0), 99);
+        var versionStr = $"-SD{major}{minor}{build:D2}-";
         System.Text.Encoding.ASCII.GetBytes(versionStr).CopyTo(_peerId, 0);
         Random.Shared.NextBytes(_peerId.AsSpan(8));
     }
@@ -445,12 +451,12 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
         return swarm;
     }
 
-    /// <summary>Get a torrent by info hash (hex string or 20-byte array).</summary>
+    /// <summary>Get a torrent by info hash hex string (must be exactly 40 hex characters).</summary>
     public TorrentSwarm? Get(string infoHashHex)
     {
-        var hash = infoHashHex.Length == 40
-            ? Convert.FromHexString(infoHashHex)
-            : System.Text.Encoding.ASCII.GetBytes(infoHashHex);
+        if (infoHashHex.Length != 40)
+            throw new ArgumentException("Info hash hex string must be exactly 40 characters");
+        var hash = Convert.FromHexString(infoHashHex);
         return _torrents.FirstOrDefault(t => t.InfoHash.SequenceEqual(hash));
     }
 
@@ -546,6 +552,9 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
                 await connection.CloseAsync();
                 return;
             }
+
+            // Register extensions before our handshake so BEP 10 bit is set
+            swarm.RegisterExtensions(wire);
 
             // Send our handshake back
             await wire.SendHandshakeAsync(swarm.InfoHash, _peerId);

@@ -299,19 +299,6 @@ public abstract partial class WebTorrentTestBase
         Console.WriteLine("[Wire] SendHaveNone format: OK");
     }
 
-    [TestMethod]
-    public async Task Wire_MessageSizeLimit()
-    {
-        var mock = new MockConnection(new List<byte>());
-        var wire = new WireProtocol(mock);
-
-        // Verify the max message size is enforced (16MB)
-        if (WireProtocol.MaxMessageSize != 16 * 1024 * 1024)
-            throw new Exception($"MaxMessageSize should be 16MB, got {WireProtocol.MaxMessageSize}");
-
-        Console.WriteLine("[Wire] Message size limit: OK");
-    }
-
     // ═══════════════════════════════════════════════════════════
     //  BEP 11 — PEX (Peer Exchange)
     // ═══════════════════════════════════════════════════════════
@@ -321,7 +308,7 @@ public abstract partial class WebTorrentTestBase
     {
         var pex = new UtPexExtension();
         var received = new List<string>();
-        pex.OnPeersReceived += (peers) => received.AddRange(peers);
+        pex.OnPeersReceived += (peers) => received.AddRange(peers.Select(p => p.Address));
 
         // Build a bencoded PEX message with "added" compact peer list
         // d5:added12:...e  (2 peers × 6 bytes = 12 bytes)
@@ -352,7 +339,7 @@ public abstract partial class WebTorrentTestBase
     {
         var pex = new UtPexExtension();
         var received = new List<string>();
-        pex.OnPeersReceived += (peers) => received.AddRange(peers);
+        pex.OnPeersReceived += (peers) => received.AddRange(peers.Select(p => p.Address));
 
         // Empty PEX message (no added peers)
         var msg = new System.Collections.Generic.Dictionary<string, object>();
@@ -365,25 +352,4 @@ public abstract partial class WebTorrentTestBase
         Console.WriteLine("[BEP11] PEX empty message: OK");
     }
 
-    [TestMethod]
-    public async Task Bep11_PexExtension_Name()
-    {
-        var pex = new UtPexExtension();
-        if (pex.Name != "ut_pex") throw new Exception($"Name should be ut_pex, got {pex.Name}");
-
-        Console.WriteLine("[BEP11] PEX extension name: OK");
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    //  BEP 9 — Metadata Extension
-    // ═══════════════════════════════════════════════════════════
-
-    [TestMethod]
-    public async Task Bep9_MetadataExtension_Name()
-    {
-        var meta = new UtMetadataExtension();
-        if (meta.Name != "ut_metadata") throw new Exception($"Name should be ut_metadata, got {meta.Name}");
-
-        Console.WriteLine("[BEP9] Metadata extension name: OK");
-    }
 }

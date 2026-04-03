@@ -21,6 +21,7 @@ public class WebRtcTransport : IWebRtcTransport
 {
     private readonly WebRtcTransportOptions _options;
     private readonly List<WebRtcConnection> _connections = new();
+    private bool _disposed;
 
     public string Type => "webrtc";
     public bool CanAccept => true;
@@ -106,8 +107,13 @@ public class WebRtcTransport : IWebRtcTransport
 
     public async ValueTask DisposeAsync()
     {
+        if (_disposed) return;
+        _disposed = true;
         foreach (var conn in _connections.ToArray())
-            await conn.DisposeAsync();
+        {
+            try { await conn.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)); }
+            catch { }
+        }
         _connections.Clear();
     }
 }
@@ -127,6 +133,7 @@ public class WebRtcConnection : IConnection
     private TaskCompletionSource? _receiveSignal;
     private RTCPeerConnection? _pc;
     private RTCDataChannel? _dc;
+    private bool _disposed;
 
     public string RemoteId { get; }
     public string TransportType => "webrtc";
@@ -467,7 +474,8 @@ public class WebRtcConnection : IConnection
 
     public async ValueTask DisposeAsync()
     {
-        // Unsubscribe from JS events FIRST to prevent callbacks during/after close
+        if (_disposed) return;
+        _disposed = true;
         if (_dc != null)
         {
             _dc.OnOpen -= OnDataChannelOpen;

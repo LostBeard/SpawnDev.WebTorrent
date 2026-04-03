@@ -21,32 +21,34 @@ public class UdpTrackerClient : IDiscovery
     private readonly string _host;
     private readonly int _port;
     private readonly byte[] _peerId;
+    private readonly int _key = RandomNumberGenerator.GetInt32(int.MinValue, int.MaxValue);
     private UdpClient? _udp;
     private long _connectionId;
     private DateTime _connectionExpiry;
     private byte[]? _currentInfoHash;
+    private int _currentPort;
+    private int _announceIntervalSecs = 1800;
+    private CancellationTokenSource? _reAnnounceCts;
 
     public string Type => "udp-tracker";
     public bool IsConnected => _udp != null && _connectionExpiry > DateTime.UtcNow;
 
     public event Action<PeerInfo>? OnPeer;
-    public event Action<int, int>? OnAnnounceResponse; // seeders, leechers
+    public event Action<int, int>? OnAnnounceResponse;
     public event Action<string>? OnError;
     public event Action? OnConnected;
     public event Action? OnDisconnected;
 
-    // Actions
     private const int ActionConnect = 0;
     private const int ActionAnnounce = 1;
     private const int ActionScrape = 2;
     private const int ActionError = 3;
 
-    // Magic connection ID for connect request
     private const long ProtocolId = 0x41727101980;
+    private const int MaxConnectRetries = 8;
 
     public UdpTrackerClient(string trackerUrl, byte[] peerId)
     {
-        // Parse udp://host:port/announce
         var uri = new Uri(trackerUrl);
         _host = uri.Host;
         _port = uri.Port > 0 ? uri.Port : 6969;
@@ -56,17 +58,18 @@ public class UdpTrackerClient : IDiscovery
     public async Task StartAsync(byte[] infoHash, int port, CancellationToken ct = default)
     {
         _currentInfoHash = infoHash;
+        _currentPort = port;
 
         try
         {
             _udp = new UdpClient();
             _udp.Connect(_host, _port);
 
-            // Step 1: Connect
             await ConnectAsync(ct);
+            await AnnounceAsync(infoHash, port, 0, 0, 0, TrackerEvent.Started, ct);
 
-            // Step 2: Announce
-            await AnnounceAsync(infoHash, port, 0, 0, 0, ct);
+            _reAnnounceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            _ = ReannounceLoopAsync(_reAnnounceCts.Token);
         }
         catch (Exception ex)
         {
@@ -74,81 +77,117 @@ public class UdpTrackerClient : IDiscovery
         }
     }
 
+    private async Task ReannounceLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(_announceIntervalSecs), ct);
+                if (_currentInfoHash != null && _udp != null)
+                {
+                    await AnnounceAsync(_currentInfoHash, _currentPort, 0, 0, 0, TrackerEvent.None, ct);
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch { }
+    }
+
+    /// <summary>
+    /// BEP 15 §3: exponential backoff. Timeout = 15 * 2^n seconds, n = 0..8.
+    /// </summary>
     private async Task ConnectAsync(CancellationToken ct)
     {
         if (_udp == null) return;
 
-        var transactionId = RandomNumberGenerator.GetInt32(int.MaxValue);
-
-        // Connect request: 8 bytes protocol_id + 4 bytes action(0) + 4 bytes transaction_id
-        var request = new byte[16];
-        WriteInt64BE(request, 0, ProtocolId);
-        WriteInt32BE(request, 8, ActionConnect);
-        WriteInt32BE(request, 12, transactionId);
-
-        await _udp.SendAsync(request, request.Length);
-
-        // Receive response with timeout
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(5000);
-
-        try
+        for (int attempt = 0; attempt <= MaxConnectRetries; attempt++)
         {
-            var result = await ReceiveWithTimeoutAsync(cts.Token);
-            if (result.Length < 16) return;
+            var transactionId = RandomNumberGenerator.GetInt32(int.MaxValue);
+            var timeoutMs = 15000 * (1 << attempt);
 
-            var action = ReadInt32BE(result, 0);
-            var respTxId = ReadInt32BE(result, 4);
+            var request = new byte[16];
+            WriteInt64BE(request, 0, ProtocolId);
+            WriteInt32BE(request, 8, ActionConnect);
+            WriteInt32BE(request, 12, transactionId);
 
-            if (action != ActionConnect || respTxId != transactionId)
+            await _udp.SendAsync(request, request.Length);
+
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(timeoutMs);
+
+            try
             {
-                OnError?.Invoke("Invalid connect response");
+                var result = await ReceiveWithTimeoutAsync(cts.Token);
+                if (result.Length < 16) continue;
+
+                var action = ReadInt32BE(result, 0);
+                var respTxId = ReadInt32BE(result, 4);
+
+                if (action == ActionError && result.Length > 8)
+                {
+                    var errMsg = System.Text.Encoding.UTF8.GetString(result, 8, result.Length - 8);
+                    OnError?.Invoke($"Tracker connect error: {errMsg}");
+                    return;
+                }
+
+                if (action != ActionConnect || respTxId != transactionId) continue;
+
+                _connectionId = ReadInt64BE(result, 8);
+                _connectionExpiry = DateTime.UtcNow.AddMinutes(1);
+                OnConnected?.Invoke();
                 return;
             }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                // Timeout for this attempt — retry
+            }
+        }
 
-            _connectionId = ReadInt64BE(result, 8);
-            _connectionExpiry = DateTime.UtcNow.AddMinutes(1); // connection_id valid for 1 minute
-            OnConnected?.Invoke();
-        }
-        catch (OperationCanceledException)
-        {
-            OnError?.Invoke("UDP connect timeout");
-        }
+        OnError?.Invoke("UDP connect failed after max retries");
     }
 
     public async Task AnnounceAsync(byte[] infoHash, int port,
-        long uploaded, long downloaded, long left, CancellationToken ct = default)
+        long uploaded, long downloaded, long left,
+        TrackerEvent trackerEvent = TrackerEvent.None, CancellationToken ct = default)
     {
         if (_udp == null) return;
 
-        // Re-connect if connection expired
         if (_connectionExpiry <= DateTime.UtcNow)
             await ConnectAsync(ct);
 
-        if (_connectionExpiry <= DateTime.UtcNow) return; // connect failed
+        if (_connectionExpiry <= DateTime.UtcNow) return;
 
         var transactionId = RandomNumberGenerator.GetInt32(int.MaxValue);
 
-        // Announce request: 98 bytes
+        int eventInt = trackerEvent switch
+        {
+            TrackerEvent.None => 0,
+            TrackerEvent.Completed => 1,
+            TrackerEvent.Started => 2,
+            TrackerEvent.Stopped => 3,
+            _ => 0,
+        };
+
         var request = new byte[98];
-        WriteInt64BE(request, 0, _connectionId);           // connection_id
-        WriteInt32BE(request, 8, ActionAnnounce);           // action = announce
-        WriteInt32BE(request, 12, transactionId);           // transaction_id
-        Array.Copy(infoHash, 0, request, 16, 20);          // info_hash
-        Array.Copy(_peerId, 0, request, 36, 20);            // peer_id
-        WriteInt64BE(request, 56, downloaded);               // downloaded
-        WriteInt64BE(request, 64, left);                     // left
-        WriteInt64BE(request, 72, uploaded);                  // uploaded
-        WriteInt32BE(request, 80, 0);                        // event: 0=none
-        WriteInt32BE(request, 84, 0);                        // IP address: 0=default
-        WriteInt32BE(request, 88, RandomNumberGenerator.GetInt32(int.MaxValue)); // key (random)
-        WriteInt32BE(request, 92, -1);                       // num_want: -1=default
-        WriteInt16BE(request, 96, (short)port);              // port
+        WriteInt64BE(request, 0, _connectionId);
+        WriteInt32BE(request, 8, ActionAnnounce);
+        WriteInt32BE(request, 12, transactionId);
+        Array.Copy(infoHash, 0, request, 16, 20);
+        Array.Copy(_peerId, 0, request, 36, 20);
+        WriteInt64BE(request, 56, downloaded);
+        WriteInt64BE(request, 64, left);
+        WriteInt64BE(request, 72, uploaded);
+        WriteInt32BE(request, 80, eventInt);
+        WriteInt32BE(request, 84, 0);
+        WriteInt32BE(request, 88, _key);
+        WriteInt32BE(request, 92, -1);
+        WriteInt16BE(request, 96, (short)port);
 
         await _udp.SendAsync(request, request.Length);
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(5000);
+        cts.CancelAfter(15000);
 
         try
         {
@@ -167,13 +206,14 @@ public class UdpTrackerClient : IDiscovery
 
             if (action != ActionAnnounce || respTxId != transactionId) return;
 
-            // Parse announce response
-            // interval(4) + leechers(4) + seeders(4) + peers(6*N)
+            var interval = ReadInt32BE(result, 8);
+            if (interval > 0)
+                _announceIntervalSecs = interval;
+
             var leechers = ReadInt32BE(result, 12);
             var seeders = ReadInt32BE(result, 16);
             OnAnnounceResponse?.Invoke(seeders, leechers);
 
-            // Parse compact peer list (6 bytes each: 4 IP + 2 port)
             for (int i = 20; i + 6 <= result.Length; i += 6)
             {
                 var ip = $"{result[i]}.{result[i + 1]}.{result[i + 2]}.{result[i + 3]}";
@@ -196,14 +236,24 @@ public class UdpTrackerClient : IDiscovery
     {
         if (_udp == null) return Array.Empty<byte>();
 
-        // UdpClient.ReceiveAsync with cancellation
-        var receiveTask = _udp.ReceiveAsync(ct);
-        var result = await receiveTask;
+        var result = await _udp.ReceiveAsync(ct);
         return result.Buffer;
     }
 
     public async Task StopAsync()
     {
+        _reAnnounceCts?.Cancel();
+
+        if (_udp != null && _currentInfoHash != null && _connectionExpiry > DateTime.UtcNow)
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await AnnounceAsync(_currentInfoHash, _currentPort, 0, 0, 0, TrackerEvent.Stopped, cts.Token);
+            }
+            catch { }
+        }
+
         _udp?.Close();
         _udp?.Dispose();
         _udp = null;
@@ -215,7 +265,6 @@ public class UdpTrackerClient : IDiscovery
         await StopAsync();
     }
 
-    // Big-endian helpers
     private static void WriteInt64BE(byte[] buf, int offset, long value)
     {
         buf[offset] = (byte)(value >> 56);

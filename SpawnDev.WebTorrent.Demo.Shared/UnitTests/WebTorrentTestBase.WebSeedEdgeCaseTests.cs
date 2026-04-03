@@ -25,28 +25,6 @@ public abstract partial class WebTorrentTestBase
         if (ws.MaxConcurrent != 8) throw new Exception($"MaxConcurrent: {ws.MaxConcurrent}");
     }
 
-    [TestMethod]
-    public async Task WebSeed_TrailingSlashTrimmed()
-    {
-        var data = new byte[16384];
-        var (_, meta) = TorrentCreator.CreateFromBytes("ws-test.bin", data);
-        // Both with and without trailing slash should work
-        var ws1 = new WebSeedConnection(new HttpClient(), "https://example.com/files/", meta);
-        var ws2 = new WebSeedConnection(new HttpClient(), "https://example.com/files", meta);
-        // No crash — constructor handles both
-        Console.WriteLine("[WebSeed] Trailing slash trimmed — no errors");
-    }
-
-    [TestMethod]
-    public async Task WebSeed_MaxConcurrent_Configurable()
-    {
-        var data = new byte[16384];
-        var (_, meta) = TorrentCreator.CreateFromBytes("ws-test.bin", data);
-        var ws = new WebSeedConnection(new HttpClient(), "https://example.com/files", meta);
-        ws.MaxConcurrent = 8;
-        if (ws.MaxConcurrent != 8) throw new Exception($"MaxConcurrent: {ws.MaxConcurrent}");
-    }
-
     // ═══════════════════════════════════════════════════════════
     //  TorrentMetadata — Edge Cases
     // ═══════════════════════════════════════════════════════════

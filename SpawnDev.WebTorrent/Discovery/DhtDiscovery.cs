@@ -65,7 +65,8 @@ public class DhtDiscovery : IDiscovery
     }
 
     public async Task AnnounceAsync(byte[] infoHash, int port,
-        long uploaded, long downloaded, long left, CancellationToken ct = default)
+        long uploaded, long downloaded, long left,
+        TrackerEvent trackerEvent = TrackerEvent.None, CancellationToken ct = default)
     {
         if (_udp == null || !IsReady) return;
 
@@ -228,15 +229,17 @@ public class DhtDiscovery : IDiscovery
         switch (method)
         {
             case "ping":
-                // Respond with our node ID
                 var pong = BuildPingResponse(txId);
                 _ = SendKrpcAsync(from, pong, CancellationToken.None);
                 break;
             case "find_node":
             case "get_peers":
-                // Respond with closest nodes
                 var resp = BuildNodesResponse(txId, _nodeId);
                 _ = SendKrpcAsync(from, resp, CancellationToken.None);
+                break;
+            case "announce_peer":
+                var pong2 = BuildPingResponse(txId);
+                _ = SendKrpcAsync(from, pong2, CancellationToken.None);
                 break;
         }
     }
@@ -252,8 +255,7 @@ public class DhtDiscovery : IDiscovery
     private byte[] BuildFindNode(byte[] target)
     {
         var txId = NextTxId();
-        var msg = $"d1:ad2:id20:{Enc(_nodeId)}6:target20:{Enc(target)}e1:q9:find_node1:t2:{Enc(txId)}1:y1:qe";
-        return EncodeKrpc(txId, "find_node", new Dictionary<string, byte[]>
+        return EncodeKrpc(txId, "find_node", new Dictionary<string, object>
         {
             ["id"] = _nodeId,
             ["target"] = target,
@@ -262,7 +264,7 @@ public class DhtDiscovery : IDiscovery
 
     private byte[] BuildGetPeers(byte[] infoHash)
     {
-        return EncodeKrpc(NextTxId(), "get_peers", new Dictionary<string, byte[]>
+        return EncodeKrpc(NextTxId(), "get_peers", new Dictionary<string, object>
         {
             ["id"] = _nodeId,
             ["info_hash"] = infoHash,
@@ -271,11 +273,12 @@ public class DhtDiscovery : IDiscovery
 
     private byte[] BuildAnnouncePeer(byte[] infoHash, int port, byte[]? token)
     {
-        var args = new Dictionary<string, byte[]>
+        var args = new Dictionary<string, object>
         {
             ["id"] = _nodeId,
+            ["implied_port"] = 0,
             ["info_hash"] = infoHash,
-            ["port"] = BitConverter.GetBytes((ushort)port).Reverse().ToArray(),
+            ["port"] = port,
         };
         if (token != null) args["token"] = token;
         return EncodeKrpc(NextTxId(), "announce_peer", args);
@@ -283,15 +286,12 @@ public class DhtDiscovery : IDiscovery
 
     private byte[] BuildPingResponse(byte[] txId)
     {
-        var dict = "d1:rd2:id20:";
-        var suffix = "e1:t2:";
-        var end = "1:y1:re";
         var buf = new List<byte>();
-        buf.AddRange(Encoding.ASCII.GetBytes(dict));
+        buf.AddRange(Encoding.ASCII.GetBytes("d1:rd2:id20:"));
         buf.AddRange(_nodeId);
-        buf.AddRange(Encoding.ASCII.GetBytes(suffix));
+        buf.AddRange(Encoding.ASCII.GetBytes($"e1:t{txId.Length}:"));
         buf.AddRange(txId);
-        buf.AddRange(Encoding.ASCII.GetBytes(end));
+        buf.AddRange(Encoding.ASCII.GetBytes("1:y1:re"));
         return buf.ToArray();
     }
 
@@ -308,27 +308,40 @@ public class DhtDiscovery : IDiscovery
             nodesBytes.Add((byte)(n.EndPoint.Port & 0xFF));
         }
 
+        var token = new byte[4];
+        RandomNumberGenerator.Fill(token);
+
         var buf = new List<byte>();
         buf.AddRange(Encoding.ASCII.GetBytes("d1:rd2:id20:"));
         buf.AddRange(_nodeId);
         buf.AddRange(Encoding.ASCII.GetBytes($"5:nodes{nodesBytes.Count}:"));
         buf.AddRange(nodesBytes);
-        buf.AddRange(Encoding.ASCII.GetBytes("e1:t2:"));
+        buf.AddRange(Encoding.ASCII.GetBytes($"5:token{token.Length}:"));
+        buf.AddRange(token);
+        buf.AddRange(Encoding.ASCII.GetBytes($"e1:t{txId.Length}:"));
         buf.AddRange(txId);
         buf.AddRange(Encoding.ASCII.GetBytes("1:y1:re"));
         return buf.ToArray();
     }
 
-    private static byte[] EncodeKrpc(byte[] txId, string method, Dictionary<string, byte[]> args)
+    private static byte[] EncodeKrpc(byte[] txId, string method, Dictionary<string, object> args)
     {
         var buf = new List<byte>();
         buf.AddRange(Encoding.ASCII.GetBytes("d1:ad"));
         foreach (var (k, v) in args.OrderBy(x => x.Key, StringComparer.Ordinal))
         {
-            buf.AddRange(Encoding.ASCII.GetBytes($"{k.Length}:{k}{v.Length}:"));
-            buf.AddRange(v);
+            buf.AddRange(Encoding.ASCII.GetBytes($"{k.Length}:{k}"));
+            if (v is byte[] b)
+            {
+                buf.AddRange(Encoding.ASCII.GetBytes($"{b.Length}:"));
+                buf.AddRange(b);
+            }
+            else if (v is int i)
+                buf.AddRange(Encoding.ASCII.GetBytes($"i{i}e"));
+            else if (v is long l)
+                buf.AddRange(Encoding.ASCII.GetBytes($"i{l}e"));
         }
-        buf.AddRange(Encoding.ASCII.GetBytes($"e1:q{method.Length}:{method}1:t2:"));
+        buf.AddRange(Encoding.ASCII.GetBytes($"e1:q{method.Length}:{method}1:t{txId.Length}:"));
         buf.AddRange(txId);
         buf.AddRange(Encoding.ASCII.GetBytes("1:y1:qe"));
         return buf.ToArray();

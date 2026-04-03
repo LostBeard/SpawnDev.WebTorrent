@@ -77,6 +77,12 @@ public class TorrentTracker
             if (result.MessageType == WebSocketMessageType.Close) break;
             if (result.MessageType != WebSocketMessageType.Text) continue;
 
+            if (received.Length > 1_000_000)
+            {
+                received.SetLength(0);
+                continue;
+            }
+
             try
             {
                 var json = System.Text.Encoding.UTF8.GetString(received.GetBuffer(), 0, (int)received.Length);
@@ -108,16 +114,32 @@ public class TorrentTracker
 
     private async Task HandleAnnounce(TrackerPeer peer, TrackerMessage msg)
     {
-        if (string.IsNullOrEmpty(msg.InfoHash) || string.IsNullOrEmpty(msg.PeerId)) return;
+        if (string.IsNullOrEmpty(msg.InfoHash) || string.IsNullOrEmpty(msg.PeerId))
+        {
+            await SendText(peer, "{\"action\":\"announce\",\"failure reason\":\"missing info_hash or peer_id\"}");
+            return;
+        }
+
+        if (msg.InfoHash.Length > 100) return;
 
         peer.PeerId = msg.PeerId;
         var swarm = _swarms.GetOrAdd(msg.InfoHash, _ => new TorrentSwarmInfo { InfoHash = msg.InfoHash });
         swarm.Peers[peer.PeerId] = peer;
 
-        // Send back list of other peers in the swarm
+        // Handle events
+        if (msg.Event == "stopped")
+        {
+            swarm.Peers.TryRemove(peer.PeerId, out _);
+            return;
+        }
+        if (msg.Event == "completed" || msg.Left == 0)
+            peer.IsSeeder = true;
+
+        var maxPeers = Math.Min(msg.Numwant ?? _options.MaxPeersPerAnnounce, _options.MaxPeersPerAnnounce);
+
         var otherPeers = swarm.Peers.Values
             .Where(p => p.PeerId != peer.PeerId)
-            .Take(_options.MaxPeersPerAnnounce)
+            .Take(maxPeers)
             .Select(p => new { peer_id = p.PeerId })
             .ToArray();
 
@@ -131,7 +153,7 @@ public class TorrentTracker
             peers = otherPeers,
         });
 
-        await SendText(peer.WebSocket, response);
+        await SendText(peer, response);
 
         // Relay pre-generated offers to existing peers in the swarm.
         // WebTorrent protocol: client sends offers WITH announce, server
@@ -140,6 +162,7 @@ public class TorrentTracker
         {
             var existingPeers = swarm.Peers.Values
                 .Where(p => p.PeerId != peer.PeerId && p.WebSocket.State == WebSocketState.Open)
+                .OrderBy(_ => Random.Shared.Next())
                 .ToArray();
 
             int offerIdx = 0;
@@ -148,7 +171,6 @@ public class TorrentTracker
                 if (offerIdx >= existingPeers.Length) break;
                 var target = existingPeers[offerIdx];
 
-                // Extract offer and offer_id from the offers array element
                 if (offer.TryGetProperty("offer", out var offerSdp) &&
                     offer.TryGetProperty("offer_id", out var offerId))
                 {
@@ -160,7 +182,7 @@ public class TorrentTracker
                         offer = offerSdp,
                         offer_id = offerId,
                     });
-                    await SendText(target.WebSocket, forward);
+                    await SendText(target, forward);
                 }
 
                 offerIdx++;
@@ -184,7 +206,7 @@ public class TorrentTracker
             offer_id = msg.OfferId,
         });
 
-        await SendText(target.WebSocket, forward);
+        await SendText(target, forward);
     }
 
     /// <summary>Forward WebRTC answer from one peer to another.</summary>
@@ -203,14 +225,23 @@ public class TorrentTracker
             offer_id = msg.OfferId,
         });
 
-        await SendText(target.WebSocket, forward);
+        await SendText(target, forward);
     }
 
-    private static async Task SendText(WebSocket ws, string text)
+    private static async Task SendText(TrackerPeer peer, string text)
     {
-        if (ws.State != WebSocketState.Open) return;
-        var bytes = System.Text.Encoding.UTF8.GetBytes(text);
-        await ws.SendAsync(bytes, WebSocketMessageType.Text, true, CancellationToken.None);
+        if (peer.WebSocket.State != WebSocketState.Open) return;
+        if (!await peer.SendLock.WaitAsync(5000)) return;
+        try
+        {
+            if (peer.WebSocket.State != WebSocketState.Open) return;
+            using var cts = new CancellationTokenSource(10_000);
+            var bytes = System.Text.Encoding.UTF8.GetBytes(text);
+            await peer.WebSocket.SendAsync(bytes, WebSocketMessageType.Text, true, cts.Token);
+        }
+        catch (OperationCanceledException) { }
+        catch (WebSocketException) { }
+        finally { peer.SendLock.Release(); }
     }
 }
 
@@ -232,6 +263,7 @@ public class TrackerPeer
     public string RemoteAddress { get; set; } = "";
     public DateTimeOffset ConnectedAt { get; set; }
     public bool IsSeeder { get; set; }
+    public SemaphoreSlim SendLock { get; } = new(1, 1);
 }
 
 /// <summary>A torrent swarm tracked by this server.</summary>
@@ -249,6 +281,7 @@ public class TrackerMessage
     public string? PeerId { get; set; }
     public string? ToPeerId { get; set; }
     public string? OfferId { get; set; }
+    public string? Event { get; set; }
     public JsonElement? Offer { get; set; }
     public JsonElement? Answer { get; set; }
     public JsonElement? Offers { get; set; }

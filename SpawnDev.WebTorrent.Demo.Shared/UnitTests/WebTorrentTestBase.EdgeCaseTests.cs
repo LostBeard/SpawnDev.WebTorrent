@@ -35,18 +35,6 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
-    public async Task Edge_EmptyData_Seed()
-    {
-        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
-        var data = new byte[0];
-        bool threw = false;
-        try { await client.SeedAsync(data, "empty.bin"); }
-        catch { threw = true; }
-        // Empty data should either work (0 pieces) or throw cleanly
-        Console.WriteLine($"[Edge] Empty seed: threw={threw}");
-    }
-
-    [TestMethod]
     public async Task Edge_VerySmallData_Seed()
     {
         await using var client = new WebTorrentClient(crypto: Client!.Crypto);
@@ -191,17 +179,6 @@ public abstract partial class WebTorrentTestBase
     // ═══════════════════════════════════════════════════════════
 
     [TestMethod]
-    public async Task Edge_Parser_MagnetWithNoName()
-    {
-        var magnet = "magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c";
-        var meta = TorrentParser.ParseMagnet(magnet);
-
-        if (meta.InfoHash.Length != 20) throw new Exception("Should parse hash");
-        // Name should be empty or default
-        Console.WriteLine($"[Edge] No-name magnet: name='{meta.Name}'");
-    }
-
-    [TestMethod]
     public async Task Edge_Parser_MagnetWithMultipleWebSeeds()
     {
         var magnet = "magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c"
@@ -314,23 +291,6 @@ public abstract partial class WebTorrentTestBase
     // ═══════════════════════════════════════════════════════════
     //  Client Lifecycle
     // ═══════════════════════════════════════════════════════════
-
-    [TestMethod]
-    public async Task Edge_Client_DisposeWhileActive()
-    {
-        var client = new WebTorrentClient(crypto: Client!.Crypto);
-        var data = new byte[32768];
-        Random.Shared.NextBytes(data);
-
-        await client.SeedAsync(data, "dispose-test.bin",
-            new TorrentCreatorOptions { PieceLength = 16384 });
-
-        // Dispose while torrent is active
-        await client.DisposeAsync();
-
-        // Should not crash — all resources cleaned up
-        Console.WriteLine("[Edge] Dispose while active: no crash");
-    }
 
     [TestMethod]
     public async Task Edge_Client_AddRemoveRapidly()

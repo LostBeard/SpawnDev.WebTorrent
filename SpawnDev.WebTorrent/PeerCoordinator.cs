@@ -27,8 +27,10 @@ public class PeerCoordinator : IAsyncDisposable
     private readonly List<WebSocketTrackerClient> _trackers = new();
     private readonly ConcurrentDictionary<string, ConnectedPeer> _peers = new();
     private readonly ConcurrentDictionary<string, IConnection> _pendingOffers = new();
+    private readonly ConcurrentDictionary<string, DateTime> _offerTimestamps = new();
     private readonly byte[] _infoHash;
     private readonly List<Func<Torrent.TorrentSwarm, WireProtocol, WireExtension>> _extensionFactories = new();
+    private bool _disposed;
 
     private const int OffersPerAnnounce = 5;
 
@@ -47,6 +49,7 @@ public class PeerCoordinator : IAsyncDisposable
         _client = client;
         _infoHash = infoHash;
         _webRtc = webRtc;
+        _ = CleanupStaleOffersAsync();
     }
 
     /// <summary>Add a tracker and start discovering peers.</summary>
@@ -105,12 +108,13 @@ public class PeerCoordinator : IAsyncDisposable
 
         // Pre-generate offers and send WITH the first announce (one message, not two)
         var offers = await GenerateOffersAsync(OffersPerAnnounce, ct);
-        await tracker.StartAsync(_infoHash, 0, offers, ct);
+        await tracker.StartAsync(_infoHash, 0, offers, offerFactory: null, ct);
     }
 
     /// <summary>
     /// Pre-generate N WebRTC offers for sending with tracker announce.
     /// Each offer is a fully formed RTCPeerConnection with data channel and SDP.
+    /// Uses a per-offer timeout to avoid hanging on slow ICE gathering.
     /// </summary>
     private async Task<TrackerOffer[]> GenerateOffersAsync(int count, CancellationToken ct = default)
     {
@@ -119,10 +123,17 @@ public class PeerCoordinator : IAsyncDisposable
         {
             try
             {
+                using var offerCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                offerCts.CancelAfter(15_000);
                 var offerId = Guid.NewGuid().ToString("N");
-                var (sdp, conn) = await _webRtc.CreateOfferAsync(offerId, ct);
+                var (sdp, conn) = await _webRtc.CreateOfferAsync(offerId, offerCts.Token);
                 _pendingOffers[offerId] = conn;
+                _offerTimestamps[offerId] = DateTime.UtcNow;
                 offers.Add(new TrackerOffer(sdp, offerId));
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                Console.WriteLine($"[PeerCoordinator] Generate offer {i} timed out (15s)");
             }
             catch (Exception ex)
             {
@@ -154,6 +165,23 @@ public class PeerCoordinator : IAsyncDisposable
         {
             Console.WriteLine($"[PeerCoordinator] Peer setup failed: {ex.GetType().Name}: {ex.Message}");
             await conn.DisposeAsync();
+        }
+    }
+
+    private async Task CleanupStaleOffersAsync()
+    {
+        while (!_disposed)
+        {
+            await Task.Delay(30000);
+            var staleIds = _offerTimestamps
+                .Where(kv => (DateTime.UtcNow - kv.Value).TotalSeconds > 60)
+                .Select(kv => kv.Key).ToList();
+            foreach (var id in staleIds)
+            {
+                if (_pendingOffers.TryRemove(id, out var conn))
+                    await conn.DisposeAsync();
+                _offerTimestamps.TryRemove(id, out _);
+            }
         }
     }
 
@@ -215,19 +243,30 @@ public class PeerCoordinator : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (_disposed) return;
+        _disposed = true;
+
         foreach (var tracker in _trackers.ToArray())
-            await tracker.DisposeAsync();
+        {
+            try { await tracker.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10)); }
+            catch { }
+        }
         _trackers.Clear();
 
         foreach (var peer in _peers.Values.ToArray())
-            await peer.Wire.DisposeAsync();
+        {
+            try { await peer.Wire.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)); }
+            catch { }
+        }
         _peers.Clear();
 
         foreach (var conn in _pendingOffers.Values.ToArray())
-            await conn.DisposeAsync();
+        {
+            try { await conn.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)); }
+            catch { }
+        }
         _pendingOffers.Clear();
-
-        await _webRtc.DisposeAsync();
+        _offerTimestamps.Clear();
     }
 }
 

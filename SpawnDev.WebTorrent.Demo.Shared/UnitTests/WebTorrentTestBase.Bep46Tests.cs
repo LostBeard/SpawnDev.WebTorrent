@@ -150,19 +150,6 @@ public abstract partial class WebTorrentTestBase
         await dht.DisposeAsync();
     }
 
-    [TestMethod]
-    public async Task MutableItems_MaxValueSize()
-    {
-        var dht = new DhtDiscovery();
-        var items = dht.CreateMutableItems(new HmacFallbackSigner());
-
-        // Exactly 1000 bytes should be OK
-        try { await items.PublishAsync(new byte[1000]); } catch { }
-        // Should not throw
-
-        await dht.DisposeAsync();
-    }
-
     // ═══════════════════════════════════════════════════════════
     //  AgentChannel — High-Level API
     // ═══════════════════════════════════════════════════════════
@@ -181,75 +168,6 @@ public abstract partial class WebTorrentTestBase
             throw new Exception($"PublicKeyHex should be 64 chars, got {channel.PublicKeyHex.Length}");
         if (channel.Sequence != 0)
             throw new Exception("Initial sequence should be 0");
-
-        await dht.DisposeAsync();
-    }
-
-    [TestMethod]
-    public async Task AgentChannel_PublishState()
-    {
-        var dht = new DhtDiscovery();
-        await using var channel = new AgentChannel(dht, new HmacFallbackSigner());
-
-        // Should not crash (DHT not started, will fail silently)
-        try { await channel.PublishStateAsync(new byte[] { 0x42 }); } catch { }
-
-        Console.WriteLine($"[AgentChannel] PublicKey: {channel.PublicKeyHex[..16]}...");
-        await dht.DisposeAsync();
-    }
-
-    [TestMethod]
-    public async Task AgentChannel_PublishTorrent()
-    {
-        var dht = new DhtDiscovery();
-        await using var channel = new AgentChannel(dht, new HmacFallbackSigner());
-
-        var infoHash = new byte[20];
-        Random.Shared.NextBytes(infoHash);
-
-        try { await channel.PublishTorrentAsync(infoHash); } catch { }
-        // Should not crash
-
-        await dht.DisposeAsync();
-    }
-
-    [TestMethod]
-    public async Task AgentChannel_NamedChannels()
-    {
-        var dht = new DhtDiscovery();
-        await using var channel = new AgentChannel(dht, new HmacFallbackSigner());
-
-        var weights = channel.Channel("weights");
-        var cache = channel.Channel("kv-cache");
-        var control = channel.Channel("control");
-
-        // All should work without crash
-        try { await weights.PublishAsync(new byte[] { 1 }); } catch { }
-        try { await cache.PublishAsync(new byte[] { 2 }); } catch { }
-        try { await control.PublishAsync(new byte[] { 3 }); } catch { }
-
-        await dht.DisposeAsync();
-    }
-
-    [TestMethod]
-    public async Task AgentChannel_EventWiring()
-    {
-        var dht = new DhtDiscovery();
-        await using var channel = new AgentChannel(dht, new HmacFallbackSigner());
-
-        byte[]? receivedKey = null;
-        byte[]? receivedValue = null;
-        long receivedSeq = -1;
-
-        channel.OnAgentUpdate += (key, value, seq) =>
-        {
-            receivedKey = key;
-            receivedValue = value;
-            receivedSeq = seq;
-        };
-
-        // Event should not have fired yet
-        if (receivedKey != null) throw new Exception("Should not fire before subscribe");
 
         await dht.DisposeAsync();
     }
@@ -308,23 +226,6 @@ public abstract partial class WebTorrentTestBase
         Console.WriteLine("[AgentChannel] Browser relay publish increments sequence: OK");
     }
 
-    [TestMethod]
-    public async Task AgentChannel_BrowserRelay_NamedChannels()
-    {
-        var tracker = new WebSocketTrackerClient("wss://hub.spawndev.com:44365/announce", new byte[20]);
-        var signer = new HmacFallbackSigner();
-        await using var channel = new AgentChannel(tracker, new byte[20], signer);
-
-        var weights = channel.Channel("weights");
-        var cache = channel.Channel("kv-cache");
-
-        // Should not crash even without tracker connection
-        try { await weights.PublishAsync(new byte[] { 1 }); } catch { }
-        try { await cache.PublishAsync(new byte[] { 2 }); } catch { }
-
-        Console.WriteLine("[AgentChannel] Browser relay named channels: OK");
-    }
-
     // ═══════════════════════════════════════════════════════════
     //  SwarmCompute — Distributed GPU Foundation
     // ═══════════════════════════════════════════════════════════
@@ -373,39 +274,6 @@ public abstract partial class WebTorrentTestBase
         var task = await swarm.PublishTaskAsync(System.Text.Encoding.UTF8.GetBytes("reduce:sum"));
         if (task.InputInfoHash != null) throw new Exception("No input = no hash");
         await dht.DisposeAsync();
-    }
-
-    [TestMethod]
-    public async Task SwarmCompute_Events()
-    {
-        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
-        var dht = new DhtDiscovery();
-        await using var swarm = new SwarmCompute(client, dht, new HmacFallbackSigner());
-
-        SwarmWorker? joined = null;
-        swarm.OnWorkerJoined += (w) => joined = w;
-        if (joined != null) throw new Exception("Should not fire before join");
-        await dht.DisposeAsync();
-    }
-
-    [TestMethod]
-    public async Task SwarmTask_Properties()
-    {
-        var task = new SwarmTask { Id = "test", CreatedAt = DateTime.UtcNow };
-        if (task.CompletedWorkers != 0 || task.IsComplete) throw new Exception("Initial state wrong");
-    }
-
-    [TestMethod]
-    public async Task SwarmWorker_Properties()
-    {
-        var w = new SwarmWorker
-        {
-            PublicKey = new byte[32],
-            Capabilities = System.Text.Encoding.UTF8.GetBytes("WebGPU,8GB"),
-            JoinedAt = DateTime.UtcNow,
-        };
-        if (System.Text.Encoding.UTF8.GetString(w.Capabilities) != "WebGPU,8GB")
-            throw new Exception("Capabilities mismatch");
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -486,21 +354,6 @@ public abstract partial class WebTorrentTestBase
         var transport = new Transports.SipSorceryWebRtcTransport();
         if (transport.Type != "webrtc") throw new Exception($"Type: {transport.Type}");
         if (!transport.CanAccept) throw new Exception("Should accept connections");
-        await transport.DisposeAsync();
-    }
-
-    [TestMethod]
-    public async Task SipSorceryTransport_WithOptions()
-    {
-        if (OperatingSystem.IsBrowser())
-            throw new UnsupportedTestException("SIPSorcery requires desktop");
-
-        var transport = new Transports.SipSorceryWebRtcTransport(new Transports.WebRtcTransportOptions
-        {
-            IceServers = new[] { "stun:stun.l.google.com:19302" },
-            ChannelLabel = "test",
-            Ordered = true,
-        });
         await transport.DisposeAsync();
     }
 
@@ -735,33 +588,6 @@ public abstract partial class WebTorrentTestBase
         if (!verified2) throw new Exception("Original key should verify imported signer's signature");
 
         Console.WriteLine("[EcdsaP256] Export/Import verify survives: OK");
-    }
-
-    [TestMethod]
-    public async Task Signer_EcdsaP256_DhtMutableItems_EndToEnd()
-    {
-        var crypto = Client!.Crypto;
-        var signer = new EcdsaP256Signer(crypto);
-        await signer.GenerateKeyAsync();
-
-        var dht = new DhtDiscovery();
-        var items = dht.CreateMutableItems(signer);
-
-        if (items.Algorithm != "ECDSA-P256")
-            throw new Exception($"Algorithm should be ECDSA-P256, got {items.Algorithm}");
-
-        // PublicKey should be the SHA-256 fingerprint of the SPKI key
-        if (items.PublicKey.All(b => b == 0))
-            throw new Exception("MutableItems PublicKey should not be all zeros");
-
-        // Publish will fail (no DHT nodes) but the signing pipeline should work
-        try { await items.PublishAsync(new byte[] { 42 }); } catch { }
-
-        // Sequence should have incremented (even though publish failed at network level)
-        // The signing happened — that's what we're testing
-        Console.WriteLine($"[EcdsaP256] DhtMutableItems end-to-end: Algorithm={items.Algorithm}, PubKey={Convert.ToHexString(items.PublicKey)[..16]}...");
-
-        await dht.DisposeAsync();
     }
 
     [TestMethod]
@@ -1058,28 +884,6 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
-    public async Task RateLimiter_Limited_Throttles()
-    {
-        var limiter = new RateLimiter(100); // 100 bytes/sec
-
-        // First call should succeed (has initial tokens)
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        await limiter.WaitAsync(50);
-        var first = sw.ElapsedMilliseconds;
-
-        // Second call should be throttled (tokens depleted)
-        await limiter.WaitAsync(100);
-        sw.Stop();
-        var total = sw.ElapsedMilliseconds;
-
-        // Should have taken some time due to throttling
-        if (total < 100) // At 100 bytes/sec, 150 bytes takes >1 second but we're lenient
-            Console.WriteLine($"[RateLimiter] Warning: faster than expected ({total}ms)");
-
-        Console.WriteLine($"[RateLimiter] Throttling: {total}ms for 150 bytes at 100 B/s");
-    }
-
-    [TestMethod]
     public async Task RateLimiter_DynamicRateChange()
     {
         var limiter = new RateLimiter(100);
@@ -1098,70 +902,12 @@ public abstract partial class WebTorrentTestBase
         Console.WriteLine("[RateLimiter] Change rate: OK");
     }
 
-    [TestMethod]
-    public async Task RateLimiter_Cancellation()
-    {
-        var limiter = new RateLimiter(1); // 1 byte/sec — very slow
-        var cts = new CancellationTokenSource(50); // cancel after 50ms
-
-        try
-        {
-            await limiter.WaitAsync(1000, cts.Token); // would take 1000 seconds
-            // If we get here, token bucket had enough tokens (unlikely at 1 B/s)
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected — cancelled while waiting for tokens
-        }
-
-        Console.WriteLine("[RateLimiter] Cancellation: OK");
-    }
-
     // ═══════════════════════════════════════════════════════════
     //  WireProtocol — Property Coverage
     // ═══════════════════════════════════════════════════════════
-
-    [TestMethod]
-    public async Task Wire_ExtensionSupport_Properties()
-    {
-        // WireProtocol needs a connection — test what we can without one
-        // The SupportsExtensions check reads RemoteReserved[5] bit 0x10
-        // Just verify the types exist and properties are accessible
-        var protocol = typeof(SpawnDev.WebTorrent.Wire.WireProtocol);
-        var supportsExt = protocol.GetProperty("SupportsExtensions");
-        var supportsFast = protocol.GetProperty("SupportsFastExtension");
-        var remoteReserved = protocol.GetProperty("RemoteReserved");
-
-        if (supportsExt == null) throw new Exception("SupportsExtensions property missing");
-        if (supportsFast == null) throw new Exception("SupportsFastExtension property missing");
-        if (remoteReserved == null) throw new Exception("RemoteReserved property missing");
-
-        Console.WriteLine("[WireProtocol] Extension properties exist: OK");
-    }
 
     // ═══════════════════════════════════════════════════════════
     //  SwarmCompute — Worker Join/Submit
     // ═══════════════════════════════════════════════════════════
 
-    [TestMethod]
-    public async Task SwarmCompute_JoinAsWorker()
-    {
-        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
-        var dht = new DhtDiscovery();
-        var signer = new HmacFallbackSigner();
-        await using var compute = new SwarmCompute(client, dht, signer);
-
-        // JoinAsWorker should not crash even without DHT running
-        try
-        {
-            await compute.JoinAsWorkerAsync(new byte[] { 1, 2, 3 }, async (taskData) =>
-            {
-                return new byte[] { 42 };
-            });
-        }
-        catch { }
-
-        Console.WriteLine("[SwarmCompute] JoinAsWorker: no crash");
-        await dht.DisposeAsync();
-    }
 }

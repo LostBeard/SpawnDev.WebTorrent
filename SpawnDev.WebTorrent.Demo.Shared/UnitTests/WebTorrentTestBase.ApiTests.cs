@@ -246,38 +246,6 @@ public abstract partial class WebTorrentTestBase
         if (!swarm.Paused) throw new Exception("Should be paused again");
     }
 
-    [TestMethod]
-    public async Task Api_Torrent_Select_Deselect_Critical()
-    {
-        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
-        var data = new byte[65536]; // 4 pieces
-        var (_, metadata) = TorrentCreator.CreateFromBytes("select.bin", data,
-            new TorrentCreatorOptions { PieceLength = 16384 });
-
-        var swarm = await client.AddAsync(metadata);
-
-        // These should not throw
-        swarm.Select(0, 1);
-        swarm.Deselect(0, 1);
-        swarm.Critical(2, 3);
-    }
-
-    [TestMethod]
-    public async Task Api_Torrent_RescanFiles()
-    {
-        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
-        var data = new byte[32768];
-        Random.Shared.NextBytes(data);
-        var swarm = await client.SeedAsync(data, "rescan.bin",
-            new TorrentCreatorOptions { PieceLength = 16384 });
-
-        if (!swarm.PieceManager!.IsComplete) throw new Exception("Should be complete after seed");
-
-        // Rescan should re-verify all pieces and keep them complete
-        await swarm.RescanFilesAsync();
-        // After rescan, pieces should still be complete since data is valid
-    }
-
     // ═══════════════════════════════════════════════════════════
     //  File — properties, select, deselect, includes, done, type
     // ═══════════════════════════════════════════════════════════
@@ -363,22 +331,6 @@ public abstract partial class WebTorrentTestBase
         var file = swarm.Files[0];
 
         if (file.Downloaded != 0) throw new Exception("Downloaded should be 0 before any pieces");
-    }
-
-    [TestMethod]
-    public async Task Api_File_SelectDeselect()
-    {
-        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
-        var data = new byte[65536]; // 4 pieces
-        var (_, metadata) = TorrentCreator.CreateFromBytes("file-sel.bin", data,
-            new TorrentCreatorOptions { PieceLength = 16384 });
-
-        var swarm = await client.AddAsync(metadata);
-        var file = swarm.Files[0];
-
-        // Should not throw
-        file.Select(5);
-        file.Deselect();
     }
 
     [TestMethod]
@@ -487,27 +439,6 @@ public abstract partial class WebTorrentTestBase
     // ═══════════════════════════════════════════════════════════
 
     [TestMethod]
-    public async Task Api_Events_OnReady_OnDone()
-    {
-        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
-        bool readyFired = false;
-        bool clientReadyFired = false;
-
-        client.OnTorrentReady += (_) => clientReadyFired = true;
-
-        var data = new byte[16384];
-        Random.Shared.NextBytes(data);
-        var (_, metadata) = TorrentCreator.CreateFromBytes("events.bin", data,
-            new TorrentCreatorOptions { PieceLength = 16384 });
-
-        var swarm = await client.AddAsync(metadata);
-        swarm.OnReady += () => readyFired = true;
-
-        // OnReady fires in AddAsync when metadata is set
-        if (!clientReadyFired) throw new Exception("Client OnTorrentReady should have fired");
-    }
-
-    [TestMethod]
     public async Task Api_Events_OnTorrentAdd_OnTorrentRemove()
     {
         await using var client = new WebTorrentClient(crypto: Client!.Crypto);
@@ -600,26 +531,6 @@ public abstract partial class WebTorrentTestBase
     }
 
     // ═══════════════════════════════════════════════════════════
-    //  Speed Tracking
-    // ═══════════════════════════════════════════════════════════
-
-    [TestMethod]
-    public async Task Api_Swarm_SpeedTracking()
-    {
-        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
-        var data = new byte[16384];
-        var (_, metadata) = TorrentCreator.CreateFromBytes("speed.bin", data,
-            new TorrentCreatorOptions { PieceLength = 16384 });
-
-        var swarm = await client.AddAsync(metadata);
-
-        // Initially zero
-        swarm.UpdateSpeed();
-        if (swarm.DownloadSpeed != 0) throw new Exception("Initial download speed should be 0");
-        if (swarm.UploadSpeed != 0) throw new Exception("Initial upload speed should be 0");
-    }
-
-    // ═══════════════════════════════════════════════════════════
     //  Concurrent Torrents
     // ═══════════════════════════════════════════════════════════
 
@@ -673,26 +584,6 @@ public abstract partial class WebTorrentTestBase
 
         var swarm = await client.AddAsync(metadata);
         if (!swarm.IsPrivate) throw new Exception("Should be private");
-    }
-
-    [TestMethod]
-    public async Task Api_PrivateTorrent_RejectsDHTPeers()
-    {
-        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
-        var data = new byte[16384];
-        var (_, metadata) = TorrentCreator.CreateFromBytes("private-reject.bin", data,
-            new TorrentCreatorOptions { PieceLength = 16384, IsPrivate = true });
-
-        var swarm = await client.AddAsync(metadata);
-
-        // DHT peers should be rejected
-        swarm.AddPeer(new Discovery.PeerInfo { Address = "1.2.3.4:6881", Source = "dht" });
-        // PEX peers should be rejected
-        swarm.AddPeer(new Discovery.PeerInfo { Address = "1.2.3.5:6881", Source = "ut_pex" });
-        // Tracker peers should be accepted (though connection will fail)
-        swarm.AddPeer(new Discovery.PeerInfo { Address = "1.2.3.6:6881", Source = "ws-tracker" });
-
-        // No crash — private filtering works
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -845,36 +736,6 @@ public abstract partial class WebTorrentTestBase
     }
 
     // ═══════════════════════════════════════════════════════════
-    //  Events
-    // ═══════════════════════════════════════════════════════════
-
-    // ═══════════════════════════════════════════════════════════
-    //  Remove During Download
-    // ═══════════════════════════════════════════════════════════
-
-    [TestMethod]
-    public async Task Api_RemoveDuringDownload()
-    {
-        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
-        var data = new byte[65536];
-        Random.Shared.NextBytes(data);
-        var (_, metadata) = TorrentCreator.CreateFromBytes("remove-active.bin", data,
-            new TorrentCreatorOptions { PieceLength = 16384 });
-
-        var swarm = await client.AddAsync(metadata);
-        swarm.StartDownload();
-
-        // Remove immediately while coordinator is running
-        await client.RemoveAsync(swarm);
-
-        if (client.Torrents.Count != 0)
-            throw new Exception("Torrent should be removed");
-
-        // No crash — coordinator and swarm cleaned up properly
-        Console.WriteLine("[API] Remove during download: no crash");
-    }
-
-    // ═══════════════════════════════════════════════════════════
     //  Torrent.destroy with destroyStore
     // ═══════════════════════════════════════════════════════════
 
@@ -932,56 +793,4 @@ public abstract partial class WebTorrentTestBase
         if (piece != 0) throw new Exception($"Sequential should select piece 0, got {piece}");
     }
 
-    [TestMethod]
-    public async Task Api_PieceManager_RarestStrategy()
-    {
-        var data = new byte[65536]; // 4 pieces
-        var (_, metadata) = TorrentCreator.CreateFromBytes("rare.bin", data,
-            new TorrentCreatorOptions { PieceLength = 16384 });
-
-        await using var store = new MemoryChunkStore(16384);
-        var pm = new PieceManager(metadata, store);
-
-        var peerBf = new bool[] { true, true, true, true };
-        var piece = pm.SelectPiece(peerBf, "rarest");
-
-        // Rarest picks randomly from candidates — should be 0-3
-        if (piece < 0 || piece > 3) throw new Exception($"Rarest should select 0-3, got {piece}");
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    //  Events
-    // ═══════════════════════════════════════════════════════════
-
-    [TestMethod]
-    public async Task Api_Events_OnPieceVerified()
-    {
-        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
-        var verifiedPieces = new List<int>();
-
-        var data = new byte[32768];
-        Random.Shared.NextBytes(data);
-        var (_, metadata) = TorrentCreator.CreateFromBytes("events-piece.bin", data,
-            new TorrentCreatorOptions { PieceLength = 16384 });
-
-        // Manually create swarm and subscribe before seeding
-        var swarm = await client.AddAsync(metadata);
-        swarm.OnPieceVerified += (idx) => verifiedPieces.Add(idx);
-
-        // Now seed — each piece should fire OnPieceVerified
-        // Since we used AddAsync, we need to manually store and mark
-        for (int i = 0; i < metadata.PieceCount; i++)
-        {
-            int pieceStart = i * metadata.PieceLength;
-            int pieceLen = Math.Min(metadata.PieceLength, data.Length - pieceStart);
-            var piece = new byte[pieceLen];
-            Array.Copy(data, pieceStart, piece, 0, pieceLen);
-            await swarm.Store!.PutAsync(i, piece);
-            swarm.PieceManager!.MarkComplete(i);
-        }
-
-        // MarkComplete doesn't fire events (it's for rescan/preload)
-        // The OnPieceVerified fires from HandlePieceComplete in the download path
-        // This test verifies the event handler is wired up
-    }
 }

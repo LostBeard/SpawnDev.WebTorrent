@@ -217,8 +217,8 @@ public class TorrentSwarm : IAsyncDisposable
             ext.OnPeersReceived += (peers) =>
             {
                 if (swarm.IsPrivate) return; // BEP 27: no PEX for private torrents
-                foreach (var addr in peers)
-                    swarm.AddPeer(new PeerInfo { Address = addr, Source = "pex" });
+                foreach (var peer in peers)
+                    swarm.AddPeer(new PeerInfo { Address = peer.Address, Source = "pex" });
             };
             return ext;
         });
@@ -432,11 +432,12 @@ public class TorrentSwarm : IAsyncDisposable
     public void AddPeer(PeerInfo info)
     {
         if (Paused) return;
-        if (_peers.Count >= 55) return;
+        if (_peers.Count >= _client.MaxConns) return;
 
         // Private torrents: only accept peers from trackers, not DHT/PEX
         if (IsPrivate && info.Source != "ws-tracker" && info.Source != "udp-tracker"
-            && info.Source != "http-tracker" && info.Source != "manual")
+            && info.Source != "http-tracker" && info.Source != "manual"
+            && info.Source != "webrtc")
         {
             return;
         }
@@ -506,7 +507,7 @@ public class TorrentSwarm : IAsyncDisposable
         await _peerLock.WaitAsync();
         try
         {
-            if (_peers.Count >= 55)
+            if (_peers.Count >= _client.MaxConns)
             {
                 await wire.DisposeAsync();
                 return;
@@ -522,9 +523,7 @@ public class TorrentSwarm : IAsyncDisposable
                     for (int bit = 0; bit < 8; bit++)
                         if (i * 8 + bit < peer.PeerBitfield.Length)
                             peer.PeerBitfield[i * 8 + bit] = (bf[i] & (1 << (7 - bit))) != 0;
-                int trueCount = peer.PeerBitfield.Count(b => b);
 
-                // Add to coordinator if metadata is available
                 _coordinator?.AddPeer(wire, peer.PeerBitfield);
             };
 
@@ -543,26 +542,35 @@ public class TorrentSwarm : IAsyncDisposable
             wire.OnHaveNone += () =>
             {
                 if (Metadata != null)
+                {
                     peer.PeerBitfield = new bool[Metadata.PieceCount];
+                    _coordinator?.AddPeer(wire, peer.PeerBitfield);
+                }
             };
 
             wire.OnHave += (pieceIndex) =>
             {
                 if (pieceIndex < peer.PeerBitfield.Length)
+                {
                     peer.PeerBitfield[pieceIndex] = true;
+                    _coordinator?.AddPeer(wire, peer.PeerBitfield);
+                }
+            };
+
+            wire.OnPiece += (pieceIdx, offset, data) =>
+            {
+                peer.BytesDownloaded += data.Length;
             };
 
             wire.OnRequest += async (pieceIndex, offset, length) =>
             {
                 try
                 {
-                    // Seeding: respond to piece requests
                     if (_store != null && _pieceManager != null && _pieceManager.Bitfield[pieceIndex])
                     {
                         var data = await _store.GetAsync(pieceIndex, offset, length);
                         if (data != null)
                         {
-                            // Apply upload rate limiting
                             await _client.UploadLimiter.WaitAsync(data.Length);
                             await wire.SendPieceAsync(pieceIndex, offset, data);
                             Uploaded += data.Length;
@@ -579,14 +587,15 @@ public class TorrentSwarm : IAsyncDisposable
             OnPeerConnect?.Invoke(peer);
 
             // Register BEP 10 extensions if not already registered
-            if (wire.Extensions.Count == 0 && _extensionFactories.Count > 0)
+            bool extensionsWereNew = wire.Extensions.Count == 0;
+            if (extensionsWereNew && _extensionFactories.Count > 0)
             {
                 foreach (var factory in _extensionFactories)
                     wire.Extensions.Register(factory(this, wire));
             }
 
-            // Send BEP 10 extended handshake if both sides support it
-            if (wire.SupportsExtensions && wire.Extensions.Count > 0)
+            // Send BEP 10 extended handshake only if we just registered extensions
+            if (extensionsWereNew && wire.SupportsExtensions && wire.Extensions.Count > 0)
             {
                 var extHandshake = wire.Extensions.BuildHandshake();
                 var encoded = Bencode.BencodeEncoder.Encode(
@@ -594,16 +603,16 @@ public class TorrentSwarm : IAsyncDisposable
                 await wire.SendExtensionMessageAsync(0, encoded);
             }
 
-            // Send interested + unchoke
-            await wire.SendMessageAsync(MessageType.Interested);
-            await wire.SendMessageAsync(MessageType.Unchoke);
-
-            // Send our bitfield if we have metadata and any pieces
+            // BEP 3: Bitfield MUST be the first message after handshake
             bool hasPieces = _pieceManager != null && _pieceManager.Bitfield.Any(b => b);
             if (hasPieces)
             {
-                await wire.SendBitfieldAsync(BoolBitfieldToBytes(_pieceManager.Bitfield));
+                await wire.SendBitfieldAsync(BoolBitfieldToBytes(_pieceManager!.Bitfield));
             }
+
+            // Then send interested + unchoke
+            await wire.SendMessageAsync(MessageType.Interested);
+            await wire.SendMessageAsync(MessageType.Unchoke);
 
             // If we don't have metadata, request it AFTER RunAsync processes the
             // remote's BEP 10 handshake (which sets RemoteId and MetadataSize)
@@ -640,6 +649,7 @@ public class TorrentSwarm : IAsyncDisposable
         finally
         {
             keepAliveCts.Cancel();
+            _coordinator?.RemovePeer(peer.Wire);
             try
             {
                 await _peerLock.WaitAsync();
@@ -691,7 +701,7 @@ public class TorrentSwarm : IAsyncDisposable
         return null; // Peers come through PeerCoordinator which handles transport
     }
 
-    private void HandlePieceComplete(int pieceIndex)
+    private async void HandlePieceComplete(int pieceIndex)
     {
         if (_pieceManager == null || Metadata == null) return;
 
@@ -707,7 +717,7 @@ public class TorrentSwarm : IAsyncDisposable
         // Notify all peers we have this piece
         foreach (var peer in _peers.ToArray())
         {
-            try { _ = peer.Wire.SendHaveAsync(pieceIndex); }
+            try { await peer.Wire.SendHaveAsync(pieceIndex); }
             catch (Exception ex) { OnLog?.Invoke($"SendHave failed: {ex.Message}"); }
         }
 
@@ -748,7 +758,7 @@ public class TorrentSwarm : IAsyncDisposable
                 try
                 {
                     var piece = await _store.GetAsync(i);
-                    if (piece != null && piece.Length > 0)
+                    if (piece != null && piece.Length > 0 && Metadata.VerifyPiece(i, piece))
                     {
                         _pieceManager.MarkComplete(i);
                     }
@@ -832,9 +842,9 @@ public class TorrentSwarm : IAsyncDisposable
                 var peers = _peers.ToArray();
                 if (peers.Length == 0) continue;
 
-                // BEP 3: Unchoke the 4 interested peers with highest upload rate to us
+                // BEP 3: Unchoke the 4 interested peers with highest download rate (bytes they sent us)
                 var interested = peers.Where(p => p.IsInterested)
-                    .OrderByDescending(p => p.UploadRate)
+                    .OrderByDescending(p => p.DownloadRate)
                     .ToArray();
                 var notInterested = peers.Where(p => !p.IsInterested).ToArray();
 
@@ -860,8 +870,12 @@ public class TorrentSwarm : IAsyncDisposable
                     catch { }
                 }
 
-                // Reset upload counters for next interval
-                foreach (var peer in peers) peer.ResetUploadCounter();
+                // Reset counters for next interval
+                foreach (var peer in peers)
+                {
+                    peer.ResetUploadCounter();
+                    peer.ResetDownloadCounter();
+                }
 
                 // Every 30 seconds: optimistic unchoke a random choked interested peer
                 if (tick % 3 == 0)
@@ -963,6 +977,16 @@ public class TorrentSwarm : IAsyncDisposable
         _peerCoordinator?.UseExtension(factory);
     }
 
+    /// <summary>
+    /// Register all extension factories on a wire (for incoming connections that
+    /// need extensions set before the handshake is sent back).
+    /// </summary>
+    internal void RegisterExtensions(Wire.WireProtocol wire)
+    {
+        foreach (var factory in _extensionFactories)
+            wire.Extensions.Register(factory(this, wire));
+    }
+
     /// <summary>Add a web seed URL.</summary>
     public void AddWebSeed(string url)
     {
@@ -1000,7 +1024,9 @@ public class PeerConnection : IAsyncDisposable
     public bool IsChoked { get; set; } = true;
     public bool IsInterested { get; set; }
     public long BytesUploaded { get; set; }
+    public long BytesDownloaded { get; set; }
     private DateTime _lastUploadReset = DateTime.UtcNow;
+    private DateTime _lastDownloadReset = DateTime.UtcNow;
 
     /// <summary>Upload rate in bytes/sec over the last choke interval.</summary>
     public double UploadRate
@@ -1012,11 +1038,28 @@ public class PeerConnection : IAsyncDisposable
         }
     }
 
+    /// <summary>Download rate in bytes/sec over the last choke interval.</summary>
+    public double DownloadRate
+    {
+        get
+        {
+            var elapsed = (DateTime.UtcNow - _lastDownloadReset).TotalSeconds;
+            return elapsed > 0 ? BytesDownloaded / elapsed : 0;
+        }
+    }
+
     /// <summary>Reset upload rate counter (call at each choke interval).</summary>
     public void ResetUploadCounter()
     {
         BytesUploaded = 0;
         _lastUploadReset = DateTime.UtcNow;
+    }
+
+    /// <summary>Reset download rate counter (call at each choke interval).</summary>
+    public void ResetDownloadCounter()
+    {
+        BytesDownloaded = 0;
+        _lastDownloadReset = DateTime.UtcNow;
     }
 
     public PeerConnection(WireProtocol wire, PeerInfo info)

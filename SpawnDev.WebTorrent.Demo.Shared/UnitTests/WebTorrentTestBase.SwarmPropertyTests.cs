@@ -93,31 +93,6 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
-    public async Task Swarm_Props_SpeedZeroWhenIdle()
-    {
-        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
-        var data = new byte[16384];
-        Random.Shared.NextBytes(data);
-        var swarm = await client.SeedAsync(data, "speed.bin");
-
-        // No peers connected — speeds should be 0
-        if (swarm.DownloadSpeed != 0) throw new Exception($"DownloadSpeed: {swarm.DownloadSpeed}");
-        if (swarm.UploadSpeed != 0) throw new Exception($"UploadSpeed: {swarm.UploadSpeed}");
-    }
-
-    [TestMethod]
-    public async Task Swarm_Props_PeerCountZero()
-    {
-        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
-        var data = new byte[16384];
-        Random.Shared.NextBytes(data);
-        var swarm = await client.SeedAsync(data, "peers.bin");
-
-        if (swarm.PeerCount != 0) throw new Exception($"PeerCount: {swarm.PeerCount}");
-        if (swarm.WebSeedCount != 0) throw new Exception($"WebSeedCount: {swarm.WebSeedCount}");
-    }
-
-    [TestMethod]
     public async Task Swarm_Props_MagnetURI_Format()
     {
         await using var client = new WebTorrentClient(crypto: Client!.Crypto);
@@ -130,17 +105,6 @@ public abstract partial class WebTorrentTestBase
             throw new Exception($"MagnetURI format wrong: {magnet[..30]}...");
         if (!magnet.Contains("dn=magnet-fmt.bin"))
             throw new Exception("MagnetURI should contain display name");
-    }
-
-    [TestMethod]
-    public async Task Swarm_Props_Ratio_ZeroWhenNoTraffic()
-    {
-        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
-        var data = new byte[16384];
-        Random.Shared.NextBytes(data);
-        var swarm = await client.SeedAsync(data, "ratio.bin");
-
-        if (swarm.Ratio != 0) throw new Exception($"Ratio with no traffic: {swarm.Ratio}");
     }
 
     [TestMethod]

@@ -37,6 +37,7 @@ public static class BencodeDecoder
         if (colonIdx < 0) throw new InvalidOperationException($"Missing ':' in string at offset {offset}");
 
         int length = int.Parse(Encoding.ASCII.GetString(data, offset, colonIdx - offset));
+        if (length < 0) throw new InvalidOperationException($"Negative string length at offset {offset}");
         int start = colonIdx + 1;
         var value = new byte[length];
         Array.Copy(data, start, value, 0, length);
@@ -50,7 +51,12 @@ public static class BencodeDecoder
         int endIdx = Array.IndexOf(data, (byte)'e', offset + 1);
         if (endIdx < 0) throw new InvalidOperationException($"Missing 'e' for integer at {offset}");
 
-        long value = long.Parse(Encoding.ASCII.GetString(data, offset + 1, endIdx - offset - 1));
+        var intStr = Encoding.ASCII.GetString(data, offset + 1, endIdx - offset - 1);
+        if (intStr == "-0") throw new InvalidOperationException("Negative zero is not allowed in bencode");
+        if (intStr.Length > 1 && intStr[0] == '0') throw new InvalidOperationException("Leading zeros not allowed in bencode integers");
+        if (intStr.Length > 2 && intStr[0] == '-' && intStr[1] == '0') throw new InvalidOperationException("Leading zeros not allowed in bencode integers");
+
+        long value = long.Parse(intStr);
         return (value, endIdx + 1 - offset);
     }
 

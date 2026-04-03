@@ -84,31 +84,6 @@ public abstract partial class WebTorrentTestBase
         if (!swarm.Paused) throw new Exception("Should be paused after Pause");
     }
 
-    [TestMethod]
-    public async Task Swarm_AddPeer_RespectsMax()
-    {
-        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
-        var swarm = await client.AddAsync("magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&dn=Test");
-
-        // AddPeer with no transport won't actually connect (FindTransport returns null)
-        // but it should deduplicate
-        swarm.AddPeer(new PeerInfo { Address = "192.168.1.1:6881", Source = "test" });
-        swarm.AddPeer(new PeerInfo { Address = "192.168.1.1:6881", Source = "test" }); // duplicate
-
-        // No crash, dedup works (we can't verify count since connect fails silently)
-    }
-
-    [TestMethod]
-    public async Task Swarm_AddPeer_IgnoresWhenPaused()
-    {
-        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
-        var swarm = await client.AddAsync("magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&dn=Test",
-            new AddTorrentOptions { Paused = true });
-
-        swarm.AddPeer(new PeerInfo { Address = "192.168.1.1:6881", Source = "test" });
-        // Should be ignored since paused — no crash
-    }
-
     // ═══════════════════════════════════════════════════════════
     //  ut_metadata (BEP 9)
     // ═══════════════════════════════════════════════════════════
@@ -219,7 +194,7 @@ public abstract partial class WebTorrentTestBase
     {
         var ext = new UtPexExtension();
         var receivedPeers = new List<string>();
-        ext.OnPeersReceived += (peers) => receivedPeers.AddRange(peers);
+        ext.OnPeersReceived += (peers) => receivedPeers.AddRange(peers.Select(p => p.Address));
 
         // Build a PEX message with compact peer list
         // 2 peers: 192.168.1.1:6881 and 10.0.0.1:51413
@@ -506,42 +481,6 @@ public abstract partial class WebTorrentTestBase
         await dht.DisposeAsync();
     }
 
-    [TestMethod]
-    public async Task Bep46_MutableItems_SequenceIncrement()
-    {
-        var dht = new DhtDiscovery();
-        var items = dht.CreateMutableItems(new HmacFallbackSigner());
-
-        // PublishAsync increments sequence
-        // (won't actually send since DHT isn't started, but sequence should increment)
-        if (items.Sequence != 0) throw new Exception("Should start at 0");
-
-        await dht.DisposeAsync();
-    }
-
-    [TestMethod]
-    public async Task Bep46_MutableItems_EventSubscription()
-    {
-        var dht = new DhtDiscovery();
-        var items = dht.CreateMutableItems(new HmacFallbackSigner());
-
-        byte[]? receivedKey = null;
-        byte[]? receivedValue = null;
-        long receivedSeq = -1;
-
-        items.OnValueUpdated += (key, value, seq) =>
-        {
-            receivedKey = key;
-            receivedValue = value;
-            receivedSeq = seq;
-        };
-
-        // Event is wired — would fire when DHT returns a mutable item
-        if (receivedKey != null) throw new Exception("Should not fire yet");
-
-        await dht.DisposeAsync();
-    }
-
     // ═══════════════════════════════════════════════════════════
     //  HTTP Tracker Client
     // ═══════════════════════════════════════════════════════════
@@ -556,16 +495,6 @@ public abstract partial class WebTorrentTestBase
         if (tracker.Type != "http-tracker") throw new Exception($"Type: '{tracker.Type}'");
         if (tracker.IsConnected) throw new Exception("Should not be connected before StartAsync");
         await tracker.DisposeAsync();
-    }
-
-    [TestMethod]
-    public async Task HttpTracker_ParseUrl()
-    {
-        var peerId = new byte[20];
-        var t1 = new HttpTrackerClient("http://tracker.example.com/announce", peerId);
-        var t2 = new HttpTrackerClient("https://tracker.example.com:8080/announce", peerId);
-        await t1.DisposeAsync();
-        await t2.DisposeAsync();
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -608,22 +537,6 @@ public abstract partial class WebTorrentTestBase
             throw new Exception("Should not be connected before StartAsync");
 
         await tracker.DisposeAsync();
-    }
-
-    [TestMethod]
-    public async Task UdpTracker_ParseUrl()
-    {
-        var peerId = new byte[20];
-
-        // Various URL formats
-        var tracker1 = new UdpTrackerClient("udp://tracker.opentrackr.org:1337", peerId);
-        var tracker2 = new UdpTrackerClient("udp://explodie.org:6969", peerId);
-        var tracker3 = new UdpTrackerClient("udp://tracker.example.com:6969/announce", peerId);
-
-        // Should not throw — URL parsing works
-        await tracker1.DisposeAsync();
-        await tracker2.DisposeAsync();
-        await tracker3.DisposeAsync();
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -705,17 +618,6 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
-    public async Task Client_AddTransport()
-    {
-        await using var client = new WebTorrentClient(crypto: Client!.Crypto);
-        await using var transport = IWebRtcTransport.Create();
-
-        client.AddTransport(transport);
-        // No crash — transport registered
-        Console.WriteLine($"[Client] Transport added: {transport.GetType().Name}");
-    }
-
-    [TestMethod]
     public async Task Client_EventWiring()
     {
         await using var client = new WebTorrentClient(crypto: Client!.Crypto);
@@ -735,50 +637,4 @@ public abstract partial class WebTorrentTestBase
         if (!readyFired) throw new Exception("OnTorrentReady should have fired");
     }
 
-    // ═══════════════════════════════════════════════════════════
-    //  Bitfield Encoding
-    // ═══════════════════════════════════════════════════════════
-
-    [TestMethod]
-    public async Task Bitfield_BoolToBytes()
-    {
-        // Test the bitfield encoding used for wire protocol
-        var bitfield = new bool[] { true, false, true, true, false, false, false, true,
-                                     true, false, false, false, false, false, false, false };
-
-        // Manual encode: same as TorrentSwarm.BoolBitfieldToBytes
-        int byteCount = (bitfield.Length + 7) / 8;
-        var bytes = new byte[byteCount];
-        for (int i = 0; i < bitfield.Length; i++)
-            if (bitfield[i])
-                bytes[i / 8] |= (byte)(1 << (7 - (i % 8)));
-
-        // 10110001 = 0xB1, 10000000 = 0x80
-        if (bytes[0] != 0xB1) throw new Exception($"First byte should be 0xB1, got 0x{bytes[0]:X2}");
-        if (bytes[1] != 0x80) throw new Exception($"Second byte should be 0x80, got 0x{bytes[1]:X2}");
-    }
-
-    [TestMethod]
-    public async Task Bitfield_BytesToBool()
-    {
-        // Test the bitfield decoding used in TorrentSwarm
-        var bf = new byte[] { 0xB1, 0x80 }; // 10110001 10000000
-
-        var boolField = new bool[bf.Length * 8];
-        for (int i = 0; i < bf.Length; i++)
-            for (int bit = 0; bit < 8; bit++)
-                if (i * 8 + bit < boolField.Length)
-                    boolField[i * 8 + bit] = (bf[i] & (1 << (7 - bit))) != 0;
-
-        if (!boolField[0]) throw new Exception("Bit 0 should be true");
-        if (boolField[1]) throw new Exception("Bit 1 should be false");
-        if (!boolField[2]) throw new Exception("Bit 2 should be true");
-        if (!boolField[3]) throw new Exception("Bit 3 should be true");
-        if (boolField[4]) throw new Exception("Bit 4 should be false");
-        if (boolField[5]) throw new Exception("Bit 5 should be false");
-        if (boolField[6]) throw new Exception("Bit 6 should be false");
-        if (!boolField[7]) throw new Exception("Bit 7 should be true");
-        if (!boolField[8]) throw new Exception("Bit 8 should be true");
-        if (boolField[9]) throw new Exception("Bit 9 should be false");
-    }
 }

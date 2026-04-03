@@ -15,6 +15,8 @@ public enum MessageType : byte
     Request = 6,
     Piece = 7,
     Cancel = 8,
+    // BEP 5: DHT Port
+    Port = 9,
     // BEP 6: Fast Extension
     SuggestPiece = 13,
     HaveAll = 14,
@@ -97,6 +99,7 @@ public class WireProtocol : IAsyncDisposable
     {
         if (infoHash.Length != 20) throw new ArgumentException("Info hash must be 20 bytes");
         if (peerId.Length != 20) throw new ArgumentException("Peer ID must be 20 bytes");
+        if (reserved != null && reserved.Length != 8) throw new ArgumentException("Reserved must be exactly 8 bytes");
 
         reserved ??= new byte[8];
         // Set BEP 10 (Extension Protocol) support flag
@@ -156,6 +159,17 @@ public class WireProtocol : IAsyncDisposable
     {
         var payload = new byte[13];
         payload[0] = (byte)MessageType.Request;
+        WriteInt32BE(payload, 1, pieceIndex);
+        WriteInt32BE(payload, 5, offset);
+        WriteInt32BE(payload, 9, length);
+        return SendFramedAsync(payload);
+    }
+
+    /// <summary>Send a Cancel message (same format as Request: index + begin + length).</summary>
+    public Task SendCancelAsync(int pieceIndex, int offset, int length)
+    {
+        var payload = new byte[13];
+        payload[0] = (byte)MessageType.Cancel;
         WriteInt32BE(payload, 1, pieceIndex);
         WriteInt32BE(payload, 5, offset);
         WriteInt32BE(payload, 9, length);
@@ -297,12 +311,12 @@ public class WireProtocol : IAsyncDisposable
                     OnPiece?.Invoke(ReadInt32BE(payload, 1), ReadInt32BE(payload, 5), payload[9..]); break;
                 case MessageType.Cancel when payload.Length >= 13:
                     OnCancel?.Invoke(ReadInt32BE(payload, 1), ReadInt32BE(payload, 5), ReadInt32BE(payload, 9)); break;
-                // BEP 6: Fast Extension
-                case MessageType.SuggestPiece when payload.Length >= 5:
+                // BEP 6: Fast Extension — only process if remote peer advertised support
+                case MessageType.SuggestPiece when SupportsFastExtension && payload.Length >= 5:
                     OnSuggestPiece?.Invoke(ReadInt32BE(payload, 1)); break;
-                case MessageType.HaveAll:
+                case MessageType.HaveAll when SupportsFastExtension:
                     OnHaveAll?.Invoke(); break;
-                case MessageType.HaveNone:
+                case MessageType.HaveNone when SupportsFastExtension:
                     OnHaveNone?.Invoke(); break;
                 case MessageType.RejectRequest when payload.Length >= 13:
                     OnRejectRequest?.Invoke(ReadInt32BE(payload, 1), ReadInt32BE(payload, 5), ReadInt32BE(payload, 9)); break;

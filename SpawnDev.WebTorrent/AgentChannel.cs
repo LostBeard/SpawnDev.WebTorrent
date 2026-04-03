@@ -186,7 +186,7 @@ public class AgentChannel : IAsyncDisposable
         var agentHash = ComputeAgentInfoHash(_publicKey, salt);
 
         // Announce to our virtual swarm so peers can see us
-        await _tracker.AnnounceAsync(agentHash, 0, 0, 0, 0, ct);
+        await _tracker.AnnounceAsync(agentHash, 0, 0, 0, 0, ct: ct);
 
         // Send data as a custom offer to all peers in the swarm
         // The "offer" contains the agent state as serialized JSON

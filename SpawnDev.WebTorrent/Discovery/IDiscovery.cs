@@ -1,6 +1,17 @@
 namespace SpawnDev.WebTorrent.Discovery;
 
 /// <summary>
+/// Tracker event types per BEP 3 / BEP 15.
+/// </summary>
+public enum TrackerEvent
+{
+    None = 0,
+    Completed = 1,
+    Started = 2,
+    Stopped = 3,
+}
+
+/// <summary>
 /// Peer discovery source abstraction. Implementations:
 /// - TrackerDiscovery: HTTP/UDP/WebSocket tracker announces
 /// - DhtDiscovery: Distributed Hash Table (Kademlia-based)
@@ -19,7 +30,8 @@ public interface IDiscovery : IAsyncDisposable
     Task StopAsync();
 
     /// <summary>Announce that we have the torrent (for seeding).</summary>
-    Task AnnounceAsync(byte[] infoHash, int port, long uploaded, long downloaded, long left, CancellationToken ct = default);
+    Task AnnounceAsync(byte[] infoHash, int port, long uploaded, long downloaded, long left,
+        TrackerEvent trackerEvent = TrackerEvent.None, CancellationToken ct = default);
 
     /// <summary>Fired when a new peer is discovered.</summary>
     event Action<PeerInfo> OnPeer;

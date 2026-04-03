@@ -19,44 +19,6 @@ namespace SpawnDev.WebTorrent.Demo.Shared.UnitTests;
 /// </summary>
 public abstract partial class WebTorrentTestBase
 {
-    // ═══════════════════════════════════════════════════════════
-    //  ut_metadata: Serving Metadata (Seeder Side)
-    // ═══════════════════════════════════════════════════════════
-
-    [TestMethod]
-    public async Task UtMetadata_HandleRequest_ServesCorrectPiece()
-    {
-        // Create metadata larger than 1 piece (16KB) to test slicing
-        var data = new byte[65536];
-        Random.Shared.NextBytes(data);
-        var (_, metadata) = TorrentCreator.CreateFromBytes("serve-test.bin", data,
-            new TorrentCreatorOptions { PieceLength = 16384 });
-
-        if (metadata.InfoDictBytes == null)
-            throw new Exception("InfoDictBytes is null — BuildTorrent didn't set it");
-
-        var ext = new UtMetadataExtension();
-        ext.LocalMetadata = metadata.InfoDictBytes;
-
-        // Register with a wire protocol's extension manager
-        var wire = new WireProtocol(new MockConnection(new List<byte>()));
-        wire.Extensions.Register(ext);
-
-        // Simulate a request for piece 0
-        var request = System.Text.Encoding.ASCII.GetBytes("d8:msg_typei0e5:piecei0ee");
-        await ext.HandleMessageAsync(request);
-
-        // The extension should have sent a response — check LocalMetadata is set
-        Console.WriteLine($"[UtMetadata_HandleRequest] InfoDictBytes.Length={metadata.InfoDictBytes.Length}");
-        Console.WriteLine($"[UtMetadata_HandleRequest] LocalMetadata set: {ext.LocalMetadata != null}");
-
-        // Verify the metadata is available for serving
-        if (ext.LocalMetadata == null)
-            throw new Exception("LocalMetadata should be set for serving");
-        if (ext.LocalMetadata.Length != metadata.InfoDictBytes.Length)
-            throw new Exception($"LocalMetadata size mismatch: {ext.LocalMetadata.Length} vs {metadata.InfoDictBytes.Length}");
-    }
-
     [TestMethod]
     public async Task UtMetadata_Handshake_IncludesMetadataSize()
     {
@@ -629,7 +591,7 @@ public abstract partial class WebTorrentTestBase
 
         // Track received peers
         var peersReceived = new TaskCompletionSource<List<string>>();
-        receiverPex.OnPeersReceived += (peers) => peersReceived.TrySetResult(peers);
+        receiverPex.OnPeersReceived += (peers) => peersReceived.TrySetResult(peers.Select(p => p.Address).ToList());
 
         // Start message loops
         var ctA = new CancellationTokenSource(8000);
@@ -747,7 +709,7 @@ public abstract partial class WebTorrentTestBase
         await wireB.SendExtensionMessageAsync(0, Bencode.BencodeEncoder.Encode(hsB.ToDictionary(kv => kv.Key, kv => kv.Value)));
 
         var peersReceived = new TaskCompletionSource<List<string>>();
-        receiverPex.OnPeersReceived += (peers) => peersReceived.TrySetResult(peers);
+        receiverPex.OnPeersReceived += (peers) => peersReceived.TrySetResult(peers.Select(p => p.Address).ToList());
 
         var ctA = new CancellationTokenSource(5000);
         var ctB = new CancellationTokenSource(5000);

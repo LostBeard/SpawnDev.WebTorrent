@@ -42,15 +42,17 @@ public class WebSocketTrackerClient : IDiscovery
     private CancellationTokenSource? _readCts;
     private Task? _readLoop;
     private byte[]? _currentInfoHash;
+    private int _currentPort;
     private int _announceIntervalMs = 120_000;
+    private Func<TrackerOffer[]?>? _offerFactory;
 
     public string Type => "ws-tracker";
     public bool IsConnected => _ws?.State == WebSocketState.Open;
 
     public event Action<PeerInfo>? OnPeer;
-    public event Action<int, int>? OnAnnounceResponse; // seeders, leechers
-    public event Action<string, string, JsonElement>? OnOffer; // fromPeerId, offerId, offer
-    public event Action<string, string, JsonElement>? OnAnswer; // fromPeerId, offerId, answer
+    public event Action<int, int>? OnAnnounceResponse;
+    public event Action<string, string, JsonElement>? OnOffer;
+    public event Action<string, string, JsonElement>? OnAnswer;
     public event Action<string>? OnError;
     public event Action? OnConnected;
     public event Action? OnDisconnected;
@@ -62,40 +64,56 @@ public class WebSocketTrackerClient : IDiscovery
     }
 
     public async Task StartAsync(byte[] infoHash, int port, CancellationToken ct = default)
-        => await StartAsync(infoHash, port, null, ct);
+        => await StartAsync(infoHash, port, null, null, ct);
 
-    public async Task StartAsync(byte[] infoHash, int port, TrackerOffer[]? offers, CancellationToken ct = default)
+    public async Task StartAsync(byte[] infoHash, int port, TrackerOffer[]? offers,
+        Func<TrackerOffer[]?>? offerFactory = null, CancellationToken ct = default)
     {
         _currentInfoHash = infoHash;
+        _currentPort = port;
+        _offerFactory = offerFactory;
         _ws = new ClientWebSocket();
-        _readCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        _readCts = new CancellationTokenSource();
+
+        using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        connectCts.CancelAfter(15_000);
+        await _ws.ConnectAsync(new Uri(_trackerUrl), connectCts.Token);
+        OnConnected?.Invoke();
+        _readLoop = ReadLoopAsync(_readCts.Token);
 
         try
         {
-            await _ws.ConnectAsync(new Uri(_trackerUrl), ct);
-            OnConnected?.Invoke();
-            _readLoop = ReadLoopAsync(_readCts.Token);
-            await AnnounceAsync(infoHash, port, 0, 0, 0, offers, ct);
-
-            // Start periodic re-announce loop
-            _ = ReannounceLoopAsync(_readCts.Token);
+            await AnnounceAsync(infoHash, port, 0, 0, 0, offers, TrackerEvent.Started, ct);
         }
         catch (Exception ex)
         {
-            OnError?.Invoke($"Tracker connect failed: {ex.Message}");
+            OnError?.Invoke($"First announce failed: {ex.Message}");
         }
+
+        _ = ReannounceLoopAsync(_readCts.Token);
     }
 
     public Task AnnounceAsync(byte[] infoHash, int port,
-        long uploaded, long downloaded, long left, CancellationToken ct = default)
-        => AnnounceAsync(infoHash, port, uploaded, downloaded, left, null, ct);
+        long uploaded, long downloaded, long left,
+        TrackerEvent trackerEvent = TrackerEvent.None, CancellationToken ct = default)
+        => AnnounceAsync(infoHash, port, uploaded, downloaded, left, null, trackerEvent, ct);
 
     /// <summary>Announce with pre-generated WebRTC offers (WebTorrent protocol).</summary>
     public async Task AnnounceAsync(byte[] infoHash, int port,
         long uploaded, long downloaded, long left,
-        TrackerOffer[]? offers, CancellationToken ct = default)
+        TrackerOffer[]? offers, TrackerEvent trackerEvent = TrackerEvent.None,
+        CancellationToken ct = default)
     {
         if (_ws?.State != WebSocketState.Open) return;
+
+        string? eventStr = trackerEvent switch
+        {
+            TrackerEvent.Started => "started",
+            TrackerEvent.Stopped => "stopped",
+            TrackerEvent.Completed => "completed",
+            TrackerEvent.None => null,
+            _ => null,
+        };
 
         if (offers != null && offers.Length > 0)
         {
@@ -108,6 +126,7 @@ public class WebSocketTrackerClient : IDiscovery
                 downloaded,
                 left,
                 port,
+                @event = eventStr,
                 numwant = offers.Length,
                 offers = offers.Select(o => new
                 {
@@ -128,6 +147,7 @@ public class WebSocketTrackerClient : IDiscovery
                 Downloaded = downloaded,
                 Left = left,
                 Port = port,
+                Event = eventStr,
             };
             await SendJsonAsync(msg, ct);
         }
@@ -180,7 +200,8 @@ public class WebSocketTrackerClient : IDiscovery
                 await Task.Delay(_announceIntervalMs, ct);
                 if (_currentInfoHash != null && _ws?.State == WebSocketState.Open)
                 {
-                    await AnnounceAsync(_currentInfoHash, 0, 0, 0, 0, ct);
+                    var offers = _offerFactory?.Invoke();
+                    await AnnounceAsync(_currentInfoHash, _currentPort, 0, 0, 0, offers, TrackerEvent.None, ct);
                 }
             }
         }
@@ -191,17 +212,29 @@ public class WebSocketTrackerClient : IDiscovery
     public async Task StopAsync()
     {
         _readCts?.Cancel();
+
+        if (_ws?.State == WebSocketState.Open && _currentInfoHash != null)
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await AnnounceAsync(_currentInfoHash, _currentPort, 0, 0, 0, null, TrackerEvent.Stopped, cts.Token);
+            }
+            catch { }
+        }
+
         if (_ws?.State == WebSocketState.Open)
         {
             try
             {
-                await _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
+                using var closeCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", closeCts.Token);
             }
             catch { }
         }
         if (_readLoop != null)
         {
-            try { await _readLoop; } catch { }
+            try { await _readLoop.WaitAsync(TimeSpan.FromSeconds(5)); } catch { }
         }
         OnDisconnected?.Invoke();
     }
@@ -249,8 +282,6 @@ public class WebSocketTrackerClient : IDiscovery
             if (!root.TryGetProperty("action", out var actionProp)) return;
             var action = actionProp.GetString();
 
-            // JS WebTorrent protocol multiplexes offers/answers under action:"announce".
-            // Check for offer/answer fields FIRST, regardless of action value.
             if (root.TryGetProperty("offer", out _) && root.TryGetProperty("offer_id", out _))
             {
                 ProcessOffer(root);
@@ -283,17 +314,24 @@ public class WebSocketTrackerClient : IDiscovery
 
     private void ProcessAnnounce(JsonElement root)
     {
-        // Update announce interval
+        if (root.TryGetProperty("failure reason", out var failProp))
+        {
+            OnError?.Invoke($"Tracker failure: {failProp.GetString()}");
+            return;
+        }
+
         if (root.TryGetProperty("interval", out var interval))
-            _announceIntervalMs = interval.GetInt32() * 1000;
+        {
+            var secs = interval.GetInt32();
+            secs = Math.Min(secs, 3600);
+            _announceIntervalMs = secs * 1000;
+        }
 
         int seeders = root.TryGetProperty("complete", out var c) ? c.GetInt32() : 0;
         int leechers = root.TryGetProperty("incomplete", out var ic) ? ic.GetInt32() : 0;
-        int peerCount = (root.TryGetProperty("peers", out var p) && p.ValueKind == System.Text.Json.JsonValueKind.Array) ? p.GetArrayLength() : 0;
         OnAnnounceResponse?.Invoke(seeders, leechers);
 
-        // Extract peers
-        if (root.TryGetProperty("peers", out var peers))
+        if (root.TryGetProperty("peers", out var peers) && peers.ValueKind == JsonValueKind.Array)
         {
             foreach (var peer in peers.EnumerateArray())
             {
@@ -320,7 +358,7 @@ public class WebSocketTrackerClient : IDiscovery
         if (fromPeerId == null || offerId == null) return;
 
         if (root.TryGetProperty("offer", out var offer))
-            OnOffer?.Invoke(fromPeerId, offerId, offer);
+            OnOffer?.Invoke(fromPeerId, offerId, offer.Clone());
     }
 
     private void ProcessAnswer(JsonElement root)
@@ -330,7 +368,7 @@ public class WebSocketTrackerClient : IDiscovery
         if (fromPeerId == null || offerId == null) return;
 
         if (root.TryGetProperty("answer", out var answer))
-            OnAnswer?.Invoke(fromPeerId, offerId, answer);
+            OnAnswer?.Invoke(fromPeerId, offerId, answer.Clone());
     }
 
     private async Task SendJsonAsync<T>(T obj, CancellationToken ct)
@@ -340,6 +378,7 @@ public class WebSocketTrackerClient : IDiscovery
         {
             PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         });
         var bytes = Encoding.UTF8.GetBytes(json);
         await _ws.SendAsync(bytes, WebSocketMessageType.Text, true, ct);
@@ -375,4 +414,10 @@ internal class TrackerAnnounceMessage
 
     [JsonPropertyName("port")]
     public int Port { get; set; }
+
+    [JsonPropertyName("event")]
+    public string? Event { get; set; }
+
+    [JsonPropertyName("numwant")]
+    public int? Numwant { get; set; }
 }

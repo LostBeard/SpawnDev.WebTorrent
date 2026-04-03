@@ -26,6 +26,7 @@ public class DhtMutableItems
     private readonly DhtDiscovery _dht;
     private readonly IDhtSigner _signer;
     private long _sequence;
+    private int _txCounter;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte[]> _tokenCache = new();
 
     /// <summary>Our public key identity (from the signer).</summary>
@@ -48,6 +49,9 @@ public class DhtMutableItems
     {
         _dht = dht;
         _signer = signer;
+
+        if (_signer.Algorithm != "Ed25519")
+            Console.WriteLine($"[DHT] Warning: BEP 44 requires Ed25519. Current signer uses {_signer.Algorithm} — interop with other DHT nodes will fail.");
     }
 
     /// <summary>
@@ -60,7 +64,10 @@ public class DhtMutableItems
     {
         if (value.Length > 1000) throw new ArgumentException("Value too large (max 1000 bytes per BEP 44)");
 
-        _sequence++;
+        if (_signer.PublicKey.Length != 32)
+            throw new InvalidOperationException($"BEP 44 requires 32-byte Ed25519 public key, got {_signer.PublicKey.Length} bytes");
+
+        Interlocked.Increment(ref _sequence);
 
         var signData = BuildSignData(value, salt, _sequence);
         var signature = await _signer.SignAsync(signData);
@@ -73,9 +80,9 @@ public class DhtMutableItems
         {
             try
             {
-                // Use cached token from prior GET, or fallback
                 var nodeKey = node.EndPoint.ToString();
-                var token = _tokenCache.TryGetValue(nodeKey, out var cached) ? cached : new byte[] { (byte)'x' };
+                if (!_tokenCache.TryGetValue(nodeKey, out var token))
+                    continue; // skip nodes without a valid token
                 var putMsg = BuildPutMessage(value, _signer.PublicKey, signature, _sequence, salt, token);
                 await _dht.SendKrpcAsync(node.EndPoint, putMsg, ct);
             }
@@ -233,9 +240,9 @@ public class DhtMutableItems
         buf.AddRange(signature);
 
         // Token from prior GET response — required for DHT PUT
-        var tok = token ?? new byte[] { (byte)'x' };
-        buf.AddRange(Encoding.ASCII.GetBytes($"5:token{tok.Length}:"));
-        buf.AddRange(tok);
+        if (token == null || token.Length == 0) throw new ArgumentException("Valid token required for PUT");
+        buf.AddRange(Encoding.ASCII.GetBytes($"5:token{token.Length}:"));
+        buf.AddRange(token);
 
         // v (value)
         buf.AddRange(Encoding.ASCII.GetBytes($"1:v{value.Length}:"));
@@ -249,7 +256,8 @@ public class DhtMutableItems
 
     private byte[] BuildGetMessage(byte[] target)
     {
-        var txId = new byte[] { 0x46, 0x01 }; // "F\x01"
+        var id = Interlocked.Increment(ref _txCounter);
+        var txId = new byte[] { (byte)(id >> 8), (byte)id };
         var buf = new List<byte>();
         buf.AddRange(Encoding.ASCII.GetBytes("d1:ad"));
         buf.AddRange(Encoding.ASCII.GetBytes("2:id20:"));

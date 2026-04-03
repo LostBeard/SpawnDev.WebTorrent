@@ -126,6 +126,8 @@ public static class TorrentParser
             }
 
             int count = piecesBytes.Length / hashSize;
+            if (piecesBytes.Length % hashSize != 0)
+                throw new InvalidOperationException($"Pieces length {piecesBytes.Length} is not a multiple of hash size {hashSize}");
             metadata.PieceHashes = new byte[count][];
             for (int i = 0; i < count; i++)
             {
@@ -133,6 +135,13 @@ public static class TorrentParser
                 Array.Copy(piecesBytes, i * hashSize, metadata.PieceHashes[i], 0, hashSize);
             }
         }
+
+        if (string.IsNullOrEmpty(metadata.Name))
+            throw new InvalidOperationException("Missing required 'name' field in info dictionary");
+        if (metadata.PieceLength <= 0)
+            throw new InvalidOperationException("Missing or invalid 'piece length' field in info dictionary");
+        if (metadata.PieceHashes == null || metadata.PieceHashes.Length == 0)
+            throw new InvalidOperationException("Missing or invalid 'pieces' field in info dictionary");
 
         // Files: single-file or multi-file mode
         if (info.TryGetValue("length", out var length) && length is long singleLength)
@@ -173,8 +182,10 @@ public static class TorrentParser
                     filePath = Path.Combine(metadata.Name, Path.Combine(parts.ToArray()));
                 }
 
-                int startPiece = metadata.PieceLength > 0 ? (int)(offset / metadata.PieceLength) : 0;
-                int endPiece = metadata.PieceLength > 0 ? (int)((offset + fileLength - 1) / metadata.PieceLength) : 0;
+                int startPiece = metadata.PieceLength > 0 && fileLength > 0 ? (int)(offset / metadata.PieceLength) : 0;
+                int endPiece = metadata.PieceLength > 0 && fileLength > 0
+                    ? (int)((offset + fileLength - 1) / metadata.PieceLength)
+                    : startPiece;
 
                 parsedFiles.Add(new TorrentFile
                 {

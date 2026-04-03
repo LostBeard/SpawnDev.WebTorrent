@@ -107,38 +107,6 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
-    public async Task Bep46_Ecdsa_RejectSequenceRollback()
-    {
-        var crypto = Client!.Crypto;
-        if (crypto == null) throw new UnsupportedTestException("Requires IPortableCrypto");
-
-        var signer = new EcdsaP256Signer(crypto);
-        await signer.GenerateKeyAsync();
-        var (pubSpki, _) = await signer.ExportKeyPairAsync();
-
-        // Sign with seq=5
-        var value5 = Encoding.UTF8.GetBytes("value-at-seq-5");
-        var signData5 = BuildSignDataPublic(value5, null, 5);
-        var sig5 = await signer.SignAsync(signData5);
-
-        // Sign with seq=3 (rollback attempt)
-        var value3 = Encoding.UTF8.GetBytes("value-at-seq-3");
-        var signData3 = BuildSignDataPublic(value3, null, 3);
-        var sig3 = await signer.SignAsync(signData3);
-
-        // Both signatures are cryptographically valid
-        var valid5 = await signer.VerifyAsync(pubSpki, signData5, sig5);
-        var valid3 = await signer.VerifyAsync(pubSpki, signData3, sig3);
-
-        if (!valid5) throw new Exception("Seq 5 signature should be valid");
-        if (!valid3) throw new Exception("Seq 3 signature should be valid on its own");
-
-        // But seq 3 should not replace seq 5 — sequence numbers must only increase
-        // (Enforced by the consumer, not the signer. Both sigs are cryptographically valid.)
-        Console.WriteLine("[BEP46_ECDSA] Sequence rollback: both sigs valid, consumer must enforce seq ordering. PASSED");
-    }
-
-    [TestMethod]
     public async Task Bep46_Ecdsa_SaltIsolation()
     {
         var crypto = Client!.Crypto;

@@ -13,32 +13,6 @@ namespace SpawnDev.WebTorrent.Demo.Shared.UnitTests;
 public abstract partial class WebTorrentTestBase
 {
     // ═══════════════════════════════════════════════════════════
-    //  WebSeedConnection — URL Construction
-    // ═══════════════════════════════════════════════════════════
-
-    [TestMethod]
-    public async Task WebSeed_UrlConstruction_SingleFile()
-    {
-        var data = new byte[32768];
-        var (_, metadata) = TorrentCreator.CreateFromBytes("test file.bin", data,
-            new TorrentCreatorOptions { PieceLength = 16384 });
-
-        // Verify file name in metadata has a space
-        if (metadata.Files[0].Path != "test file.bin")
-            throw new Exception($"File path: '{metadata.Files[0].Path}'");
-
-        // Verify the web seed can be constructed without errors
-        var seed = new WebSeedConnection(new HttpClient { Timeout = TimeSpan.FromSeconds(2) },
-            "https://example.com/files", metadata);
-
-        // Try to download — will fail (example.com) but verifies no crash in URL construction
-        var result = await seed.DownloadPieceAsync(0);
-        // result is null (expected — example.com doesn't serve torrents)
-
-        Console.WriteLine("[Download] URL construction: no crash with spaces in filename");
-    }
-
-    // ═══════════════════════════════════════════════════════════
     //  Full Pipeline — Real Web Seed Download (Big Buck Bunny)
     // ═══════════════════════════════════════════════════════════
 

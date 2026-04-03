@@ -14,6 +14,12 @@ public class HttpTrackerClient : IDiscovery
     private readonly byte[] _peerId;
     private HttpClient? _httpClient;
     private byte[]? _currentInfoHash;
+    private int _currentPort;
+    private CancellationTokenSource? _reAnnounceCts;
+
+    private int _announceIntervalSecs = 1800;
+    private int _minIntervalSecs = 60;
+    private string? _trackerId;
 
     public string Type => "http-tracker";
     public bool IsConnected { get; private set; }
@@ -33,14 +39,18 @@ public class HttpTrackerClient : IDiscovery
     public async Task StartAsync(byte[] infoHash, int port, CancellationToken ct = default)
     {
         _currentInfoHash = infoHash;
+        _currentPort = port;
         _httpClient?.Dispose();
         _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
 
         try
         {
-            await AnnounceAsync(infoHash, port, 0, 0, 0, ct);
+            await AnnounceAsync(infoHash, port, 0, 0, 0, TrackerEvent.Started, ct);
             IsConnected = true;
             OnConnected?.Invoke();
+
+            _reAnnounceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            _ = ReannounceLoopAsync(_reAnnounceCts.Token);
         }
         catch (Exception ex)
         {
@@ -48,14 +58,31 @@ public class HttpTrackerClient : IDiscovery
         }
     }
 
+    private async Task ReannounceLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(_announceIntervalSecs), ct);
+                if (_currentInfoHash != null && _httpClient != null)
+                {
+                    await AnnounceAsync(_currentInfoHash, _currentPort, 0, 0, 0, TrackerEvent.None, ct);
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch { }
+    }
+
     public async Task AnnounceAsync(byte[] infoHash, int port,
-        long uploaded, long downloaded, long left, CancellationToken ct = default)
+        long uploaded, long downloaded, long left,
+        TrackerEvent trackerEvent = TrackerEvent.None, CancellationToken ct = default)
     {
         if (_httpClient == null) return;
 
         try
         {
-            // Build URL with query parameters
             var url = _announceUrl;
             var sep = url.Contains('?') ? '&' : '?';
 
@@ -68,25 +95,51 @@ public class HttpTrackerClient : IDiscovery
             url += "&compact=1";
             url += "&numwant=80";
 
+            if (trackerEvent != TrackerEvent.None)
+            {
+                var eventStr = trackerEvent switch
+                {
+                    TrackerEvent.Started => "started",
+                    TrackerEvent.Stopped => "stopped",
+                    TrackerEvent.Completed => "completed",
+                    _ => null,
+                };
+                if (eventStr != null)
+                    url += $"&event={eventStr}";
+            }
+
+            if (_trackerId != null)
+                url += $"&trackerid={Uri.EscapeDataString(_trackerId)}";
+
             var response = await _httpClient.GetByteArrayAsync(url, ct);
 
-            // Parse bencoded response
             var (decoded, _) = Bencode.BencodeDecoder.Decode(response, 0);
             if (decoded is not Dictionary<string, object> dict) return;
 
-            // Check for error
             if (dict.TryGetValue("failure reason", out var failObj) && failObj is byte[] failBytes)
             {
                 OnError?.Invoke(Encoding.UTF8.GetString(failBytes));
                 return;
             }
 
-            // Parse seeders/leechers
+            if (dict.TryGetValue("warning message", out var warnObj) && warnObj is byte[] warnBytes)
+            {
+                OnError?.Invoke($"[warning] {Encoding.UTF8.GetString(warnBytes)}");
+            }
+
+            if (dict.TryGetValue("interval", out var intervalObj) && intervalObj is long intervalVal)
+                _announceIntervalSecs = (int)intervalVal;
+
+            if (dict.TryGetValue("min interval", out var minObj) && minObj is long minVal)
+                _minIntervalSecs = (int)minVal;
+
+            if (dict.TryGetValue("tracker id", out var tidObj) && tidObj is byte[] tidBytes)
+                _trackerId = Encoding.UTF8.GetString(tidBytes);
+
             int seeders = dict.TryGetValue("complete", out var c) && c is long cl ? (int)cl : 0;
             int leechers = dict.TryGetValue("incomplete", out var ic) && ic is long icl ? (int)icl : 0;
             OnAnnounceResponse?.Invoke(seeders, leechers);
 
-            // Parse compact peer list (6 bytes per IPv4 peer)
             if (dict.TryGetValue("peers", out var peersObj))
             {
                 byte[]? peersBytes = null;
@@ -103,7 +156,6 @@ public class HttpTrackerClient : IDiscovery
                     }
                 }
 
-                // Also handle non-compact (list of dicts)
                 if (peersObj is List<object> peerList)
                 {
                     foreach (var peerObj in peerList)
@@ -114,8 +166,10 @@ public class HttpTrackerClient : IDiscovery
                                 ? Encoding.UTF8.GetString(ipBytes) : null;
                             var peerPort = peerDict.TryGetValue("port", out var portObj) && portObj is long pl
                                 ? (int)pl : 0;
+                            byte[]? peerIdBytes = peerDict.TryGetValue("peer id", out var pidObj) && pidObj is byte[] pidBytes
+                                ? pidBytes : null;
                             if (ip != null && peerPort > 0)
-                                OnPeer?.Invoke(new PeerInfo { Address = $"{ip}:{peerPort}", Source = "http-tracker" });
+                                OnPeer?.Invoke(new PeerInfo { Address = $"{ip}:{peerPort}", Source = "http-tracker", PeerId = peerIdBytes });
                         }
                     }
                 }
@@ -127,13 +181,24 @@ public class HttpTrackerClient : IDiscovery
         }
     }
 
-    public Task StopAsync()
+    public async Task StopAsync()
     {
+        _reAnnounceCts?.Cancel();
+
+        if (_httpClient != null && _currentInfoHash != null)
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await AnnounceAsync(_currentInfoHash, _currentPort, 0, 0, 0, TrackerEvent.Stopped, cts.Token);
+            }
+            catch { }
+        }
+
         _httpClient?.Dispose();
         _httpClient = null;
         IsConnected = false;
         OnDisconnected?.Invoke();
-        return Task.CompletedTask;
     }
 
     public async ValueTask DisposeAsync()

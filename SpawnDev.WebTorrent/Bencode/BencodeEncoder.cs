@@ -28,14 +28,14 @@ public static class BencodeEncoder
     /// <summary>Encode a list: l{items}e</summary>
     public static string EncodeList(IEnumerable<string> items) => $"l{string.Concat(items)}e";
 
-    /// <summary>Encode a dictionary: d{key}{value}...e (keys must be sorted)</summary>
-    public static string EncodeDictionary(SortedDictionary<string, string> dict)
+    /// <summary>Encode a dictionary: d{key}{value}...e (keys sorted by raw bytes)</summary>
+    public static string EncodeDictionary(IDictionary<string, string> dict)
     {
         var sb = new StringBuilder("d");
-        foreach (var (key, value) in dict)
+        foreach (var (key, value) in dict.OrderBy(kv => kv.Key, StringComparer.Ordinal))
         {
             sb.Append(EncodeString(key));
-            sb.Append(value); // value is already bencoded
+            sb.Append(value);
         }
         sb.Append('e');
         return sb.ToString();

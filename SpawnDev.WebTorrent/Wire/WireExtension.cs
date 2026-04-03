@@ -88,7 +88,10 @@ public class ExtensionManager
             var data = ext.GetHandshakeData();
             if (data != null)
                 foreach (var (key, value) in data)
+                {
+                    if (key == "m") continue;
                     handshake[key] = value;
+                }
         }
 
         return handshake;
@@ -126,25 +129,21 @@ public class ExtensionManager
     {
         if (extensionId == 0)
         {
-            // Extension handshake (bencode dict)
             try
             {
                 var (decoded, _) = Bencode.BencodeDecoder.Decode(payload, 0);
                 if (decoded is Dictionary<string, object> handshake)
                     ProcessHandshake(handshake);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[ExtensionManager] Extension handshake decode error: {ex.Message}");
+            }
             return;
         }
 
-        foreach (var ext in _extensions)
-        {
-            if (ext.LocalId == extensionId)
-            {
-                await ext.HandleMessageAsync(payload);
-                return;
-            }
-        }
+        if (_localIdMap.TryGetValue(extensionId, out var ext))
+            await ext.HandleMessageAsync(payload);
     }
 
 }
@@ -181,6 +180,9 @@ public class UtMetadataExtension : WireExtension
     /// <summary>Fired when complete metadata is assembled and verified.</summary>
     public event Action<byte[]>? OnMetadataComplete;
 
+    /// <summary>Fired when the peer rejects a metadata piece request.</summary>
+    public event Action<int>? OnPieceRejected;
+
     /// <summary>Expected info hash for verification.</summary>
     public byte[]? ExpectedInfoHash { get; set; }
 
@@ -195,8 +197,12 @@ public class UtMetadataExtension : WireExtension
     {
         if (data.TryGetValue("metadata_size", out var sizeObj))
         {
-            if (sizeObj is long size) MetadataSize = (int)size;
-            else if (sizeObj is int intSize) MetadataSize = intSize;
+            int raw = 0;
+            if (sizeObj is long size) raw = (int)size;
+            else if (sizeObj is int intSize) raw = intSize;
+
+            if (raw > 0 && raw <= 10_485_760)
+                MetadataSize = raw;
         }
     }
 
@@ -223,7 +229,7 @@ public class UtMetadataExtension : WireExtension
                     HandleData(piece, payload, consumed);
                     break;
                 case MsgTypeReject:
-                    // Peer doesn't have this piece — try another peer
+                    OnPieceRejected?.Invoke(piece);
                     break;
             }
         }
@@ -234,7 +240,7 @@ public class UtMetadataExtension : WireExtension
 
     private void HandleRequest(int pieceIndex)
     {
-        if (LocalMetadata == null || !IsSupported) return;
+        if (LocalMetadata == null) return;
 
         int offset = pieceIndex * PieceSize;
         if (offset >= LocalMetadata.Length) return;
@@ -256,17 +262,19 @@ public class UtMetadataExtension : WireExtension
     private void HandleData(int pieceIndex, byte[] payload, int dataOffset)
     {
         if (MetadataSize <= 0) return;
+        if (pieceIndex < 0) return;
 
-        // Extract raw metadata bytes after the bencode dict
+        int totalPieces = (MetadataSize + PieceSize - 1) / PieceSize;
+        if (pieceIndex >= totalPieces) return;
+
         int dataLength = payload.Length - dataOffset;
         if (dataLength <= 0) return;
+        if (dataLength > PieceSize + 1024) return; // allow small bencode overhead
 
         var pieceData = new byte[dataLength];
         Array.Copy(payload, dataOffset, pieceData, 0, dataLength);
         _receivedPieces[pieceIndex] = pieceData;
 
-        // Check if we have all pieces
-        int totalPieces = (MetadataSize + PieceSize - 1) / PieceSize;
         if (_receivedPieces.Count >= totalPieces)
             TryAssembleMetadata(totalPieces);
     }
@@ -329,14 +337,20 @@ public class UtMetadataExtension : WireExtension
 /// Protocol:
 ///   - "added": compact peer list (6 bytes per IPv4 peer: 4 IP + 2 port)
 ///   - "added.f": flags for each added peer (1 byte per peer)
+///   - "added6": compact IPv6 peer list (18 bytes per peer: 16 IP + 2 port)
 ///   - "dropped": compact peer list of disconnected peers
 /// </summary>
 public class UtPexExtension : WireExtension
 {
     public override string Name => "ut_pex";
 
+    public record PexPeerInfo(string Address, byte Flags = 0);
+
     /// <summary>Fired when new peers are received via PEX.</summary>
-    public event Action<List<string>>? OnPeersReceived;
+    public event Action<List<PexPeerInfo>>? OnPeersReceived;
+
+    /// <summary>Fired when peers are reported as dropped via PEX.</summary>
+    public event Action<List<string>>? OnPeersDropped;
 
     public override Task HandleMessageAsync(byte[] payload)
     {
@@ -345,35 +359,127 @@ public class UtPexExtension : WireExtension
             var (decoded, _) = Bencode.BencodeDecoder.Decode(payload, 0);
             if (decoded is not Dictionary<string, object> msg) return Task.CompletedTask;
 
-            var peers = new List<string>();
+            var peers = new List<PexPeerInfo>();
 
-            // Parse "added" compact peer list (6 bytes per IPv4 peer)
-            if (msg.TryGetValue("added", out var addedObj) && addedObj is byte[] added)
+            byte[] addedBytes = ResolveByteField(msg, "added");
+            byte[] flagsBytes = ResolveByteField(msg, "added.f");
+
+            if (addedBytes.Length > 0)
             {
-                for (int i = 0; i + 6 <= added.Length; i += 6)
-                {
-                    var ip = $"{added[i]}.{added[i + 1]}.{added[i + 2]}.{added[i + 3]}";
-                    var port = (added[i + 4] << 8) | added[i + 5];
-                    peers.Add($"{ip}:{port}");
-                }
-            }
-            // Also handle string-encoded added (some implementations)
-            else if (msg.TryGetValue("added", out var addedStrObj) && addedStrObj is string addedStr)
-            {
-                var addedBytes = Encoding.Latin1.GetBytes(addedStr);
+                int peerCount = 0;
                 for (int i = 0; i + 6 <= addedBytes.Length; i += 6)
                 {
                     var ip = $"{addedBytes[i]}.{addedBytes[i + 1]}.{addedBytes[i + 2]}.{addedBytes[i + 3]}";
                     var port = (addedBytes[i + 4] << 8) | addedBytes[i + 5];
-                    peers.Add($"{ip}:{port}");
+                    byte flags = peerCount < flagsBytes.Length ? flagsBytes[peerCount] : (byte)0;
+                    peers.Add(new PexPeerInfo($"{ip}:{port}", flags));
+                    peerCount++;
+                }
+            }
+
+            byte[] added6Bytes = ResolveByteField(msg, "added6");
+            if (added6Bytes.Length > 0)
+            {
+                for (int i = 0; i + 18 <= added6Bytes.Length; i += 18)
+                {
+                    var ipBytes = new byte[16];
+                    Array.Copy(added6Bytes, i, ipBytes, 0, 16);
+                    var ip = new System.Net.IPAddress(ipBytes).ToString();
+                    var port = (added6Bytes[i + 16] << 8) | added6Bytes[i + 17];
+                    peers.Add(new PexPeerInfo($"[{ip}]:{port}"));
                 }
             }
 
             if (peers.Count > 0)
                 OnPeersReceived?.Invoke(peers);
+
+            var droppedBytes = ResolveByteField(msg, "dropped");
+            if (droppedBytes.Length > 0)
+            {
+                var dropped = new List<string>();
+                for (int i = 0; i + 6 <= droppedBytes.Length; i += 6)
+                {
+                    var ip = $"{droppedBytes[i]}.{droppedBytes[i + 1]}.{droppedBytes[i + 2]}.{droppedBytes[i + 3]}";
+                    var port = (droppedBytes[i + 4] << 8) | droppedBytes[i + 5];
+                    dropped.Add($"{ip}:{port}");
+                }
+                if (dropped.Count > 0)
+                    OnPeersDropped?.Invoke(dropped);
+            }
         }
         catch { }
 
         return Task.CompletedTask;
+    }
+
+    /// <summary>Send an outbound PEX message with added and dropped peers.</summary>
+    public async Task SendPexAsync(List<PexPeerInfo> added, List<string> dropped)
+    {
+        var dict = new Dictionary<string, object>();
+
+        if (added.Count > 0)
+        {
+            var addedCompact = new byte[added.Count * 6];
+            var addedFlags = new byte[added.Count];
+            for (int i = 0; i < added.Count; i++)
+            {
+                var parts = added[i].Address.Split(':');
+                if (parts.Length != 2) continue;
+                var ipParts = parts[0].Split('.');
+                if (ipParts.Length != 4) continue;
+                int offset = i * 6;
+                addedCompact[offset] = byte.Parse(ipParts[0]);
+                addedCompact[offset + 1] = byte.Parse(ipParts[1]);
+                addedCompact[offset + 2] = byte.Parse(ipParts[2]);
+                addedCompact[offset + 3] = byte.Parse(ipParts[3]);
+                int port = int.Parse(parts[1]);
+                addedCompact[offset + 4] = (byte)(port >> 8);
+                addedCompact[offset + 5] = (byte)(port & 0xFF);
+                addedFlags[i] = added[i].Flags;
+            }
+            dict["added"] = addedCompact;
+            dict["added.f"] = addedFlags;
+        }
+        else
+        {
+            dict["added"] = Array.Empty<byte>();
+        }
+
+        if (dropped.Count > 0)
+        {
+            var droppedCompact = new byte[dropped.Count * 6];
+            for (int i = 0; i < dropped.Count; i++)
+            {
+                var parts = dropped[i].Split(':');
+                if (parts.Length != 2) continue;
+                var ipParts = parts[0].Split('.');
+                if (ipParts.Length != 4) continue;
+                int offset = i * 6;
+                droppedCompact[offset] = byte.Parse(ipParts[0]);
+                droppedCompact[offset + 1] = byte.Parse(ipParts[1]);
+                droppedCompact[offset + 2] = byte.Parse(ipParts[2]);
+                droppedCompact[offset + 3] = byte.Parse(ipParts[3]);
+                int port = int.Parse(parts[1]);
+                droppedCompact[offset + 4] = (byte)(port >> 8);
+                droppedCompact[offset + 5] = (byte)(port & 0xFF);
+            }
+            dict["dropped"] = droppedCompact;
+        }
+        else
+        {
+            dict["dropped"] = Array.Empty<byte>();
+        }
+
+        await SendAsync(Bencode.BencodeEncoder.Encode(dict));
+    }
+
+    private static byte[] ResolveByteField(Dictionary<string, object> msg, string key)
+    {
+        if (msg.TryGetValue(key, out var obj))
+        {
+            if (obj is byte[] b) return b;
+            if (obj is string s) return Encoding.Latin1.GetBytes(s);
+        }
+        return Array.Empty<byte>();
     }
 }

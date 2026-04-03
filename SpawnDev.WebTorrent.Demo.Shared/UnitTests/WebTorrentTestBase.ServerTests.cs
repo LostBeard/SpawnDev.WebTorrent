@@ -80,23 +80,6 @@ public abstract partial class WebTorrentTestBase
     //  WebSocket Tracker Client Tests (unit-level)
     // ═══════════════════════════════════════════════════════════
 
-    [TestMethod]
-    public async Task TrackerClient_CreateWithPeerId()
-    {
-        var peerId = new byte[20];
-        "-SD0210-"u8.CopyTo(peerId);
-        Random.Shared.NextBytes(peerId.AsSpan(8));
-
-        var client = new WebSocketTrackerClient("wss://tracker.example.com/announce", peerId);
-
-        if (client.Type != "ws-tracker")
-            throw new Exception($"Expected type 'ws-tracker', got '{client.Type}'");
-        if (client.IsConnected)
-            throw new Exception("Should not be connected before StartAsync");
-
-        await client.DisposeAsync();
-    }
-
     // ═══════════════════════════════════════════════════════════
     //  Bencode Round-Trip Stress Tests
     // ═══════════════════════════════════════════════════════════

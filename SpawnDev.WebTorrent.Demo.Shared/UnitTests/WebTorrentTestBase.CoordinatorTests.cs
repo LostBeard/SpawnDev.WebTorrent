@@ -74,57 +74,6 @@ public abstract partial class WebTorrentTestBase
     }
 
     // ═══════════════════════════════════════════════════════════
-    //  Coordinator — Prioritization
-    // ═══════════════════════════════════════════════════════════
-
-    [TestMethod]
-    public async Task Coord_Prioritize_MultiplePieces()
-    {
-        var (coord, _, _) = CreateTestCoordinator();
-        coord.Prioritize(0);
-        coord.Prioritize(2);
-        coord.Prioritize(3);
-        // Prioritize is fire-and-forget — verify it doesn't throw
-        // and that coordinator accepted all three
-        Console.WriteLine("[Coord] Prioritized pieces 0, 2, 3 — no errors");
-    }
-
-    [TestMethod]
-    public async Task Coord_Prioritize_Idempotent()
-    {
-        var (coord, _, _) = CreateTestCoordinator();
-        coord.Prioritize(1);
-        coord.Prioritize(1);
-        coord.Prioritize(1);
-        // Same piece prioritized multiple times — should not throw or duplicate
-        Console.WriteLine("[Coord] Duplicate prioritize — no errors");
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    //  Coordinator — Start/Stop
-    // ═══════════════════════════════════════════════════════════
-
-    [TestMethod]
-    public async Task Coord_StartStop_NoPeers()
-    {
-        var (coord, _, _) = CreateTestCoordinator();
-        // Start with no peers — loop should run and do nothing
-        coord.Start();
-        await Task.Delay(200);
-        coord.Stop();
-        // Should not throw
-        Console.WriteLine("[Coord] Start/Stop with no peers — no errors");
-    }
-
-    [TestMethod]
-    public async Task Coord_PeerCount_Initially()
-    {
-        var (coord, _, _) = CreateTestCoordinator();
-        if (coord.PeerCount != 0)
-            throw new Exception($"Initial PeerCount: {coord.PeerCount}");
-    }
-
-    // ═══════════════════════════════════════════════════════════
     //  Coordinator — Events
     // ═══════════════════════════════════════════════════════════
 

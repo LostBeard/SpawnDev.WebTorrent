@@ -14,6 +14,7 @@ namespace SpawnDev.WebTorrent.Transports;
 /// </summary>
 public class SipSorceryWebRtcTransport : IWebRtcTransport
 {
+    private bool _disposed;
     private readonly WebRtcTransportOptions _options;
     private readonly List<SipSorceryWebRtcConnection> _connections = new();
 
@@ -84,8 +85,13 @@ public class SipSorceryWebRtcTransport : IWebRtcTransport
 
     public async ValueTask DisposeAsync()
     {
+        if (_disposed) return;
+        _disposed = true;
         foreach (var conn in _connections.ToArray())
-            await conn.DisposeAsync();
+        {
+            try { await conn.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)); }
+            catch { }
+        }
         _connections.Clear();
     }
 }
@@ -102,6 +108,7 @@ public class SipSorceryWebRtcConnection : IConnection
     private TaskCompletionSource? _receiveSignal;
     private RTCPeerConnection? _pc;
     private RTCDataChannel? _dc;
+    private bool _disposed;
 
     public string RemoteId { get; }
     public string TransportType => "webrtc";
@@ -402,6 +409,8 @@ public class SipSorceryWebRtcConnection : IConnection
 
     public async ValueTask DisposeAsync()
     {
+        if (_disposed) return;
+        _disposed = true;
         await CloseAsync();
         _pc?.Dispose();
     }

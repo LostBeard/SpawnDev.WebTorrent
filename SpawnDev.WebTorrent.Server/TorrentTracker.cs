@@ -176,7 +176,7 @@ public class TorrentTracker
                 {
                     var forward = JsonSerializer.Serialize(new
                     {
-                        action = "offer",
+                        action = "announce",
                         info_hash = msg.InfoHash,
                         peer_id = peer.PeerId,
                         offer = offerSdp,
@@ -187,6 +187,32 @@ public class TorrentTracker
 
                 offerIdx++;
             }
+        }
+
+        // Handle answer embedded in announce (WebTorrent unified protocol)
+        bool hasAnswer = msg.Answer is JsonElement ae && ae.ValueKind == JsonValueKind.Object;
+        if (hasAnswer && !string.IsNullOrEmpty(msg.ToPeerId) && !string.IsNullOrEmpty(msg.OfferId))
+        {
+            var answerElement = (JsonElement)msg.Answer!;
+            bool foundTarget = swarm.Peers.TryGetValue(msg.ToPeerId, out var target);
+            Console.WriteLine($"[Tracker] Answer relay: to={msg.ToPeerId[..Math.Min(12, msg.ToPeerId.Length)]}, found={foundTarget}, wsOpen={target?.WebSocket.State}");
+            if (foundTarget && target!.WebSocket.State == WebSocketState.Open)
+            {
+                var forward = JsonSerializer.Serialize(new
+                {
+                    action = "announce",
+                    info_hash = msg.InfoHash,
+                    peer_id = peer.PeerId,
+                    answer = answerElement,
+                    offer_id = msg.OfferId,
+                });
+                Console.WriteLine($"[Tracker] Forwarding answer ({forward.Length} bytes)");
+                await SendText(target, forward);
+            }
+        }
+        else if (!hasAnswer)
+        {
+            Console.WriteLine($"[Tracker] No answer in announce from {peer.PeerId?[..Math.Min(12, peer.PeerId?.Length ?? 0)]}");
         }
     }
 

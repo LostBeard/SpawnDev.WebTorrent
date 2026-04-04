@@ -43,7 +43,7 @@ public class WebSocketTrackerClient : IDiscovery
     private Task? _readLoop;
     private byte[]? _currentInfoHash;
     private int _currentPort;
-    private int _announceIntervalMs = 120_000;
+    private int _announceIntervalMs = 30_000;
     private Func<TrackerOffer[]?>? _offerFactory;
 
     public string Type => "ws-tracker";
@@ -117,6 +117,7 @@ public class WebSocketTrackerClient : IDiscovery
 
         if (offers != null && offers.Length > 0)
         {
+            Console.WriteLine($"[WSTracker] Announcing with {offers.Length} offers, infoHash={Convert.ToHexString(infoHash).ToLowerInvariant()[..16]}..., event={eventStr ?? "none"}");
             var msg = new
             {
                 action = "announce",
@@ -127,7 +128,7 @@ public class WebSocketTrackerClient : IDiscovery
                 left,
                 port,
                 @event = eventStr,
-                numwant = offers.Length,
+                numwant = Math.Min(offers.Length, 5),
                 offers = offers.Select(o => new
                 {
                     offer = new { type = o.Offer.Type, sdp = o.Offer.Sdp },
@@ -161,7 +162,7 @@ public class WebSocketTrackerClient : IDiscovery
 
         var msg = new
         {
-            action = "offer",
+            action = "announce",
             info_hash = TrackerEncoding.ToBinaryString(_currentInfoHash),
             peer_id = TrackerEncoding.ToBinaryString(_peerId),
             to_peer_id = toPeerId,
@@ -180,7 +181,7 @@ public class WebSocketTrackerClient : IDiscovery
 
         var msg = new
         {
-            action = "answer",
+            action = "announce",
             info_hash = TrackerEncoding.ToBinaryString(_currentInfoHash),
             peer_id = TrackerEncoding.ToBinaryString(_peerId),
             to_peer_id = toPeerId,
@@ -316,7 +317,9 @@ public class WebSocketTrackerClient : IDiscovery
     {
         if (root.TryGetProperty("failure reason", out var failProp))
         {
-            OnError?.Invoke($"Tracker failure: {failProp.GetString()}");
+            var reason = failProp.GetString();
+            Console.WriteLine($"[WSTracker] Announce FAILURE: {reason}");
+            OnError?.Invoke($"Tracker failure: {reason}");
             return;
         }
 
@@ -329,6 +332,7 @@ public class WebSocketTrackerClient : IDiscovery
 
         int seeders = root.TryGetProperty("complete", out var c) ? c.GetInt32() : 0;
         int leechers = root.TryGetProperty("incomplete", out var ic) ? ic.GetInt32() : 0;
+        Console.WriteLine($"[WSTracker] Announce response: seeders={seeders}, leechers={leechers}");
         OnAnnounceResponse?.Invoke(seeders, leechers);
 
         if (root.TryGetProperty("peers", out var peers) && peers.ValueKind == JsonValueKind.Array)
@@ -355,6 +359,7 @@ public class WebSocketTrackerClient : IDiscovery
     {
         var fromPeerId = root.TryGetProperty("peer_id", out var pid) ? pid.GetString() : null;
         var offerId = root.TryGetProperty("offer_id", out var oid) ? oid.GetString() : null;
+        Console.WriteLine($"[WSTracker] OFFER received from={fromPeerId?[..Math.Min(16, fromPeerId?.Length ?? 0)]} offerId={offerId?[..Math.Min(8, offerId?.Length ?? 0)]}");
         if (fromPeerId == null || offerId == null) return;
 
         if (root.TryGetProperty("offer", out var offer))
@@ -365,6 +370,7 @@ public class WebSocketTrackerClient : IDiscovery
     {
         var fromPeerId = root.TryGetProperty("peer_id", out var pid) ? pid.GetString() : null;
         var offerId = root.TryGetProperty("offer_id", out var oid) ? oid.GetString() : null;
+        Console.WriteLine($"[WSTracker] ANSWER received from={fromPeerId?[..Math.Min(16, fromPeerId?.Length ?? 0)]} offerId={offerId?[..Math.Min(8, offerId?.Length ?? 0)]}");
         if (fromPeerId == null || offerId == null) return;
 
         if (root.TryGetProperty("answer", out var answer))

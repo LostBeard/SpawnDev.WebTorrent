@@ -66,21 +66,28 @@ public class PieceManager
     {
         // Find pieces the peer has that we don't
         var candidates = new List<int>();
+        int inProgressPiece = -1;
         for (int i = 0; i < PieceCount; i++)
         {
             if (!Bitfield[i] && i < peerBitfield.Length && peerBitfield[i]
                 && _pieces[i].State != DownloadState.Verifying)
             {
                 candidates.Add(i);
+                // Prioritize pieces already in progress (have received blocks — finish what we started)
+                if (inProgressPiece == -1 && _pieces[i].BlockReceived.Any(b => b))
+                    inProgressPiece = i;
             }
         }
 
         if (candidates.Count == 0) return -1;
 
-        if (strategy == "sequential")
-            return candidates[0]; // first missing piece
+        // Always finish in-progress pieces first (prevents scattering requests across hundreds of pieces)
+        if (inProgressPiece >= 0) return inProgressPiece;
 
-        // Rarest-first: for now, pick randomly (rarity tracking TBD)
+        if (strategy == "sequential")
+            return candidates[0];
+
+        // Random selection (rarity tracking TBD)
         return candidates[Random.Shared.Next(candidates.Count)];
     }
 

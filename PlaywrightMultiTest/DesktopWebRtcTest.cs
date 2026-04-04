@@ -95,4 +95,53 @@ public class DesktopWebRtcTest
         await seeder.DisposeAsync();
         WebTorrentClient.VerboseLogging = false;
     }
+
+    [Test, Timeout(300000)]
+    public async Task Desktop_Download_Sintel_PeersOnly()
+    {
+        WebTorrentClient.VerboseLogging = true;
+        var crypto = new DotNetCrypto();
+        var client = new WebTorrentClient(crypto: crypto);
+
+        var magnet = "magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Sintel" +
+            "&tr=wss%3A%2F%2Ftracker.openwebtorrent.com" +
+            "&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce";
+
+        var swarm = await client.AddAsync(magnet, new AddTorrentOptions { DisableWebSeeds = true });
+        Console.WriteLine($"[Test] Added Sintel. WebSeedsDisabled={swarm.WebSeedsDisabled}");
+
+        // Wait for metadata — 90s, ICE gathering + connection can take time
+        var metaTimeout = DateTime.UtcNow.AddSeconds(90);
+        while (!swarm.HasMetadata && DateTime.UtcNow < metaTimeout)
+            await Task.Delay(500);
+
+        if (!swarm.HasMetadata)
+        {
+            await client.DisposeAsync();
+            Assert.Fail($"No metadata after 90s. Peers={swarm.PeerCount}");
+            return;
+        }
+
+        Console.WriteLine($"[Test] Metadata: {swarm.Name}, {swarm.Metadata!.PieceCount} pieces");
+
+        // Wait for piece data — check Progress (pieces completing) not just Downloaded
+        var dlTimeout = DateTime.UtcNow.AddSeconds(120);
+        double startProgress = swarm.Progress;
+        while (swarm.Progress <= startProgress && DateTime.UtcNow < dlTimeout)
+        {
+            await Task.Delay(3000);
+            Console.WriteLine($"[Test] Peers={swarm.PeerCount}, Downloaded={swarm.Downloaded}, Progress={swarm.Progress:P2}, DL={swarm.DownloadSpeed/1024:F0}KB/s");
+        }
+
+        var downloaded = swarm.Downloaded;
+        var progress = swarm.Progress;
+        var peers = swarm.PeerCount;
+        await client.DisposeAsync();
+        WebTorrentClient.VerboseLogging = false;
+
+        if (progress <= startProgress)
+            Assert.Fail($"No progress. Start={startProgress:P2}, End={progress:P2}, Peers={peers}, Downloaded={downloaded}.");
+
+        Console.WriteLine($"[Test] SUCCESS: Progress={progress:P2}, Downloaded={downloaded} bytes from {peers} peers");
+    }
 }

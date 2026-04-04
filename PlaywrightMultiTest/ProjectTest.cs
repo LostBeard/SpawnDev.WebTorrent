@@ -97,6 +97,9 @@ public class ProjectTest
                     consoleErrors.Add(msg.Text);
                 else if (msg.Type == "warning")
                     consoleWarnings.Add(msg.Text);
+                // Capture [DL] download loop diagnostics from WASM Console.WriteLine
+                else if (msg.Type == "log" && msg.Text.StartsWith("["))
+                    Console.WriteLine($"  [Browser] {msg.Text}");
             }
             page.Console += OnConsole;
 

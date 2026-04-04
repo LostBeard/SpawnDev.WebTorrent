@@ -65,19 +65,19 @@ public class PeerCoordinator : IAsyncDisposable
         {
             try
             {
+                Console.WriteLine($"[PeerCoordinator] Processing offer from {fromPeerId[..Math.Min(12, fromPeerId.Length)]}...");
                 var (conn, answerSdp) = await _webRtc.HandleOfferAsync(fromPeerId, offer);
+                Console.WriteLine($"[PeerCoordinator] Answer created, sending back...");
                 var answerJson = System.Text.Json.JsonSerializer.SerializeToElement(
                     new { type = answerSdp.Type, sdp = answerSdp.Sdp });
                 await tracker.SendAnswerAsync(fromPeerId, answerJson, offerId);
+                Console.WriteLine($"[PeerCoordinator] Answer sent. Waiting for ICE...");
 
-                // Don't block — let ICE complete asynchronously.
-                // Blocking here prevents other offers/answers from being processed
-                // on Wasm single-threaded, which can also prevent ICE events from firing.
                 _ = WaitAndSetupPeerAsync(conn);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[PeerCoordinator] Offer handling failed: {ex.GetType().Name}: {ex.Message}");
+                Console.WriteLine($"[PeerCoordinator] Offer handling FAILED: {ex.GetType().Name}: {ex.Message}");
             }
         };
 
@@ -86,21 +86,23 @@ public class PeerCoordinator : IAsyncDisposable
         {
             try
             {
+                Console.WriteLine($"[PeerCoordinator] Processing answer from {fromPeerId[..Math.Min(12, fromPeerId.Length)]}, offerId={offerId[..Math.Min(8, offerId.Length)]}...");
                 var conn = await _webRtc.HandleAnswerByOfferIdAsync(offerId, answer);
                 if (conn == null)
                 {
+                    Console.WriteLine($"[PeerCoordinator] No pending offer for offerId — trying by peerId...");
                     await _webRtc.HandleAnswerAsync(fromPeerId, answer);
                     return;
                 }
 
+                Console.WriteLine($"[PeerCoordinator] Answer matched offer. ICE connecting...");
                 _pendingOffers.TryRemove(offerId, out _);
 
-                // Don't block — let ICE complete asynchronously
                 _ = WaitAndSetupPeerAsync(conn);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[PeerCoordinator] Answer handling failed: {ex.GetType().Name}: {ex.Message}");
+                Console.WriteLine($"[PeerCoordinator] Answer handling FAILED: {ex.GetType().Name}: {ex.Message}");
             }
         };
 
@@ -125,7 +127,7 @@ public class PeerCoordinator : IAsyncDisposable
             {
                 using var offerCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 offerCts.CancelAfter(15_000);
-                var offerId = Guid.NewGuid().ToString("N");
+                var offerId = TrackerEncoding.ToBinaryString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(20));
                 var (sdp, conn) = await _webRtc.CreateOfferAsync(offerId, offerCts.Token);
                 _pendingOffers[offerId] = conn;
                 _offerTimestamps[offerId] = DateTime.UtcNow;

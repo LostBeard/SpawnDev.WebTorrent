@@ -64,4 +64,59 @@ public abstract partial class WebTorrentTestBase
         // Clean up
         await client.RemoveAsync(swarm);
     }
+
+    [TestMethod(Timeout = 600000)]
+    public async Task WebRTC_Download_Sintel_Complete_PeersOnly()
+    {
+        var client = Client;
+        if (client == null) throw new UnsupportedTestException("WebTorrentClient not available");
+
+        // Disable web seeds — force WebRTC-only download. Full torrent or fail.
+        var options = new AddTorrentOptions { DisableWebSeeds = true };
+        var swarm = await client.AddAsync(SintelMagnetFull, options);
+
+        Console.WriteLine($"[Test] Added Sintel. WebSeedsDisabled: {swarm.WebSeedsDisabled}");
+
+        // Wait for metadata
+        var metadataTimeout = DateTime.UtcNow.AddSeconds(60);
+        while (!swarm.HasMetadata && DateTime.UtcNow < metadataTimeout)
+            await Task.Delay(500);
+
+        if (!swarm.HasMetadata)
+            throw new UnsupportedTestException("Could not get metadata within 60s — no peers available for ut_metadata");
+
+        Console.WriteLine($"[Test] Metadata: {swarm.Name}, {swarm.Metadata!.PieceCount} pieces, {swarm.Length} bytes");
+
+        // Download entire torrent from peers only. 10 minute timeout.
+        var downloadTimeout = DateTime.UtcNow.AddSeconds(540);
+        while (!swarm.Done && DateTime.UtcNow < downloadTimeout)
+        {
+            await Task.Delay(5000);
+
+            // Per-peer stats
+            var peersWithData = swarm.Peers.Count(p => p.BytesDownloaded > 0);
+            Console.WriteLine($"[Test] Progress: {swarm.Progress:P1} ({swarm.Downloaded}/{swarm.Length}), " +
+                $"Peers: {swarm.PeerCount} ({peersWithData} sending), " +
+                $"DL: {swarm.DownloadSpeed / 1024:F0} KB/s");
+        }
+
+        // Report per-peer contributions
+        Console.WriteLine($"[Test] Download complete: {swarm.Done}");
+        foreach (var peer in swarm.Peers)
+            Console.WriteLine($"  Peer {peer.Address}: {peer.BytesDownloaded} bytes downloaded");
+
+        var peersUsed = swarm.Peers.Count(p => p.BytesDownloaded > 0);
+
+        await client.RemoveAsync(swarm);
+
+        if (!swarm.Done)
+            throw new Exception($"Sintel download incomplete after 540s. " +
+                $"Progress: {swarm.Progress:P1}, Downloaded: {swarm.Downloaded}/{swarm.Length}, " +
+                $"Peers: {swarm.PeerCount} ({peersUsed} sent data)");
+
+        if (peersUsed < 2)
+            throw new Exception($"Torrent completed but only {peersUsed} peer(s) contributed data. Need at least 2.");
+
+        Console.WriteLine($"[Test] SUCCESS — Sintel fully downloaded from {peersUsed} WebRTC peers, no web seeds");
+    }
 }

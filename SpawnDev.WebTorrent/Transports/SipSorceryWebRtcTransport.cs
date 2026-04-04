@@ -137,6 +137,7 @@ public class SipSorceryWebRtcConnection : IConnection
 
         pc.onconnectionstatechange += (state) =>
         {
+            Console.WriteLine($"[SipSorcery] Connection state: {state}");
             if (state == RTCPeerConnectionState.disconnected ||
                 state == RTCPeerConnectionState.failed ||
                 state == RTCPeerConnectionState.closed)
@@ -144,6 +145,10 @@ public class SipSorceryWebRtcConnection : IConnection
                 IsConnected = false;
                 OnDisconnected?.Invoke();
             }
+        };
+        pc.oniceconnectionstatechange += (state) =>
+        {
+            Console.WriteLine($"[SipSorcery] ICE state: {state}");
         };
 
         return pc;
@@ -213,16 +218,14 @@ public class SipSorceryWebRtcConnection : IConnection
         });
         SetupDataChannel(dc);
 
-        var offer = _pc.createOffer();
+        // X_WaitForIceGatheringToComplete makes createOffer block until all
+        // ICE candidates are gathered and embedded in the SDP. Without this,
+        // createOffer returns immediately with a 497-char SDP containing zero candidates.
+        var offer = _pc.createOffer(new RTCOfferOptions { X_WaitForIceGatheringToComplete = true });
         await _pc.setLocalDescription(offer);
-        await WaitForIceGatheringAsync();
 
-        var localDesc = _pc.localDescription
-            ?? throw new Exception("localDescription is null after ICE gathering");
-        var sdp = localDesc.sdp?.ToString()
-            ?? throw new Exception("localDescription.sdp is null");
-
-        return new SdpMessage(localDesc.type.ToString(), FilterTrickle(sdp));
+        var sdp = offer.sdp ?? throw new Exception("Offer SDP is null");
+        return new SdpMessage(offer.type.ToString(), FilterTrickle(sdp));
     }
 
     /// <summary>Remove trickle ICE option from SDP.</summary>
@@ -276,13 +279,18 @@ public class SipSorceryWebRtcConnection : IConnection
         });
         if (setResult != SetDescriptionResultEnum.OK)
             throw new Exception($"setRemoteDescription failed: {setResult}");
-        var answer = _pc.createAnswer()
+        // Start ICE gathering by creating and setting a preliminary answer
+        var prelimAnswer = _pc.createAnswer()
             ?? throw new Exception("createAnswer returned null");
-        await _pc.setLocalDescription(answer);
+        await _pc.setLocalDescription(prelimAnswer);
+
+        // Wait for ICE gathering to complete so candidates are available
         await WaitForIceGatheringAsync();
-        var localDesc = _pc.localDescription
-            ?? throw new Exception("localDescription is null after setLocalDescription");
-        return new SdpMessage(localDesc.type.ToString(), FilterTrickle(localDesc.sdp.ToString()));
+
+        // Re-create answer WITH gathered candidates
+        var finalAnswer = _pc.createAnswer()
+            ?? throw new Exception("createAnswer (final) returned null");
+        return new SdpMessage(finalAnswer.type.ToString(), FilterTrickle(finalAnswer.sdp));
     }
 
     /// <summary>Handle incoming SDP answer (from SdpMessage, completes signaling).</summary>
@@ -290,6 +298,7 @@ public class SipSorceryWebRtcConnection : IConnection
     {
         if (_pc == null) throw new Exception("RTCPeerConnection is null");
         if (string.IsNullOrEmpty(answer.Sdp)) throw new Exception("Answer SDP is empty");
+        Console.WriteLine($"[SipSorcery] Answer SDP ({answer.Sdp.Length} chars):\n{answer.Sdp[..Math.Min(500, answer.Sdp.Length)]}...");
         var result = _pc.setRemoteDescription(new RTCSessionDescriptionInit
         {
             type = RTCSdpType.answer,
@@ -325,17 +334,37 @@ public class SipSorceryWebRtcConnection : IConnection
         return JsonSerializer.Deserialize<DescriptionDto>(jsonStr) ?? new DescriptionDto();
     }
 
-    private async Task WaitForIceGatheringAsync(int timeoutMs = 10000)
+    private async Task WaitForIceGatheringAsync(int timeoutMs = 15000)
     {
         if (_pc == null) return;
         if (_pc.iceGatheringState == RTCIceGatheringState.complete) return;
 
         var tcs = new TaskCompletionSource();
+        int candidateCount = 0;
+
+        // SipSorcery gathers candidates asynchronously after setLocalDescription.
+        // onicecandidate fires for each candidate. When gathering is done,
+        // onicegatheringstatechange fires with 'complete'.
+        // If 'complete' never fires, we use a fallback: wait for a pause in candidates.
+        System.Timers.Timer? candidateTimer = null;
+
+        _pc.onicecandidate += (candidate) =>
+        {
+            candidateCount++;
+            // Reset timer on each candidate — wait 2s of silence to assume done
+            candidateTimer?.Stop();
+            candidateTimer = new System.Timers.Timer(2000) { AutoReset = false };
+            candidateTimer.Elapsed += (_, _) => tcs.TrySetResult();
+            candidateTimer.Start();
+        };
 
         _pc.onicegatheringstatechange += (state) =>
         {
             if (state == RTCIceGatheringState.complete)
+            {
+                candidateTimer?.Stop();
                 tcs.TrySetResult();
+            }
         };
 
         if (_pc.iceGatheringState == RTCIceGatheringState.complete)
@@ -345,6 +374,7 @@ public class SipSorceryWebRtcConnection : IConnection
         cts.Token.Register(() => tcs.TrySetResult());
 
         await tcs.Task;
+        candidateTimer?.Dispose();
     }
 
     public async Task WaitForOpenAsync(CancellationToken ct = default)

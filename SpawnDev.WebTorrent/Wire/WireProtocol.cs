@@ -143,7 +143,17 @@ public class WireProtocol : IAsyncDisposable
 
     /// <summary>Send a simple message (no payload).</summary>
     public Task SendMessageAsync(MessageType type)
-        => SendFramedAsync(new[] { (byte)type });
+    {
+        // Track local state
+        switch (type)
+        {
+            case MessageType.Choke: AmChoking = true; break;
+            case MessageType.Unchoke: AmChoking = false; break;
+            case MessageType.Interested: AmInterested = true; break;
+            case MessageType.NotInterested: AmInterested = false; break;
+        }
+        return SendFramedAsync(new[] { (byte)type });
+    }
 
     /// <summary>Send a Have message (4-byte piece index).</summary>
     public Task SendHaveAsync(int pieceIndex)
@@ -295,6 +305,8 @@ public class WireProtocol : IAsyncDisposable
             }
 
             var type = (MessageType)payload[0];
+            if (WebTorrentClient.VerboseLogging)
+                Console.WriteLine($"[Wire] Received: {type} ({msgLen} bytes) from {_connection.RemoteId[..Math.Min(12, _connection.RemoteId.Length)]}");
             switch (type)
             {
                 case MessageType.Choke: PeerChoking = true; OnChoke?.Invoke(); break;

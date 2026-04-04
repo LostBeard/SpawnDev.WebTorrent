@@ -334,8 +334,38 @@ public class TorrentSwarm : IAsyncDisposable
         // Add any already-connected peers to the coordinator.
         // If a peer sent HaveAll before metadata arrived, its bitfield is empty.
         // Now that we have metadata, fill it with all-true.
+        // ALSO: send our bitfield/HaveNone to peers who connected before metadata —
+        // they never got our piece state, so they won't unchoke us without this.
         foreach (var peer in _peers)
         {
+            // Send our piece state now that we have metadata
+            try
+            {
+                bool hasPieces = _pieceManager.Bitfield.Any(b => b);
+                if (hasPieces)
+                {
+                    _ = peer.Wire.SendBitfieldAsync(BoolBitfieldToBytes(_pieceManager.Bitfield));
+                }
+                else if (peer.Wire.SupportsFastExtension)
+                {
+                    _ = peer.Wire.SendHaveNoneAsync();
+                }
+                else
+                {
+                    _ = peer.Wire.SendBitfieldAsync(new byte[(int)Math.Ceiling(_pieceManager.Bitfield.Length / 8.0)]);
+                }
+                // Re-send Interested AFTER bitfield — matches JS _onWireWithMetadata order.
+                // The peer may have ignored our earlier Interested (sent before bitfield).
+                // Reset AmInterested so the idempotent check allows re-sending.
+                peer.Wire.AmInterested = false;
+                await peer.Wire.SendMessageAsync(MessageType.Interested);
+                Log($"Sent bitfield + re-sent Interested to pre-metadata peer {peer.Info.Address}");
+            }
+            catch (Exception ex)
+            {
+                Log($"Failed to send bitfield to peer {peer.Info.Address}: {ex.Message}");
+            }
+
             if (peer.PeerBitfield.Length == 0 && metadata.PieceCount > 0)
             {
                 // Peer was connected before metadata — assume it has all pieces
@@ -343,9 +373,11 @@ public class TorrentSwarm : IAsyncDisposable
                 peer.PeerBitfield = new bool[metadata.PieceCount];
                 Array.Fill(peer.PeerBitfield, true);
             }
+            Console.WriteLine($"[META] AddPeer: bitfield={peer.PeerBitfield.Length}, hasPieces={peer.PeerBitfield.Any(b => b)}, PeerChoking={peer.Wire.PeerChoking}");
             _coordinator.AddPeer(peer.Wire, peer.PeerBitfield);
         }
 
+        Console.WriteLine($"[META] Starting coordinator: peers={_peers.Count}, paused={Paused}, done={Done}");
         // Start the download loop if not paused and not already done
         if (!Paused && !Done)
             _coordinator.Start();
@@ -641,10 +673,28 @@ public class TorrentSwarm : IAsyncDisposable
                 Log("No piece manager yet — skipping bitfield (metadata not received)");
             }
 
-            // Then send interested + unchoke
-            Log("Sending Interested + Unchoke");
-            await wire.SendMessageAsync(MessageType.Interested);
-            await wire.SendMessageAsync(MessageType.Unchoke);
+            // Send Interested only if the peer has pieces we need (matches JS _updateWireInterest)
+            if (_pieceManager != null && peer.PeerBitfield.Length > 0)
+            {
+                bool interested = false;
+                for (int i = 0; i < _pieceManager.Bitfield.Length && i < peer.PeerBitfield.Length; i++)
+                {
+                    if (!_pieceManager.Bitfield[i] && peer.PeerBitfield[i]) { interested = true; break; }
+                }
+                if (interested)
+                    await wire.SendMessageAsync(MessageType.Interested);
+            }
+            else
+            {
+                // No metadata yet or no bitfield from peer — send Interested (we want everything)
+                await wire.SendMessageAsync(MessageType.Interested);
+            }
+
+            // Unchoke immediately when peer sends Interested (matches JS wire.once('interested', () => wire.unchoke()))
+            wire.OnInterested += () =>
+            {
+                _ = wire.SendMessageAsync(MessageType.Unchoke);
+            };
 
             // If we don't have metadata, request it AFTER RunAsync processes the
             // remote's BEP 10 handshake (which sets RemoteId and MetadataSize)
@@ -892,7 +942,7 @@ public class TorrentSwarm : IAsyncDisposable
                 int unchokedCount = 0;
                 foreach (var peer in interested)
                 {
-                    if (unchokedCount < 4)
+                    if (unchokedCount < 10)
                     {
                         try { await peer.Wire.SendMessageAsync(Wire.MessageType.Unchoke); }
                         catch { }
@@ -921,7 +971,7 @@ public class TorrentSwarm : IAsyncDisposable
                 // Every 30 seconds: optimistic unchoke a random choked interested peer
                 if (tick % 3 == 0)
                 {
-                    var chokedInterested = interested.Skip(4).ToArray();
+                    var chokedInterested = interested.Skip(10).ToArray();
                     if (chokedInterested.Length > 0)
                     {
                         var lucky = chokedInterested[Random.Shared.Next(chokedInterested.Length)];

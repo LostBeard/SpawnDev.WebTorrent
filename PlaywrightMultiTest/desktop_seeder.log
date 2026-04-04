@@ -1,8 +1,8 @@
-[21:30:12.029] [DesktopSeeder] TorrentAdd: 
-[21:30:12.534] [DesktopSeeder] Seeding: magnet:?xt=urn:btih:30672c7623ba089fc8a74541cc45f55ffcdfcb99&dn=crossplatform-test.bin&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce
-[21:30:12.535] [DesktopSeeder] InfoHash: 30672c7623ba089fc8a74541cc45f55ffcdfcb99
-[21:30:22.682] [DesktopSeeder] After tracker wait: Ready=True, Done=True, Peers=0
-[21:32:19.613] [DesktopSeeder] [Swarm] Peer connected: 2d5344323430302d473b4f835df7c6f3c03a9fa3
-[21:32:19.614] [DesktopSeeder] Peer connected: 2d5344323430302d473b4f835df7c6f3c03a9fa3
-[21:32:19.614] [DesktopSeeder] [Swarm] [crossplatform-test.bin] Sending bitfield to peer (2 pieces)
-[21:32:19.615] [DesktopSeeder] [crossplatform-test.bin] Sending bitfield to peer (2 pieces)
+[21:58:35.316] [DesktopSeeder] TorrentAdd: 
+[21:58:35.806] [DesktopSeeder] Seeding: magnet:?xt=urn:btih:30672c7623ba089fc8a74541cc45f55ffcdfcb99&dn=crossplatform-test.bin&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce
+[21:58:35.807] [DesktopSeeder] InfoHash: 30672c7623ba089fc8a74541cc45f55ffcdfcb99
+[21:58:45.906] [DesktopSeeder] After tracker wait: Ready=True, Done=True, Peers=0
+[22:01:56.348] [DesktopSeeder] [Swarm] Peer connected: 2d5344323430302d2b4591a585aa8dc3e69e5eeb
+[22:01:56.349] [DesktopSeeder] Peer connected: 2d5344323430302d2b4591a585aa8dc3e69e5eeb
+[22:01:56.350] [DesktopSeeder] [Swarm] [crossplatform-test.bin] Sending bitfield to peer (2 pieces)
+[22:01:56.350] [DesktopSeeder] [crossplatform-test.bin] Sending bitfield to peer (2 pieces)

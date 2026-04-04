@@ -26,7 +26,7 @@ public class DownloadCoordinator : IDisposable
     private bool _disposed;
 
     /// <summary>Pieces that are high-priority (requested by file reads).</summary>
-    private readonly HashSet<int> _priorityPieces = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, bool> _priorityPieces = new();
 
     /// <summary>Minimum outstanding requests per peer.</summary>
     public int MinRequestsPerPeer { get; set; } = 2;
@@ -129,7 +129,7 @@ public class DownloadCoordinator : IDisposable
     /// <summary>Request a specific piece with high priority (for file read).</summary>
     public void Prioritize(int pieceIndex)
     {
-        _priorityPieces.Add(pieceIndex);
+        _priorityPieces.TryAdd(pieceIndex, true);
     }
 
     /// <summary>Start the download loop.</summary>
@@ -174,7 +174,7 @@ public class DownloadCoordinator : IDisposable
                         continue;
 
                     // Try priority pieces first
-                    foreach (var priorityPiece in _priorityPieces.ToArray())
+                    foreach (var priorityPiece in _priorityPieces.Keys.ToArray())
                     {
                         if (!_pieceManager.Bitfield[priorityPiece] && peer.Bitfield.Length > priorityPiece && peer.Bitfield[priorityPiece])
                         {
@@ -197,7 +197,7 @@ public class DownloadCoordinator : IDisposable
                 if (seeds.Length > 0 && !_pieceManager.IsComplete)
                 {
                     // Priority pieces first
-                    foreach (var priorityPiece in _priorityPieces.ToArray())
+                    foreach (var priorityPiece in _priorityPieces.Keys.ToArray())
                     {
                         if (!_pieceManager.Bitfield[priorityPiece])
                             await DownloadFromWebSeed(priorityPiece, seeds, ct);
@@ -494,7 +494,7 @@ public class DownloadCoordinator : IDisposable
 
     private void HandlePieceComplete(int pieceIndex)
     {
-        _priorityPieces.Remove(pieceIndex);
+        _priorityPieces.TryRemove(pieceIndex, out _);
         OnPieceComplete?.Invoke(pieceIndex);
         OnProgressChanged?.Invoke(_pieceManager.Progress);
 

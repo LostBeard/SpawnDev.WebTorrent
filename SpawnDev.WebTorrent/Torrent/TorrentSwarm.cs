@@ -310,7 +310,8 @@ public class TorrentSwarm : IAsyncDisposable
         _pieceManager.OnPieceComplete += HandlePieceComplete;
 
         // Scan for already-downloaded pieces (restore from OPFS after reload)
-        _ = ScanExistingPiecesAsync();
+        // Await to prevent downloading pieces that are already in the store
+        await ScanExistingPiecesAsync();
 
         // Create download coordinator
         _coordinator = new DownloadCoordinator(_pieceManager, metadata);
@@ -340,7 +341,7 @@ public class TorrentSwarm : IAsyncDisposable
         // Now that we have metadata, fill it with all-true.
         // ALSO: send our bitfield/HaveNone to peers who connected before metadata —
         // they never got our piece state, so they won't unchoke us without this.
-        foreach (var peer in _peers)
+        foreach (var peer in _peers.ToArray())
         {
             // Send our piece state now that we have metadata
             try
@@ -763,6 +764,7 @@ public class TorrentSwarm : IAsyncDisposable
             }
             catch (ObjectDisposedException) { }
             OnPeerDisconnect?.Invoke(peer);
+            try { await peer.DisposeAsync(); } catch { }
         }
     }
 
@@ -799,30 +801,43 @@ public class TorrentSwarm : IAsyncDisposable
         return null; // Peers come through PeerCoordinator which handles transport
     }
 
-    private async void HandlePieceComplete(int pieceIndex)
+    private void HandlePieceComplete(int pieceIndex)
     {
-        if (_pieceManager == null || Metadata == null) return;
+        // Fire-and-forget but with internal try-catch — async void would crash on unhandled exception
+        _ = HandlePieceCompleteAsync(pieceIndex);
+    }
 
-        int pieceLength = (pieceIndex == Metadata.PieceCount - 1)
-            ? (int)(Metadata.TotalLength - (long)pieceIndex * Metadata.PieceLength)
-            : Metadata.PieceLength;
-
-        Downloaded += pieceLength;
-        _downloadedSinceLastTick += pieceLength;
-        OnPieceVerified?.Invoke(pieceIndex);
-        OnDownload?.Invoke(pieceLength);
-
-        // Notify all peers we have this piece
-        foreach (var peer in _peers.ToArray())
+    private async Task HandlePieceCompleteAsync(int pieceIndex)
+    {
+        try
         {
-            try { await peer.Wire.SendHaveAsync(pieceIndex); }
-            catch (Exception ex) { OnLog?.Invoke($"SendHave failed: {ex.Message}"); }
+            if (_pieceManager == null || Metadata == null) return;
+
+            int pieceLength = (pieceIndex == Metadata.PieceCount - 1)
+                ? (int)(Metadata.TotalLength - (long)pieceIndex * Metadata.PieceLength)
+                : Metadata.PieceLength;
+
+            Downloaded += pieceLength;
+            _downloadedSinceLastTick += pieceLength;
+            OnPieceVerified?.Invoke(pieceIndex);
+            OnDownload?.Invoke(pieceLength);
+
+            // Notify all peers we have this piece
+            foreach (var peer in _peers.ToArray())
+            {
+                try { await peer.Wire.SendHaveAsync(pieceIndex); }
+                catch { }
+            }
+
+            if (_pieceManager.IsComplete)
+            {
+                Done = true;
+                OnDone?.Invoke();
+            }
         }
-
-        if (_pieceManager.IsComplete)
+        catch (Exception ex)
         {
-            Done = true;
-            OnDone?.Invoke();
+            Console.WriteLine($"[SWARM] HandlePieceComplete crashed: {ex.GetType().Name}: {ex.Message}");
         }
     }
 

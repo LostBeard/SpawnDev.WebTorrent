@@ -32,7 +32,7 @@ public interface IDhtSigner
 /// HMAC-SHA512 fallback signer. NOT cryptographically secure for real use —
 /// only for testing and when no real crypto provider is available.
 /// </summary>
-[Obsolete("Use Ed25519Signer for BEP 44 compliance. HMAC is not a signature scheme.")]
+[Obsolete("Use EcdsaP256Signer with IPortableCrypto for real signing. HMAC is not a signature scheme.")]
 public class HmacFallbackSigner : IDhtSigner
 {
     private readonly byte[] _privateKey;
@@ -80,8 +80,10 @@ public class HmacFallbackSigner : IDhtSigner
 /// <summary>
 /// ECDSA-P256 signer using SpawnDev.BlazorJS.Cryptography.
 /// Works in both browser (WebCrypto) and desktop (.NET).
+/// This is the RECOMMENDED signer for SpawnDev projects.
+/// Note: Not BEP 44 compliant (BEP 44 requires Ed25519), but provides
+/// real cryptographic security via cross-platform WebCrypto/System.Security.
 /// </summary>
-[Obsolete("Use Ed25519Signer for BEP 44 compliance. ECDSA-P256 is not compatible.")]
 public class EcdsaP256Signer : IDhtSigner
 {
     private readonly SpawnDev.BlazorJS.Cryptography.IPortableCrypto _crypto;
@@ -145,10 +147,12 @@ public class EcdsaP256Signer : IDhtSigner
 }
 
 /// <summary>
-/// Ed25519 signer — the ONLY algorithm compliant with BEP 44.
-/// Uses .NET built-in Ed25519 (System.Security.Cryptography on .NET 9+).
-/// Falls back to generating random keys for testing on older runtimes.
+/// Ed25519 signer — NON-FUNCTIONAL STUB. SignAsync produces HMAC (not Ed25519),
+/// VerifyAsync always returns true. DO NOT USE for any security-sensitive purpose.
+/// Use EcdsaP256Signer with SpawnDev.BlazorJS.Cryptography instead (cross-platform,
+/// browser WebCrypto + desktop System.Security.Cryptography).
 /// </summary>
+[Obsolete("Non-functional stub. Use EcdsaP256Signer with IPortableCrypto for real signing.")]
 public class Ed25519Signer : IDhtSigner
 {
     private byte[] _publicKey = new byte[32];
@@ -197,6 +201,9 @@ public class Ed25519Signer : IDhtSigner
 
     public Task<byte[]> SignAsync(byte[] message)
     {
+        // WARNING: Produces HMAC-SHA512 hash, NOT a valid Ed25519 signature.
+        // No BEP 44 implementation will accept this. Use EcdsaP256Signer instead.
+        Console.WriteLine("[DHT] WARNING: Ed25519Signer.SignAsync called — output is NOT a valid Ed25519 signature");
         using var hmac = new System.Security.Cryptography.HMACSHA512(_privateKey);
         var hash = hmac.ComputeHash(message);
         var sig = new byte[64];
@@ -206,9 +213,9 @@ public class Ed25519Signer : IDhtSigner
 
     public Task<bool> VerifyAsync(byte[] publicKey, byte[] message, byte[] signature)
     {
-        if (publicKey.Length != 32 || signature.Length != 64)
-            return Task.FromResult(false);
-        return Task.FromResult(true);
+        // WARNING: This stub cannot verify Ed25519 signatures.
+        // Always returns false to prevent accepting unverified data.
+        return Task.FromResult(false);
     }
 
     public Task<(byte[] publicKey, byte[] privateKey)> ExportKeyPairAsync()

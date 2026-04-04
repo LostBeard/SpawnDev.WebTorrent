@@ -147,77 +147,63 @@ public class EcdsaP256Signer : IDhtSigner
 }
 
 /// <summary>
-/// Ed25519 signer — NON-FUNCTIONAL STUB. SignAsync produces HMAC (not Ed25519),
-/// VerifyAsync always returns true. DO NOT USE for any security-sensitive purpose.
-/// Use EcdsaP256Signer with SpawnDev.BlazorJS.Cryptography instead (cross-platform,
-/// browser WebCrypto + desktop System.Security.Cryptography).
+/// Ed25519 signer using SpawnDev.BlazorJS.Cryptography 3.1.0+.
+/// Works in both browser (WebCrypto) and desktop (.NET).
+/// BEP 44 compliant — Ed25519 is the required algorithm for DHT mutable items.
+/// This is the RECOMMENDED signer for all DHT signing operations.
 /// </summary>
-[Obsolete("Non-functional stub. Use EcdsaP256Signer with IPortableCrypto for real signing.")]
 public class Ed25519Signer : IDhtSigner
 {
-    private byte[] _publicKey = new byte[32];
-    private byte[] _privateKey = new byte[64];
+    private readonly SpawnDev.BlazorJS.Cryptography.IPortableCrypto _crypto;
+    private SpawnDev.BlazorJS.Cryptography.PortableEd25519Key? _key;
+    private byte[] _publicKey = Array.Empty<byte>();
 
     public string Algorithm => "Ed25519";
     public byte[] PublicKey => _publicKey;
 
-    public Ed25519Signer() { }
-
-    public Ed25519Signer(byte[] publicKey, byte[] privateKey)
+    public Ed25519Signer(SpawnDev.BlazorJS.Cryptography.IPortableCrypto crypto)
     {
-        if (publicKey.Length != 32) throw new ArgumentException("Ed25519 public key must be 32 bytes");
-        if (privateKey.Length != 64) throw new ArgumentException("Ed25519 private key must be 64 bytes");
-        _publicKey = publicKey;
-        _privateKey = privateKey;
+        _crypto = crypto;
     }
 
-    public Task GenerateKeyAsync()
+    /// <summary>Generate a new Ed25519 key pair.</summary>
+    public async Task GenerateKeyAsync()
+    {
+        _key = await _crypto.GenerateEd25519Key(extractable: true);
+        _publicKey = await _crypto.ExportPublicKeySpki(_key);
+    }
+
+    /// <summary>Import an existing Ed25519 key pair.</summary>
+    public async Task ImportKeyAsync(byte[] publicKeySpki, byte[] privateKeyPkcs8)
+    {
+        _key = await _crypto.ImportEd25519Key(publicKeySpki, privateKeyPkcs8, extractable: true);
+        _publicKey = publicKeySpki;
+    }
+
+    public async Task<byte[]> SignAsync(byte[] message)
+    {
+        if (_key == null) throw new InvalidOperationException("Key not generated. Call GenerateKeyAsync first.");
+        return await _crypto.Sign(_key, message);
+    }
+
+    public async Task<bool> VerifyAsync(byte[] publicKey, byte[] message, byte[] signature)
     {
         try
         {
-            var edType = Type.GetType("System.Security.Cryptography.Ed25519, System.Security.Cryptography");
-            if (edType != null)
-            {
-                var genMethod = edType.GetMethod("GenerateKey", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-                if (genMethod != null)
-                {
-                    dynamic key = genMethod.Invoke(null, null)!;
-                    _privateKey = key.ExportPkcs8PrivateKey();
-                    _publicKey = key.ExportSubjectPublicKeyInfo();
-                    return Task.CompletedTask;
-                }
-            }
+            var peerKey = await _crypto.ImportEd25519Key(publicKey, extractable: false);
+            return await _crypto.Verify(peerKey, message, signature);
         }
-        catch { }
-
-        var seed = new byte[32];
-        System.Security.Cryptography.RandomNumberGenerator.Fill(seed);
-        _privateKey = new byte[64];
-        Array.Copy(seed, _privateKey, 32);
-        _publicKey = System.Security.Cryptography.SHA256.HashData(seed);
-        Console.WriteLine("[DHT] Warning: Ed25519 not available on this runtime. Using fallback keys (not interoperable).");
-        return Task.CompletedTask;
+        catch
+        {
+            return false;
+        }
     }
 
-    public Task<byte[]> SignAsync(byte[] message)
+    public async Task<(byte[] publicKey, byte[] privateKey)> ExportKeyPairAsync()
     {
-        // WARNING: Produces HMAC-SHA512 hash, NOT a valid Ed25519 signature.
-        // No BEP 44 implementation will accept this. Use EcdsaP256Signer instead.
-        Console.WriteLine("[DHT] WARNING: Ed25519Signer.SignAsync called — output is NOT a valid Ed25519 signature");
-        using var hmac = new System.Security.Cryptography.HMACSHA512(_privateKey);
-        var hash = hmac.ComputeHash(message);
-        var sig = new byte[64];
-        Array.Copy(hash, sig, 64);
-        return Task.FromResult(sig);
+        if (_key == null) throw new InvalidOperationException("Key not generated.");
+        var pub = await _crypto.ExportPublicKeySpki(_key);
+        var priv = await _crypto.ExportPrivateKeyPkcs8(_key);
+        return (pub, priv);
     }
-
-    public Task<bool> VerifyAsync(byte[] publicKey, byte[] message, byte[] signature)
-    {
-        // WARNING: This stub cannot verify Ed25519 signatures.
-        // Always returns false to prevent accepting unverified data.
-        return Task.FromResult(false);
-    }
-
-    public Task<(byte[] publicKey, byte[] privateKey)> ExportKeyPairAsync()
-        => Task.FromResult((_publicKey.ToArray(), _privateKey.ToArray()));
 }

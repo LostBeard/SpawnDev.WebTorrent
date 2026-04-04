@@ -780,7 +780,11 @@ public class TorrentSwarm : IAsyncDisposable
             }
         }
         catch (OperationCanceledException) { }
-        catch { }
+        catch (Exception ex)
+        {
+            if (WebTorrentClient.VerboseLogging)
+                Console.WriteLine($"[KEEPALIVE] Crashed for {peer.Info.Address}: {ex.GetType().Name}");
+        }
     }
 
     /// <summary>Convert bool[] bitfield to packed byte[] for wire protocol.</summary>
@@ -956,7 +960,7 @@ public class TorrentSwarm : IAsyncDisposable
                 var peers = _peers.ToArray();
                 if (peers.Length == 0) continue;
 
-                // BEP 3: Unchoke the 4 interested peers with highest download rate (bytes they sent us)
+                // Unchoke the top 10 interested peers with highest download rate (matches JS WebTorrent default)
                 var interested = peers.Where(p => p.IsInterested)
                     .OrderByDescending(p => p.DownloadRate)
                     .ToArray();

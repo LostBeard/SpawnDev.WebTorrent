@@ -84,7 +84,8 @@ public class DownloadCoordinator : IDisposable
             }
         }
 
-        Console.WriteLine($"[DL] AddPeer: bitfield={peerBitfield.Length}, pieces={peerBitfield.Count(b => b)}, PeerChoking={wire.PeerChoking}");
+        if (WebTorrentClient.VerboseLogging)
+            Console.WriteLine($"[DL] AddPeer: bitfield={peerBitfield.Length}, pieces={peerBitfield.Count(b => b)}, PeerChoking={wire.PeerChoking}");
         var peer = new ActivePeer
         {
             Wire = wire,
@@ -143,11 +144,10 @@ public class DownloadCoordinator : IDisposable
 
     private async Task DownloadLoopAsync(CancellationToken ct)
     {
-        Console.WriteLine("[DL] Download loop started");
+        if (WebTorrentClient.VerboseLogging) Console.WriteLine("[DL] Download loop started");
         OnLog?.Invoke("Download loop started");
         try
         {
-        Console.WriteLine($"[DL] Entering while: cancelled={ct.IsCancellationRequested}, complete={_pieceManager.IsComplete}, pieceCount={_pieceManager.PieceCount}");
         while (!ct.IsCancellationRequested && !_pieceManager.IsComplete)
         {
             await _updateLock.WaitAsync(ct);
@@ -156,7 +156,8 @@ public class DownloadCoordinator : IDisposable
                 // Snapshot collections for safe iteration
                 ActivePeer[] peers;
                 lock (_peersLock) peers = _activePeers.ToArray();
-                Console.WriteLine($"[DL] tick={_tickCount}, peers={peers.Length}, choked={peers.Count(p => p.IsChoked)}, seeds={_webSeeds.Count}, complete={_pieceManager.CompletedCount}/{_pieceManager.PieceCount}");
+                if (WebTorrentClient.VerboseLogging && _tickCount % 10 == 0)
+                    Console.WriteLine($"[DL] tick={_tickCount}, peers={peers.Length}, choked={peers.Count(p => p.IsChoked)}, seeds={_webSeeds.Count}, complete={_pieceManager.CompletedCount}/{_pieceManager.PieceCount}");
                 WebSeedConnection[] seeds;
                 lock (_seedsLock) seeds = _webSeeds.ToArray();
 
@@ -252,7 +253,7 @@ public class DownloadCoordinator : IDisposable
             if (offset < 0) break;
 
             peer.OutstandingRequests.Add((pieceIndex, offset, length));
-            Console.WriteLine($"[Request] piece={pieceIndex} offset={offset} len={length}");
+            if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[Request] piece={pieceIndex} offset={offset} len={length}");
             await peer.Wire.SendRequestAsync(pieceIndex, offset, length);
         }
     }

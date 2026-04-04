@@ -216,7 +216,11 @@ public class TorrentSwarm : IAsyncDisposable
                     if (meta != null && swarm.Metadata == null)
                         await swarm.SetMetadataAsync(meta);
                 }
-                catch (Exception ex) { swarm.OnLog?.Invoke($"ut_metadata parse failed: {ex.Message}"); }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[META] SetMetadataAsync CRASHED: {ex.GetType().Name}: {ex.Message}");
+                    swarm.OnLog?.Invoke($"ut_metadata parse failed: {ex.Message}");
+                }
             };
             return ext;
         });
@@ -373,11 +377,11 @@ public class TorrentSwarm : IAsyncDisposable
                 peer.PeerBitfield = new bool[metadata.PieceCount];
                 Array.Fill(peer.PeerBitfield, true);
             }
-            Console.WriteLine($"[META] AddPeer: bitfield={peer.PeerBitfield.Length}, hasPieces={peer.PeerBitfield.Any(b => b)}, PeerChoking={peer.Wire.PeerChoking}");
+            if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[META] AddPeer: bitfield={peer.PeerBitfield.Length}, hasPieces={peer.PeerBitfield.Any(b => b)}, PeerChoking={peer.Wire.PeerChoking}");
             _coordinator.AddPeer(peer.Wire, peer.PeerBitfield);
         }
 
-        Console.WriteLine($"[META] Starting coordinator: peers={_peers.Count}, paused={Paused}, done={Done}");
+        if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[META] Starting coordinator: peers={_peers.Count}, paused={Paused}, done={Done}");
         // Start the download loop if not paused and not already done
         if (!Paused && !Done)
             _coordinator.Start();
@@ -736,7 +740,10 @@ public class TorrentSwarm : IAsyncDisposable
         {
             await peer.Wire.RunAsync();
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[WIRE] RunAsync crashed for {peer.Info.Address}: {ex.GetType().Name}: {ex.Message}");
+        }
         finally
         {
             keepAliveCts.Cancel();

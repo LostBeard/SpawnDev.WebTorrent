@@ -65,19 +65,19 @@ public class PeerCoordinator : IAsyncDisposable
         {
             try
             {
-                Console.WriteLine($"[PeerCoordinator] Processing offer from {fromPeerId[..Math.Min(12, fromPeerId.Length)]}...");
+                if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[PeerCoordinator] Processing offer from {fromPeerId[..Math.Min(12, fromPeerId.Length)]}...");
                 var (conn, answerSdp) = await _webRtc.HandleOfferAsync(fromPeerId, offer);
-                Console.WriteLine($"[PeerCoordinator] Answer created, sending back...");
+                if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[PeerCoordinator] Answer created, sending back...");
                 var answerJson = System.Text.Json.JsonSerializer.SerializeToElement(
                     new { type = answerSdp.Type, sdp = answerSdp.Sdp });
                 await tracker.SendAnswerAsync(fromPeerId, answerJson, offerId);
-                Console.WriteLine($"[PeerCoordinator] Answer sent. Waiting for ICE...");
+                if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[PeerCoordinator] Answer sent. Waiting for ICE...");
 
                 _ = WaitAndSetupPeerAsync(conn);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[PeerCoordinator] Offer handling FAILED: {ex.GetType().Name}: {ex.Message}");
+                if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[PeerCoordinator] Offer handling FAILED: {ex.GetType().Name}: {ex.Message}");
             }
         };
 
@@ -86,23 +86,23 @@ public class PeerCoordinator : IAsyncDisposable
         {
             try
             {
-                Console.WriteLine($"[PeerCoordinator] Processing answer from {fromPeerId[..Math.Min(12, fromPeerId.Length)]}, offerId={offerId[..Math.Min(8, offerId.Length)]}...");
+                if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[PeerCoordinator] Processing answer from {fromPeerId[..Math.Min(12, fromPeerId.Length)]}, offerId={offerId[..Math.Min(8, offerId.Length)]}...");
                 var conn = await _webRtc.HandleAnswerByOfferIdAsync(offerId, answer);
                 if (conn == null)
                 {
-                    Console.WriteLine($"[PeerCoordinator] No pending offer for offerId — trying by peerId...");
+                    if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[PeerCoordinator] No pending offer for offerId — trying by peerId...");
                     await _webRtc.HandleAnswerAsync(fromPeerId, answer);
                     return;
                 }
 
-                Console.WriteLine($"[PeerCoordinator] Answer matched offer. ICE connecting...");
+                if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[PeerCoordinator] Answer matched offer. ICE connecting...");
                 _pendingOffers.TryRemove(offerId, out _);
 
                 _ = WaitAndSetupPeerAsync(conn);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[PeerCoordinator] Answer handling FAILED: {ex.GetType().Name}: {ex.Message}");
+                if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[PeerCoordinator] Answer handling FAILED: {ex.GetType().Name}: {ex.Message}");
             }
         };
 
@@ -135,11 +135,11 @@ public class PeerCoordinator : IAsyncDisposable
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
-                Console.WriteLine($"[PeerCoordinator] Generate offer {i} timed out (15s)");
+                if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[PeerCoordinator] Generate offer {i} timed out (15s)");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[PeerCoordinator] Generate offer {i} failed: {ex.GetType().Name}: {ex.Message}");
+                if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[PeerCoordinator] Generate offer {i} failed: {ex.GetType().Name}: {ex.Message}");
             }
         }
         return offers.ToArray();
@@ -165,7 +165,7 @@ public class PeerCoordinator : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[PeerCoordinator] Peer setup failed: {ex.GetType().Name}: {ex.Message}");
+            if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[PeerCoordinator] Peer setup failed: {ex.GetType().Name}: {ex.Message}");
             await conn.DisposeAsync();
         }
     }

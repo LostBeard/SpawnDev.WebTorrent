@@ -137,7 +137,7 @@ public class SipSorceryWebRtcConnection : IConnection
 
         pc.onconnectionstatechange += (state) =>
         {
-            Console.WriteLine($"[SipSorcery] Connection state: {state}");
+            if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[SipSorcery] Connection state: {state}");
             if (state == RTCPeerConnectionState.disconnected ||
                 state == RTCPeerConnectionState.failed ||
                 state == RTCPeerConnectionState.closed)
@@ -148,7 +148,7 @@ public class SipSorceryWebRtcConnection : IConnection
         };
         pc.oniceconnectionstatechange += (state) =>
         {
-            Console.WriteLine($"[SipSorcery] ICE state: {state}");
+            if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[SipSorcery] ICE state: {state}");
         };
 
         return pc;
@@ -298,7 +298,7 @@ public class SipSorceryWebRtcConnection : IConnection
     {
         if (_pc == null) throw new Exception("RTCPeerConnection is null");
         if (string.IsNullOrEmpty(answer.Sdp)) throw new Exception("Answer SDP is empty");
-        Console.WriteLine($"[SipSorcery] Answer SDP ({answer.Sdp.Length} chars):\n{answer.Sdp[..Math.Min(500, answer.Sdp.Length)]}...");
+        if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[SipSorcery] Answer SDP ({answer.Sdp.Length} chars):\n{answer.Sdp[..Math.Min(500, answer.Sdp.Length)]}...");
         var result = _pc.setRemoteDescription(new RTCSessionDescriptionInit
         {
             type = RTCSdpType.answer,

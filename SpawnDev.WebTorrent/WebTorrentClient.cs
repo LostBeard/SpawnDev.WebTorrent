@@ -325,6 +325,8 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
         }
 
         options ??= new AddTorrentOptions();
+        if (options.AsyncFileSystem == null && _asyncFs != null)
+            options.AsyncFileSystem = _asyncFs;
 
         var swarm = new TorrentSwarm(this, options);
         WireSwarmEvents(swarm);
@@ -350,6 +352,8 @@ public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
     public async Task<TorrentSwarm> AddAsync(TorrentMetadata metadata, AddTorrentOptions? options = null)
     {
         options ??= new AddTorrentOptions();
+        if (options.AsyncFileSystem == null && _asyncFs != null)
+            options.AsyncFileSystem = _asyncFs;
 
         var swarm = new TorrentSwarm(this, options);
         WireSwarmEvents(swarm);

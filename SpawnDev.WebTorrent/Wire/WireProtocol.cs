@@ -306,7 +306,7 @@ public class WireProtocol : IAsyncDisposable
 
             var type = (MessageType)payload[0];
             if (WebTorrentClient.VerboseLogging)
-                Console.WriteLine($"[Wire] Received: {type} ({msgLen} bytes) from {_connection.RemoteId[..Math.Min(12, _connection.RemoteId.Length)]}");
+                if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[Wire] Received: {type} ({msgLen} bytes) from {_connection.RemoteId[..Math.Min(12, _connection.RemoteId.Length)]}");
             switch (type)
             {
                 case MessageType.Choke: PeerChoking = true; OnChoke?.Invoke(); break;

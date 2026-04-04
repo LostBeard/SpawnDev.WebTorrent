@@ -21,6 +21,7 @@ public class TorrentSwarm : IAsyncDisposable
     private PieceManager? _pieceManager;
     private DownloadCoordinator? _coordinator;
     private PeerCoordinator? _peerCoordinator;
+    private HttpClient? _webSeedHttp;
     private readonly List<Func<TorrentSwarm, Wire.WireProtocol, Wire.WireExtension>> _extensionFactories = new();
     private bool _disposed;
 
@@ -1111,13 +1112,15 @@ public class TorrentSwarm : IAsyncDisposable
             OnLog?.Invoke($"[WebSeed] Skipped (disabled): {url}");
             return;
         }
-        _coordinator?.AddWebSeed(new HttpClient { Timeout = TimeSpan.FromSeconds(30) }, url);
+        _webSeedHttp ??= new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        _coordinator?.AddWebSeed(_webSeedHttp, url);
     }
 
     public async ValueTask DisposeAsync()
     {
         _disposed = true;
         _coordinator?.Stop();
+        _webSeedHttp?.Dispose();
 
         // Dispose PeerCoordinator first — stops tracker clients so no new peers arrive
         if (_peerCoordinator != null)

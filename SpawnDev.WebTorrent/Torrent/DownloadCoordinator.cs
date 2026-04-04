@@ -17,6 +17,7 @@ public class DownloadCoordinator : IDisposable
     private readonly TorrentMetadata _metadata;
     private readonly List<WebSeedConnection> _webSeeds = new();
     private Task? _bulkDownloadTask;
+    private HttpClient? _streamHttp;
     private int _tickCount;
     private readonly List<ActivePeer> _activePeers = new();
     private readonly object _peersLock = new();
@@ -322,7 +323,8 @@ public class DownloadCoordinator : IDisposable
         {
             var url = $"{seed.BaseUrl}/{fileName}";
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+            _streamHttp ??= new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+            var http = _streamHttp;
             using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
 
             if (!response.IsSuccessStatusCode) return false;
@@ -384,7 +386,8 @@ public class DownloadCoordinator : IDisposable
             var filePath = file.Path.Contains('/') ? file.Path : $"{_metadata.Name}/{file.Path}";
             var url = $"{seed.BaseUrl}/{WebSeedConnection.EscapePathPublic(filePath)}";
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+            _streamHttp ??= new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+            var http = _streamHttp;
             using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
 
             if (!response.IsSuccessStatusCode) return false;
@@ -447,11 +450,8 @@ public class DownloadCoordinator : IDisposable
                         skipped += read;
                     }
                     // Download this boundary piece via individual range request
-                    await seed.DownloadPieceAsync(p, ct).ContinueWith(async t =>
-                    {
-                        var data = t.Result;
-                        if (data != null) await _pieceManager.ReceiveCompletePieceAsync(p, data);
-                    }, ct);
+                    var pieceData = await seed.DownloadPieceAsync(p, ct);
+                    if (pieceData != null) await _pieceManager.ReceiveCompletePieceAsync(p, pieceData);
                 }
             }
             return true;
@@ -521,6 +521,7 @@ public class DownloadCoordinator : IDisposable
         _cts?.Cancel();
         _cts?.Dispose();
         _updateLock.Dispose();
+        _streamHttp?.Dispose();
     }
 }
 

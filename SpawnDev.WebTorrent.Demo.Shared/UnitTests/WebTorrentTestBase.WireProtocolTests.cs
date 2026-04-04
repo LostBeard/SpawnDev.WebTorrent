@@ -18,11 +18,12 @@ public abstract partial class WebTorrentTestBase
         var captured = new List<byte>();
         var mock = new MockConnection(captured);
         var wire = new WireProtocol(mock);
+        wire.AmChoking = false; // Must be unchoked first — Choke is idempotent (matches JS)
 
         await wire.SendMessageAsync(MessageType.Choke);
-        // 00 00 00 01 00
         if (captured.Count != 5) throw new Exception($"Expected 5, got {captured.Count}");
         if (captured[4] != (byte)MessageType.Choke) throw new Exception($"Type: {captured[4]}");
+        if (!wire.AmChoking) throw new Exception("AmChoking should be true");
     }
 
     [TestMethod]
@@ -31,9 +32,11 @@ public abstract partial class WebTorrentTestBase
         var captured = new List<byte>();
         var mock = new MockConnection(captured);
         var wire = new WireProtocol(mock);
+        // AmChoking defaults to true — Unchoke should send
 
         await wire.SendMessageAsync(MessageType.Unchoke);
         if (captured[4] != (byte)MessageType.Unchoke) throw new Exception($"Type: {captured[4]}");
+        if (wire.AmChoking) throw new Exception("AmChoking should be false");
     }
 
     [TestMethod]
@@ -42,9 +45,11 @@ public abstract partial class WebTorrentTestBase
         var captured = new List<byte>();
         var mock = new MockConnection(captured);
         var wire = new WireProtocol(mock);
+        // AmInterested defaults to false — Interested should send
 
         await wire.SendMessageAsync(MessageType.Interested);
         if (captured[4] != (byte)MessageType.Interested) throw new Exception($"Type: {captured[4]}");
+        if (!wire.AmInterested) throw new Exception("AmInterested should be true");
     }
 
     [TestMethod]
@@ -53,9 +58,11 @@ public abstract partial class WebTorrentTestBase
         var captured = new List<byte>();
         var mock = new MockConnection(captured);
         var wire = new WireProtocol(mock);
+        wire.AmInterested = true; // Must be interested first — NotInterested is idempotent
 
         await wire.SendMessageAsync(MessageType.NotInterested);
         if (captured[4] != (byte)MessageType.NotInterested) throw new Exception($"Type: {captured[4]}");
+        if (wire.AmInterested) throw new Exception("AmInterested should be false");
     }
 
     [TestMethod]

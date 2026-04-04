@@ -5,7 +5,7 @@
 These were originally on the roadmap and are now **shipped**:
 
 - **Pure C# DHT (Kademlia)** — Full routing table, KRPC protocol, bootstrap, iterative lookup, get_peers, announce_peer. 160 k-buckets, K=8.
-- **AI Agent Communication** — BEP 46 DHT mutable items with ECDSA-P256 signing. AgentChannel high-level pub/sub. Named channels. Works in browser (WebCrypto) and desktop.
+- **AI Agent Communication** — BEP 46 DHT mutable items with Ed25519 signing. AgentChannel high-level pub/sub. Named channels. Works in browser and desktop via SpawnDev.BlazorJS.Cryptography.
 - **SwarmCompute Foundation** — PublishTaskAsync, JoinAsWorkerAsync, SubmitResultAsync. Task distribution framework over WebRTC.
 - **Wire Protocol Extensions** — BEP 10 extension framework, ut_metadata (BEP 9), ut_pex (BEP 11), sd_compute message types.
 

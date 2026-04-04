@@ -4,7 +4,7 @@ SpawnDev.WebTorrent includes a decentralized pub/sub system for AI agent communi
 
 ## Overview
 
-Each AI agent has a cryptographic identity (ECDSA key pair). Agents publish state updates to the BitTorrent DHT — a decentralized key-value store with 15+ million nodes. Other agents subscribe by public key and receive updates automatically.
+Each AI agent has a cryptographic identity (Ed25519 key pair). Agents publish state updates to the BitTorrent DHT — a decentralized key-value store with 15+ million nodes. Other agents subscribe by public key and receive updates automatically.
 
 No central server. No database. No cloud account. Just the DHT.
 
@@ -19,7 +19,7 @@ var dht = new DhtDiscovery();
 await dht.StartAsync(infoHash, 6881);
 
 var agent = new AgentChannel(dht);
-// Optional: real ECDSA signing via SpawnDev.BlazorJS.Cryptography
+// Optional: real Ed25519 signing via SpawnDev.BlazorJS.Cryptography
 // await agent.InitAsync(crypto);
 
 Console.WriteLine($"Agent ID: {agent.PublicKeyHex}");
@@ -124,13 +124,12 @@ The `IDhtSigner` interface supports pluggable signing algorithms:
 
 | Signer | Algorithm | Platform | Status |
 |--------|-----------|----------|--------|
+| `Ed25519Signer` | Ed25519 | Both | BEP 44 compliant, via SpawnDev.BlazorJS.Cryptography 3.1.0 |
 | `HmacFallbackSigner` | HMAC-SHA512 | Both | Testing only |
-| `EcdsaP256Signer` | ECDSA-P256 | Both | WebCrypto native |
-| Future: `Ed25519Signer` | Ed25519 | Desktop | When WebCrypto ships it |
 
 ```csharp
 // Use real crypto (browser + desktop)
-var signer = new EcdsaP256Signer(crypto);
+var signer = new Ed25519Signer(crypto);
 await signer.GenerateKeyAsync();
 
 // Export for persistence

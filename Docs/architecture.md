@@ -138,7 +138,7 @@ See [bep-support.md](bep-support.md) for full details.
 | Package | Version | Purpose |
 |---------|---------|---------|
 | SpawnDev.BlazorJS | 3.5.0 | Browser WebRTC + OPFS wrappers |
-| SpawnDev.BlazorJS.Cryptography | 3.0.1 | Cross-platform ECDSA + SHA-256 via SubtleCrypto |
+| SpawnDev.BlazorJS.Cryptography | 3.1.0 | Cross-platform Ed25519 + ECDSA signing (BEP 44/46) + SHA-256 via SubtleCrypto |
 | SpawnDev.AsyncFileSystem | 1.0.0 | Cross-platform persistent storage (IAsyncFS) |
 | SIPSorcery | 10.0.3 | Desktop WebRTC data channels |
 

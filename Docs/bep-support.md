@@ -19,7 +19,7 @@ Status of BEP implementation in SpawnDev.WebTorrent v2.1.0.
 | [23](http://bittorrent.org/beps/bep_0023.html) | Tracker Returns Compact Peer Lists | Yes | Yes | Via UDP and HTTP tracker compact format |
 | [27](http://bittorrent.org/beps/bep_0027.html) | Private Torrents | Yes | Yes | DHT/PEX peers rejected, only tracker peers accepted |
 | [44](http://bittorrent.org/beps/bep_0044.html) | Storing Arbitrary Data in DHT | Yes | Desktop only | Requires DHT (UDP). |
-| [46](http://bittorrent.org/beps/bep_0046.html) | Updating Torrents via DHT Mutable Items | Yes | Yes | ECDSA-P256 signed (WebCrypto native), AgentChannel pub/sub, AI shared state |
+| [46](http://bittorrent.org/beps/bep_0046.html) | Updating Torrents via DHT Mutable Items | Yes | Yes | Ed25519 signed (BEP 44 compliant), AgentChannel pub/sub, AI shared state |
 | [53](http://bittorrent.org/beps/bep_0053.html) | Magnet URI — Select Specific Files | Yes | Yes | `so=` parameter parsed, `SelectedFileIndices` property |
 
 ## Piece Verification

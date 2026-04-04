@@ -21,11 +21,11 @@ Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Run
 - **Random-Access Streaming** — Read any byte range from a torrent file as it downloads. Pieces download on demand. Perfect for ML model weight streaming.
 - **Seeding** — Upload pieces to requesting peers with configurable rate limiting.
 - **Speed Tracking** — Real-time download/upload bytes/sec per torrent.
-- **AI Agent Communication** — BEP 46 DHT mutable items with real ECDSA-P256 signing via SpawnDev.BlazorJS.Cryptography. AgentChannel pub/sub for shared AI state.
+- **AI Agent Communication** — BEP 46 DHT mutable items with real Ed25519 signing via SpawnDev.BlazorJS.Cryptography. AgentChannel pub/sub for shared AI state.
 - **HuggingFace Integration** — Optional server extension that proxies HuggingFace model CDN with local caching and automatic torrent generation.
 - **Custom Wire Extensions** — `UseExtension()` factory pattern (same as JS WebTorrent `wire.use()`). Build custom P2P protocols on top of the BitTorrent wire — distributed compute, AI agents, anything. Extensions negotiate via BEP 10.
 - **.torrent Creation** — Create and parse .torrent files. Complete Bencode encoder/decoder.
-- **374 Real Unit Tests** (426 pass, 92 fake tests purged 2026-04-03) — Every BEP tested, ECDSA crypto verified in browser, service worker streaming verified end-to-end, security tests for signature verification. Every test exercises real production code with meaningful assertions.
+- **374 Real Unit Tests** (426 pass, 92 fake tests purged 2026-04-03) — Every BEP tested, Ed25519 crypto verified in browser, service worker streaming verified end-to-end, security tests for signature verification. Every test exercises real production code with meaningful assertions.
 
 ## Packages
 

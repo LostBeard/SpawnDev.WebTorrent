@@ -144,13 +144,21 @@ public class WireProtocol : IAsyncDisposable
     /// <summary>Send a simple message (no payload).</summary>
     public Task SendMessageAsync(MessageType type)
     {
-        // Track local state
+        // Idempotent state tracking — skip if already in desired state (matches JS WebTorrent)
         switch (type)
         {
-            case MessageType.Choke: AmChoking = true; break;
-            case MessageType.Unchoke: AmChoking = false; break;
-            case MessageType.Interested: AmInterested = true; break;
-            case MessageType.NotInterested: AmInterested = false; break;
+            case MessageType.Choke:
+                if (AmChoking) return Task.CompletedTask;
+                AmChoking = true; break;
+            case MessageType.Unchoke:
+                if (!AmChoking) return Task.CompletedTask;
+                AmChoking = false; break;
+            case MessageType.Interested:
+                if (AmInterested) return Task.CompletedTask;
+                AmInterested = true; break;
+            case MessageType.NotInterested:
+                if (!AmInterested) return Task.CompletedTask;
+                AmInterested = false; break;
         }
         return SendFramedAsync(new[] { (byte)type });
     }

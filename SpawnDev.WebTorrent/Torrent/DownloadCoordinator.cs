@@ -94,7 +94,7 @@ public class DownloadCoordinator : IDisposable
         {
             Wire = wire,
             Bitfield = peerBitfield,
-            OutstandingRequests = new List<(int piece, int offset, int length)>(),
+            // OutstandingRequests initialized in ActivePeer constructor
         };
 
         wire.OnPiece += async (pieceIdx, offset, data) =>
@@ -102,7 +102,7 @@ public class DownloadCoordinator : IDisposable
             try
             {
                 peer.RecordReceived(data.Length);
-                peer.OutstandingRequests.RemoveAll(r => r.piece == pieceIdx && r.offset == offset);
+                peer.RemoveRequest(pieceIdx, offset);
                 await _pieceManager.ReceiveBlockAsync(pieceIdx, offset, data);
             }
             catch (Exception ex)
@@ -171,7 +171,7 @@ public class DownloadCoordinator : IDisposable
                 foreach (var peer in peers)
                 {
                     int pipelineDepth = Math.Min(peer.PipelineDepth, MaxRequestsPerPeer);
-                    if (peer.IsChoked || peer.OutstandingRequests.Count >= pipelineDepth)
+                    if (peer.IsChoked || peer.OutstandingRequestCount >= pipelineDepth)
                         continue;
 
                     // Try priority pieces first
@@ -184,7 +184,7 @@ public class DownloadCoordinator : IDisposable
                     }
 
                     // Then normal selection — keep filling until pipeline is full
-                    while (peer.OutstandingRequests.Count < pipelineDepth)
+                    while (peer.OutstandingRequestCount < pipelineDepth)
                     {
                         int piece = _pieceManager.SelectPiece(peer.Bitfield, Strategy);
                         if (piece >= 0)
@@ -214,7 +214,7 @@ public class DownloadCoordinator : IDisposable
                 {
                     if (peer.IsTimedOut)
                     {
-                        OnLog?.Invoke($"Peer timed out (30s no data, {peer.OutstandingRequests.Count} pending)");
+                        OnLog?.Invoke($"Peer timed out (30s no data, {peer.OutstandingRequestCount} pending)");
                         try { await peer.Wire.DisposeAsync(); } catch { }
                         RemovePeer(peer.Wire);
                     }
@@ -261,12 +261,12 @@ public class DownloadCoordinator : IDisposable
 
     private async Task RequestBlocksFromPeer(ActivePeer peer, int pieceIndex, int maxRequests = 6)
     {
-        while (peer.OutstandingRequests.Count < maxRequests)
+        while (peer.OutstandingRequestCount < maxRequests)
         {
             var (offset, length) = _pieceManager.GetNextBlock(pieceIndex);
             if (offset < 0) break;
 
-            peer.OutstandingRequests.Add((pieceIndex, offset, length));
+            peer.AddRequest(pieceIndex, offset, length);
             await peer.Wire.SendRequestAsync(pieceIndex, offset, length);
         }
     }
@@ -507,7 +507,7 @@ public class DownloadCoordinator : IDisposable
         foreach (var peer in peers)
         {
             // Cancel outstanding requests for this completed piece (endgame cleanup)
-            peer.OutstandingRequests.RemoveAll(r => r.piece == pieceIndex);
+            peer.ClearRequestsForPiece(pieceIndex);
 
             try { _ = peer.Wire.SendHaveAsync(pieceIndex); }
             catch (Exception ex) { OnLog?.Invoke($"SendHave failed: {ex.Message}"); }
@@ -531,7 +531,14 @@ public class ActivePeer
     public WireProtocol Wire { get; set; } = null!;
     public bool[] Bitfield { get; set; } = Array.Empty<bool>();
     public bool IsChoked { get; set; } = true;
-    public List<(int piece, int offset, int length)> OutstandingRequests { get; set; } = new();
+    private readonly List<(int piece, int offset, int length)> _outstandingRequests = new();
+    private readonly object _reqLock = new();
+
+    public int OutstandingRequestCount { get { lock (_reqLock) return _outstandingRequests.Count; } }
+    public void AddRequest(int piece, int offset, int length) { lock (_reqLock) _outstandingRequests.Add((piece, offset, length)); }
+    public void RemoveRequest(int piece, int offset) { lock (_reqLock) _outstandingRequests.RemoveAll(r => r.piece == piece && r.offset == offset); }
+    public void ClearRequestsForPiece(int piece) { lock (_reqLock) _outstandingRequests.RemoveAll(r => r.piece == piece); }
+    public bool HasOutstandingRequests { get { lock (_reqLock) return _outstandingRequests.Count > 0; } }
 
     // Speed tracking for adaptive pipeline
     private long _bytesReceived;
@@ -549,7 +556,7 @@ public class ActivePeer
     }
 
     /// <summary>Whether this peer has timed out (30s with outstanding requests and no data).</summary>
-    public bool IsTimedOut => OutstandingRequests.Count > 0
+    public bool IsTimedOut => HasOutstandingRequests
         && (DateTime.UtcNow - LastDataReceived).TotalSeconds > 30;
 
     /// <summary>Download speed in bytes/sec over the connection lifetime.</summary>

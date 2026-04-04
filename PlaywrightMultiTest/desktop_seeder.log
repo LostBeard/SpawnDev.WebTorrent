@@ -1,4 +1,4 @@
-[23:43:22.883] [DesktopSeeder] TorrentAdd: 
-[23:43:23.577] [DesktopSeeder] Seeding: magnet:?xt=urn:btih:30672c7623ba089fc8a74541cc45f55ffcdfcb99&dn=crossplatform-test.bin&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce
-[23:43:23.578] [DesktopSeeder] InfoHash: 30672c7623ba089fc8a74541cc45f55ffcdfcb99
-[23:43:33.653] [DesktopSeeder] After tracker wait: Ready=True, Done=True, Peers=0
+[23:51:44.462] [DesktopSeeder] TorrentAdd: 
+[23:51:45.057] [DesktopSeeder] Seeding: magnet:?xt=urn:btih:30672c7623ba089fc8a74541cc45f55ffcdfcb99&dn=crossplatform-test.bin&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce
+[23:51:45.058] [DesktopSeeder] InfoHash: 30672c7623ba089fc8a74541cc45f55ffcdfcb99
+[23:51:55.176] [DesktopSeeder] After tracker wait: Ready=True, Done=True, Peers=0

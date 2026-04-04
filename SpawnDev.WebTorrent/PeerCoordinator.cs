@@ -65,6 +65,11 @@ public class PeerCoordinator : IAsyncDisposable
         {
             try
             {
+                // Skip self-offers and already-connected peers
+                var myPeerId = TrackerEncoding.ToBinaryString(_client.PeerId);
+                if (fromPeerId == myPeerId) return;
+                if (_peers.ContainsKey(fromPeerId)) return;
+
                 if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[PeerCoordinator] Processing offer from {fromPeerId[..Math.Min(12, fromPeerId.Length)]}...");
                 var (conn, answerSdp) = await _webRtc.HandleOfferAsync(fromPeerId, offer);
                 if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[PeerCoordinator] Answer created, sending back...");

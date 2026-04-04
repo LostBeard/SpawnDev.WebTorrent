@@ -28,8 +28,11 @@ public class DownloadCoordinator : IDisposable
     /// <summary>Pieces that are high-priority (requested by file reads).</summary>
     private readonly HashSet<int> _priorityPieces = new();
 
-    /// <summary>Maximum outstanding requests per peer.</summary>
-    public int MaxRequestsPerPeer { get; set; } = 6;
+    /// <summary>Minimum outstanding requests per peer.</summary>
+    public int MinRequestsPerPeer { get; set; } = 2;
+
+    /// <summary>Maximum outstanding requests per peer (hard cap).</summary>
+    public int MaxRequestsPerPeer { get; set; } = 64;
 
     /// <summary>Interval between update ticks in milliseconds.</summary>
     public int UpdateIntervalMs { get; set; } = 100;
@@ -97,7 +100,7 @@ public class DownloadCoordinator : IDisposable
         {
             try
             {
-                OnLog?.Invoke($"[Piece] RECEIVED piece={pieceIdx} offset={offset} len={data.Length}");
+                peer.RecordReceived(data.Length);
                 peer.OutstandingRequests.RemoveAll(r => r.piece == pieceIdx && r.offset == offset);
                 await _pieceManager.ReceiveBlockAsync(pieceIdx, offset, data);
             }
@@ -166,28 +169,27 @@ public class DownloadCoordinator : IDisposable
                 // 1. Request from peers
                 foreach (var peer in peers)
                 {
-                    if (peer.IsChoked || peer.OutstandingRequests.Count >= MaxRequestsPerPeer)
-                    {
-                        if (_tickCount % 50 == 0) // log every 5 seconds
-                            OnLog?.Invoke($"[Peer] {(peer.IsChoked ? "CHOKED" : $"full ({peer.OutstandingRequests.Count} reqs)")} — skipping peer with {peer.Bitfield.Count(b => b)} pieces");
+                    int pipelineDepth = Math.Min(peer.PipelineDepth, MaxRequestsPerPeer);
+                    if (peer.IsChoked || peer.OutstandingRequests.Count >= pipelineDepth)
                         continue;
-                    }
 
                     // Try priority pieces first
                     foreach (var priorityPiece in _priorityPieces.ToArray())
                     {
                         if (!_pieceManager.Bitfield[priorityPiece] && peer.Bitfield.Length > priorityPiece && peer.Bitfield[priorityPiece])
                         {
-                            await RequestBlocksFromPeer(peer, priorityPiece);
+                            await RequestBlocksFromPeer(peer, pieceIndex: priorityPiece, maxRequests: pipelineDepth);
                         }
                     }
 
-                    // Then normal selection
-                    if (peer.OutstandingRequests.Count < MaxRequestsPerPeer)
+                    // Then normal selection — keep filling until pipeline is full
+                    while (peer.OutstandingRequests.Count < pipelineDepth)
                     {
                         int piece = _pieceManager.SelectPiece(peer.Bitfield, Strategy);
                         if (piece >= 0)
-                            await RequestBlocksFromPeer(peer, piece);
+                            await RequestBlocksFromPeer(peer, piece, pipelineDepth);
+                        else
+                            break; // no more pieces available from this peer
                     }
                 }
 
@@ -206,7 +208,18 @@ public class DownloadCoordinator : IDisposable
                         _bulkDownloadTask = DownloadBulkFromWebSeed(seeds, ct);
                 }
 
-                // 3. Endgame mode — when few pieces remain, request from ALL peers
+                // 3. Timeout check — destroy peers that have outstanding requests but no data for 30s
+                foreach (var peer in peers)
+                {
+                    if (peer.IsTimedOut)
+                    {
+                        OnLog?.Invoke($"Peer timed out (30s no data, {peer.OutstandingRequests.Count} pending)");
+                        try { await peer.Wire.DisposeAsync(); } catch { }
+                        RemovePeer(peer.Wire);
+                    }
+                }
+
+                // 4. Endgame mode — when few pieces remain, request from ALL peers
                 int remaining = _pieceManager.PieceCount - _pieceManager.CompletedCount;
                 if (remaining > 0 && remaining <= EndgameThreshold && peers.Length > 1)
                 {
@@ -245,15 +258,14 @@ public class DownloadCoordinator : IDisposable
         OnLog?.Invoke("Download loop ended");
     }
 
-    private async Task RequestBlocksFromPeer(ActivePeer peer, int pieceIndex)
+    private async Task RequestBlocksFromPeer(ActivePeer peer, int pieceIndex, int maxRequests = 6)
     {
-        while (peer.OutstandingRequests.Count < MaxRequestsPerPeer)
+        while (peer.OutstandingRequests.Count < maxRequests)
         {
             var (offset, length) = _pieceManager.GetNextBlock(pieceIndex);
             if (offset < 0) break;
 
             peer.OutstandingRequests.Add((pieceIndex, offset, length));
-            if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[Request] piece={pieceIndex} offset={offset} len={length}");
             await peer.Wire.SendRequestAsync(pieceIndex, offset, length);
         }
     }
@@ -519,4 +531,44 @@ public class ActivePeer
     public bool[] Bitfield { get; set; } = Array.Empty<bool>();
     public bool IsChoked { get; set; } = true;
     public List<(int piece, int offset, int length)> OutstandingRequests { get; set; } = new();
+
+    // Speed tracking for adaptive pipeline
+    private long _bytesReceived;
+    private DateTime _lastSpeedReset = DateTime.UtcNow;
+    private DateTime _connectionStart = DateTime.UtcNow;
+
+    /// <summary>Last time we received any data from this peer.</summary>
+    public DateTime LastDataReceived { get; private set; } = DateTime.UtcNow;
+
+    /// <summary>Record bytes received from this peer (for speed calculation).</summary>
+    public void RecordReceived(int bytes)
+    {
+        _bytesReceived += bytes;
+        LastDataReceived = DateTime.UtcNow;
+    }
+
+    /// <summary>Whether this peer has timed out (30s with outstanding requests and no data).</summary>
+    public bool IsTimedOut => OutstandingRequests.Count > 0
+        && (DateTime.UtcNow - LastDataReceived).TotalSeconds > 30;
+
+    /// <summary>Download speed in bytes/sec over the connection lifetime.</summary>
+    public double DownloadSpeed
+    {
+        get
+        {
+            var elapsed = (DateTime.UtcNow - _connectionStart).TotalSeconds;
+            return elapsed > 0 ? _bytesReceived / elapsed : 0;
+        }
+    }
+
+    /// <summary>Adaptive pipeline depth: 2 + ceil(elapsed * speed / 16384). Matches JS WebTorrent.</summary>
+    public int PipelineDepth
+    {
+        get
+        {
+            var elapsed = (DateTime.UtcNow - _connectionStart).TotalSeconds;
+            var depth = 2 + (int)Math.Ceiling(elapsed * DownloadSpeed / 16384);
+            return Math.Clamp(depth, 2, 64);
+        }
+    }
 }

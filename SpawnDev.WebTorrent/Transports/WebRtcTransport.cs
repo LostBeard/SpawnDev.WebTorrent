@@ -444,13 +444,20 @@ public class WebRtcConnection : IConnection
         await _openTcs.Task;
     }
 
-    public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
+    public async Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
     {
         if (_dc == null || _dc.ReadyState != "open")
             throw new InvalidOperationException("Data channel is not open");
 
+        // Backpressure: wait if send buffer exceeds 64KB (matches simple-peer)
+        const int maxBuffered = 65536;
+        while (_dc.BufferedAmount > maxBuffered)
+        {
+            await Task.Delay(10, ct);
+            if (_dc.ReadyState != "open") return;
+        }
+
         _dc.Send(data.ToArray());
-        return Task.CompletedTask;
     }
 
     public async Task<int> ReceiveAsync(Memory<byte> buffer, CancellationToken ct = default)

@@ -194,20 +194,55 @@ public class WebSocketTrackerClient : IDiscovery
 
     private async Task ReannounceLoopAsync(CancellationToken ct)
     {
+        int reconnectDelay = 10_000; // Start at 10s, exponential backoff to 1h
+        const int maxReconnectDelay = 3600_000;
+
         try
         {
             while (!ct.IsCancellationRequested)
             {
                 await Task.Delay(_announceIntervalMs, ct);
-                if (_currentInfoHash != null && _ws?.State == WebSocketState.Open)
+
+                if (_currentInfoHash == null) continue;
+
+                if (_ws?.State == WebSocketState.Open)
                 {
+                    reconnectDelay = 10_000; // Reset backoff on healthy connection
                     var offers = _offerFactory?.Invoke();
                     await AnnounceAsync(_currentInfoHash, _currentPort, 0, 0, 0, offers, TrackerEvent.None, ct);
+                }
+                else
+                {
+                    // WebSocket dropped — reconnect with exponential backoff
+                    try
+                    {
+                        _ws?.Dispose();
+                        _ws = new ClientWebSocket();
+                        using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                        connectCts.CancelAfter(15_000);
+                        await _ws.ConnectAsync(new Uri(_trackerUrl), connectCts.Token);
+                        OnConnected?.Invoke();
+                        _readLoop = ReadLoopAsync(ct);
+
+                        var offers = _offerFactory?.Invoke();
+                        await AnnounceAsync(_currentInfoHash, _currentPort, 0, 0, 0, offers, TrackerEvent.Started, ct);
+                        reconnectDelay = 10_000; // Reset on success
+                    }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                    {
+                        // Reconnect timed out — back off
+                        await Task.Delay(reconnectDelay, ct);
+                        reconnectDelay = Math.Min(reconnectDelay * 2, maxReconnectDelay);
+                    }
+                    catch
+                    {
+                        await Task.Delay(reconnectDelay, ct);
+                        reconnectDelay = Math.Min(reconnectDelay * 2, maxReconnectDelay);
+                    }
                 }
             }
         }
         catch (OperationCanceledException) { }
-        catch { }
     }
 
     public async Task StopAsync()

@@ -91,8 +91,8 @@
         </div>
         <div class="feature-card">
             <div class="feature-icon">&#x26A1;</div>
-            <h3>Zero Config</h3>
-            <p>ModelTorrentClient handles everything: .torrent fetch, piece download, verification, assembly. One line to download a model.</p>
+            <h3>Simple API</h3>
+            <p>WebTorrentClient handles everything: tracker connect, peer discovery, piece download, SHA verification, assembly. Add a magnet and go.</p>
         </div>
         <div class="feature-card">
             <div class="feature-icon">&#x1F30D;</div>
@@ -114,16 +114,16 @@
         <div class="step">
             <div class="step-number">1</div>
             <div class="step-content">
-                <h3>Download a Model</h3>
-                <p>One line to download any HuggingFace model via the torrent network.</p>
+                <h3>Add a Torrent</h3>
+                <p>Add a magnet link or .torrent file — metadata resolves from peers automatically.</p>
                 <div class="code-block">
-                    <pre><code><span class="keyword">var</span> client = <span class="keyword">new</span> <span class="type">ModelTorrentClient</span>(<span class="keyword">new</span> <span class="type">ModelTorrentOptions</span>
-{
-    ServerBaseUrl = <span class="string">"https://hub.spawndev.com:44365"</span>
-});
+                    <pre><code><span class="keyword">var</span> client = <span class="keyword">new</span> <span class="type">WebTorrentClient</span>();
 
-<span class="keyword">var</span> weights = <span class="keyword">await</span> client.<span class="method">DownloadModelAsync</span>(
-    <span class="string">"Xenova/distilgpt2"</span>, <span class="string">"onnx/model.onnx"</span>);</code></pre>
+<span class="comment">// Add by magnet — metadata fetched via ut_metadata (BEP 9)</span>
+<span class="keyword">var</span> torrent = client.<span class="method">Add</span>(<span class="string">"magnet:?xt=urn:btih:..."</span>);
+
+<span class="comment">// Or seed your own data</span>
+<span class="keyword">var</span> seeded = <span class="keyword">await</span> client.<span class="method">SeedAsync</span>(<span class="string">"model.onnx"</span>, modelBytes);</code></pre>
                 </div>
             </div>
         </div>
@@ -131,14 +131,15 @@
         <div class="step">
             <div class="step-number">2</div>
             <div class="step-content">
-                <h3>Stream with Random Access</h3>
+                <h3>Read with Random Access</h3>
                 <p>Read any byte range — pieces download on demand as you read.</p>
                 <div class="code-block">
-                    <pre><code><span class="keyword">var</span> stream = <span class="keyword">await</span> client.<span class="method">GetModelStreamAsync</span>(
-    <span class="string">"Xenova/distilgpt2"</span>, <span class="string">"onnx/model.onnx"</span>);
+                    <pre><code><span class="comment">// Read 64KB from offset 1MB — waits for needed pieces</span>
+<span class="keyword">var</span> chunk = <span class="keyword">await</span> torrent.<span class="method">ReadFileAsync</span>(
+    fileIndex: <span class="number">0</span>, offset: <span class="number">1_000_000</span>, length: <span class="number">65536</span>);
 
-<span class="comment">// Read 64KB from offset 1MB — only those pieces download</span>
-<span class="keyword">var</span> chunk = <span class="keyword">await</span> stream.<span class="method">ReadAsync</span>(offset: <span class="number">1_000_000</span>, length: <span class="number">65536</span>);</code></pre>
+<span class="comment">// Or read an entire file</span>
+<span class="keyword">var</span> data = <span class="keyword">await</span> torrent.<span class="method">ReadFileAsync</span>(<span class="number">0</span>);</code></pre>
                 </div>
             </div>
         </div>

@@ -849,7 +849,10 @@
     {
         if (_removeTorrent == null) return;
         var name = _removeTorrent.Name ?? _removeTorrent.InfoHash ?? "unknown";
-        await Client.RemoveAsync(_removeTorrent);
+        if (deleteData)
+            await Client.RemoveWithDataAsync(_removeTorrent);
+        else
+            await Client.RemoveAsync(_removeTorrent);
         _showRemoveDialog = false;
         _removeTorrent = null;
         AddLog($"Removed: {name} (data {(deleteData ? "deleted" : "kept")})", "");

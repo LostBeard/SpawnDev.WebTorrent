@@ -163,6 +163,13 @@ public class Wire : IAsyncDisposable
     private readonly Dictionary<string, IWireExtension> _ext = new();
     private int _nextExt = 1;
 
+    /// <summary>Get a registered extension by name. Returns null if not found.</summary>
+    public IWireExtension? GetExtension(string name) => _ext.GetValueOrDefault(name);
+
+    /// <summary>Get a registered extension by type. Returns null if not found.</summary>
+    public T? GetExtension<T>() where T : class, IWireExtension
+        => _ext.Values.OfType<T>().FirstOrDefault();
+
     /// <summary>Register a protocol extension (BEP 10). Must be called before handshake.</summary>
     public void Use(IWireExtension extension)
     {

@@ -45,6 +45,32 @@ public class WebTorrentClient : IAsyncDisposable
     /// <summary>Active torrents.</summary>
     public List<Torrent> Torrents { get; } = new();
 
+    /// <summary>Aggregate download speed across all torrents (bytes/sec).</summary>
+    public double DownloadSpeed => Torrents.Sum(t => t.DownloadSpeed);
+
+    /// <summary>Aggregate upload speed across all torrents (bytes/sec).</summary>
+    public double UploadSpeed => Torrents.Sum(t => t.UploadSpeed);
+
+    /// <summary>Aggregate download progress across all active torrents (0.0 to 1.0).</summary>
+    public double Progress
+    {
+        get
+        {
+            var total = Torrents.Sum(t => t.Length);
+            return total > 0 ? Torrents.Sum(t => (double)t.Downloaded) / total : 0;
+        }
+    }
+
+    /// <summary>Aggregate seed ratio (uploaded / downloaded).</summary>
+    public double Ratio
+    {
+        get
+        {
+            var dl = Torrents.Sum(t => t.Downloaded);
+            return dl > 0 ? Torrents.Sum(t => t.Uploaded) / (double)dl : 0;
+        }
+    }
+
     /// <summary>Verbose logging flag — gate all Console output behind this.</summary>
     public static bool VerboseLogging { get; set; }
 
@@ -68,6 +94,27 @@ public class WebTorrentClient : IAsyncDisposable
 
     /// <summary>Service worker stream handler for media streaming. Set via options or RegisterStreamHandler.</summary>
     public ServiceWorkerStreamHandler? StreamHandler { get; private set; }
+
+    /// <summary>Whether trackers are enabled.</summary>
+    public bool EnableTrackers { get; set; } = true;
+
+    /// <summary>Whether DHT is enabled (desktop only).</summary>
+    public bool EnableDht { get; set; } = true;
+
+    /// <summary>Whether Local Service Discovery is enabled (desktop only).</summary>
+    public bool EnableLsd { get; set; } = true;
+
+    /// <summary>Whether Peer Exchange (ut_pex) is enabled.</summary>
+    public bool EnableUtPex { get; set; } = true;
+
+    /// <summary>IP addresses to block.</summary>
+    public HashSet<string> Blocklist { get; } = new();
+
+    /// <summary>Set max download speed (bytes/sec). -1 to disable limit.</summary>
+    public void ThrottleDownload(long rate) => DownloadRateLimiter.Rate = rate;
+
+    /// <summary>Set max upload speed (bytes/sec). -1 to disable limit.</summary>
+    public void ThrottleUpload(long rate) => UploadRateLimiter.Rate = rate;
 
     /// <summary>Event fired when a BEP 46 mutable torrent updates to a new infohash.</summary>
     public event Action<Torrent, string>? OnMutableUpdate; // torrent, new infohash
@@ -119,7 +166,14 @@ public class WebTorrentClient : IAsyncDisposable
 
         if (opts.MaxConns > 0) MaxConns = opts.MaxConns;
         EnableWebSeeds = opts.EnableWebSeeds;
+        EnableTrackers = opts.EnableTrackers;
+        EnableDht = opts.EnableDht;
+        EnableLsd = opts.EnableLsd;
+        EnableUtPex = opts.EnableUtPex;
         if (opts.IceServers != null) IceServers = opts.IceServers;
+        if (opts.DownloadLimit >= 0) DownloadRateLimiter.Rate = opts.DownloadLimit;
+        if (opts.UploadLimit >= 0) UploadRateLimiter.Rate = opts.UploadLimit;
+        if (opts.Blocklist != null) foreach (var ip in opts.Blocklist) Blocklist.Add(ip);
 
         _http = opts.HttpClient ?? new HttpClient();
         AsyncFileSystem = opts.AsyncFileSystem;
@@ -553,13 +607,30 @@ public class WebTorrentClientOptions
 {
     public string? PeerId { get; set; }
     public int MaxConns { get; set; } = WebTorrentClient.DefaultMaxConns;
+    /// <summary>Enable BEP 19 web seeds. Default true.</summary>
     public bool EnableWebSeeds { get; set; } = true;
+    /// <summary>Enable trackers (WebSocket + HTTP + UDP). Default true.</summary>
+    public bool EnableTrackers { get; set; } = true;
+    /// <summary>Enable DHT peer discovery (BEP 5, desktop only). Default true.</summary>
+    public bool EnableDht { get; set; } = true;
+    /// <summary>Enable Local Service Discovery (BEP 14, desktop only). Default true.</summary>
+    public bool EnableLsd { get; set; } = true;
+    /// <summary>Enable Peer Exchange (BEP 11). Default true.</summary>
+    public bool EnableUtPex { get; set; } = true;
+    /// <summary>DHT node ID (20 bytes). Auto-generated if null.</summary>
+    public byte[]? NodeId { get; set; }
+    /// <summary>Download speed limit in bytes/sec. -1 = unlimited.</summary>
+    public long DownloadLimit { get; set; } = -1;
+    /// <summary>Upload speed limit in bytes/sec. -1 = unlimited.</summary>
+    public long UploadLimit { get; set; } = -1;
     public string[]? IceServers { get; set; }
     public HttpClient? HttpClient { get; set; }
     /// <summary>Async file system for persistent storage (OPFS in browser, native FS on desktop).</summary>
     public SpawnDev.AsyncFileSystem.IAsyncFS? AsyncFileSystem { get; set; }
-    /// <summary>Service worker stream handler for media streaming. Enables file.StreamURL and file.StreamTo().</summary>
+    /// <summary>Service worker stream handler for media streaming.</summary>
     public ServiceWorkerStreamHandler? StreamHandler { get; set; }
+    /// <summary>IP addresses to block from connecting.</summary>
+    public HashSet<string>? Blocklist { get; set; }
 }
 
 public class AddTorrentOptions
@@ -570,7 +641,17 @@ public class AddTorrentOptions
     /// <summary>
     /// Add torrent in paused state. Metadata will download (via ut_metadata),
     /// but no piece data downloads until files are selected or a read/stream is requested.
-    /// Enables "metadata-only" mode for browsing torrent contents before downloading.
     /// </summary>
     public bool Paused { get; set; }
+    /// <summary>
+    /// Start with no pieces selected (but still connect to peers, unlike Paused).
+    /// Files must be individually selected before their pieces download.
+    /// </summary>
+    public bool Deselect { get; set; }
+    /// <summary>Skip piece verification on start (trust existing store data).</summary>
+    public bool SkipVerify { get; set; }
+    /// <summary>Max simultaneous web seed connections for this torrent.</summary>
+    public int MaxWebConns { get; set; } = 4;
+    /// <summary>Seconds between "no peers" event checks. Default 30.</summary>
+    public int NoPeersIntervalTime { get; set; } = 30;
 }

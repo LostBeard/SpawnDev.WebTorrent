@@ -17,7 +17,8 @@ public partial class Torrent
     public const double PipelineMaxDuration = 1.0;
     public const int RechokeInterval = 10_000;
     public const int RechokeOptimisticDuration = 2;  // rechoke cycles
-    public const int MaxWebConns = 4;
+    /// <summary>Max simultaneous web seed connections. Configurable per torrent.</summary>
+    public int MaxWebConns { get; set; } = 4;
 
     // ========================
     // DOWNLOAD STATE

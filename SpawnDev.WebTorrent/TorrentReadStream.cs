@@ -15,17 +15,27 @@ public class TorrentReadStream : Stream
 {
     private readonly TorrentFileInfo _file;
     private long _position;
+    private readonly long _streamEnd; // -1 = full file
 
     public TorrentReadStream(TorrentFileInfo file, long startPosition = 0)
     {
         _file = file;
         _position = startPosition;
+        _streamEnd = -1;
+    }
+
+    /// <summary>Create a stream for a specific byte range of the file.</summary>
+    public TorrentReadStream(TorrentFileInfo file, long start, long end)
+    {
+        _file = file;
+        _position = start;
+        _streamEnd = end;
     }
 
     public override bool CanRead => true;
     public override bool CanSeek => true;
     public override bool CanWrite => false;
-    public override long Length => _file.Length;
+    public override long Length => _streamEnd >= 0 ? _streamEnd - _position + 1 : _file.Length;
 
     public override long Position
     {

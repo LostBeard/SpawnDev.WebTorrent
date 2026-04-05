@@ -122,6 +122,9 @@ public partial class Torrent : IAsyncDisposable
     /// <summary>Upload speed history (for sparkline graphs).</summary>
     public List<double> UploadSpeedHistory { get; } = new();
 
+    /// <summary>Estimated time remaining in milliseconds. -1 if unknown.</summary>
+    public double TimeRemaining => Done ? 0 : DownloadSpeed > 0 ? (Length - Downloaded) / DownloadSpeed * 1000 : -1;
+
     private const int MaxSpeedHistoryLength = 60;
     private Timer? _speedTimer;
 
@@ -170,11 +173,17 @@ public partial class Torrent : IAsyncDisposable
     // Client reference
     private WebTorrentClient? _client;
     private HttpClient? _http;
+    private bool _deselect;
 
     // Events
     public event Action<Wire, string>? OnWire;
     public event Action? OnMetadata;
     public event Action? OnReady;
+    public event Action<string>? OnInfoHash;
+    public event Action<int>? OnDownload;  // bytes downloaded in this chunk
+    public event Action<int>? OnUpload;    // bytes uploaded in this chunk
+    public event Action? OnIdle;           // no active selections, now seeding
+    public event Action<string>? OnNoPeers; // no peers found via tracker/dht/lsd/ut_pex
 
     // ========================
     // INITIALIZATION
@@ -190,6 +199,8 @@ public partial class Torrent : IAsyncDisposable
         Strategy = opts.Strategy;
 
         if (opts.Paused) Paused = true;
+        if (opts.Deselect) _deselect = true;
+        if (opts.MaxWebConns > 0) MaxWebConns = opts.MaxWebConns;
 
         ParseMagnet(magnetUri);
         if (string.IsNullOrEmpty(InfoHash))
@@ -207,6 +218,8 @@ public partial class Torrent : IAsyncDisposable
         PeerIdHex = client.PeerId;
         Strategy = opts.Strategy;
         if (opts.Paused) Paused = true;
+        if (opts.Deselect) _deselect = true;
+        if (opts.MaxWebConns > 0) MaxWebConns = opts.MaxWebConns;
 
         SetMetadata(metadata);
         StartRechoke();
@@ -346,8 +359,8 @@ public partial class Torrent : IAsyncDisposable
         if (_client?.EnableWebSeeds == true)
             foreach (var url in UrlList) AddWebSeed(url);
 
-        // Select all pieces for download — unless torrent was added in paused mode
-        if (Pieces.Length > 0 && !Paused)
+        // Select all pieces for download — unless paused or deselect mode
+        if (Pieces.Length > 0 && !Paused && !_deselect)
             _selections.Insert(new SelectionItem { From = 0, To = Pieces.Length - 1, Priority = 0 });
 
         foreach (var wire in Wires.ToArray())
@@ -459,6 +472,44 @@ public partial class Torrent : IAsyncDisposable
         simplePeer.OnError += (err) => { peer.Destroy(err); _peers.Remove(peer.Id); };
         simplePeer.OnClose += () => _peers.Remove(peer.Id);
         peer.StartConnectTimeout();
+    }
+
+    /// <summary>Remove a peer from the swarm by peer ID.</summary>
+    public void RemovePeer(string peerId)
+    {
+        if (_peers.TryGetValue(peerId, out var peer))
+        {
+            peer.Destroy();
+            _peers.Remove(peerId);
+        }
+    }
+
+    /// <summary>Remove a peer by Wire reference.</summary>
+    public void RemovePeer(Wire wire)
+    {
+        wire.Destroy();
+        Wires.Remove(wire);
+    }
+
+    /// <summary>Re-verify all pieces against the chunk store and update the bitfield.</summary>
+    public async Task RescanFilesAsync(CancellationToken ct = default)
+    {
+        if (_store == null || !HasMetadata) return;
+
+        for (int i = 0; i < PieceCount; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var pieceData = await _store.GetAsync(i, ct: ct);
+            if (pieceData == null) { Bitfield[i] = false; continue; }
+
+            // Verify hash
+            var hash = _hashes.Length > 0 && _hashes[0].Length == 32
+                ? System.Security.Cryptography.SHA256.HashData(pieceData)
+                : System.Security.Cryptography.SHA1.HashData(pieceData);
+            Bitfield[i] = i < _hashes.Length && hash.SequenceEqual(_hashes[i]);
+        }
+
+        Done = Bitfield.All(b => b);
     }
 
     public void AddWebSeed(string url)
@@ -756,8 +807,50 @@ public class TorrentFileInfo
     /// </summary>
     public Stream CreateReadStream(long start = 0) => new TorrentReadStream(this, start);
 
+    /// <summary>Alias for Length (matches JS WebTorrent file.size).</summary>
+    public long Size => Length;
+
     /// <summary>Check if a piece index contains data from this file.</summary>
     public bool Includes(int pieceIndex) => pieceIndex >= StartPiece && pieceIndex <= EndPiece;
+
+    /// <summary>
+    /// Get a seekable .NET Stream for a range of this file.
+    /// Pieces download on demand as the stream is read.
+    /// </summary>
+    public Stream CreateReadStream(long start, long end)
+    {
+        return new TorrentReadStream(this, start, end);
+    }
+
+    /// <summary>
+    /// Get a byte range as ArrayBuffer (byte[]). Waits for needed pieces.
+    /// Matches JS file.arrayBuffer({start, end}).
+    /// </summary>
+    public Task<byte[]> ArrayBufferAsync(long start = 0, long end = -1, CancellationToken ct = default)
+    {
+        if (end < 0) end = Length - 1;
+        return ReadAsync(start, (int)(end - start + 1), ct);
+    }
+
+    /// <summary>
+    /// Async enumerable for streaming file data in chunks.
+    /// Pieces download on demand. Matches JS file[Symbol.asyncIterator].
+    /// </summary>
+    public async IAsyncEnumerable<byte[]> StreamAsync(long start = 0, long end = -1, int chunkSize = 65536,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+    {
+        if (end < 0) end = Length - 1;
+        long pos = start;
+        while (pos <= end)
+        {
+            ct.ThrowIfCancellationRequested();
+            int toRead = (int)Math.Min(chunkSize, end - pos + 1);
+            var chunk = await ReadAsync(pos, toRead, ct);
+            if (chunk.Length == 0) break;
+            yield return chunk;
+            pos += chunk.Length;
+        }
+    }
 
     // Events
     public event Action? OnDone;

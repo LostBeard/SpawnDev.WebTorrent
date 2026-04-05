@@ -703,6 +703,53 @@ public class TorrentFileInfo
 
     /// <summary>Deselect this file from download.</summary>
     public void Deselect() => Torrent?.Deselect(StartPiece, EndPiece);
+
+    /// <summary>
+    /// Get the streaming URL for this file (served by the service worker).
+    /// Point a video/audio/img element's src at this URL for streaming with seeking.
+    /// Pieces download on demand as the media plays.
+    /// </summary>
+    public string? StreamURL => Torrent != null ? ServiceWorkerStreamHandler.GetStreamUrl(Torrent, this) : null;
+
+    /// <summary>
+    /// Set the src of an HTML media element to this file's streaming URL.
+    /// Supports streaming, seeking, and all browser codecs.
+    /// Pieces download on demand as the media plays.
+    /// </summary>
+    public void StreamTo(SpawnDev.BlazorJS.JSObjects.HTMLMediaElement elem)
+    {
+        var url = StreamURL;
+        if (url != null) elem.Src = url;
+    }
+
+    /// <summary>
+    /// Get the entire file as a byte array. Blocks until all pieces are downloaded.
+    /// For streaming, use StreamURL or CreateReadStream() instead.
+    /// </summary>
+    public Task<byte[]> GetArrayBufferAsync(CancellationToken ct = default)
+        => Torrent?.ReadFileAsync(Array.IndexOf(Torrent.Files!, this), 0, (int)Length, ct)
+           ?? Task.FromResult(Array.Empty<byte>());
+
+    /// <summary>
+    /// Read a byte range from this file. Waits for needed pieces to download.
+    /// Works during active download — pieces are fetched on demand.
+    /// </summary>
+    public Task<byte[]> ReadAsync(long offset, int length, CancellationToken ct = default)
+        => Torrent?.ReadFileAsync(Array.IndexOf(Torrent.Files!, this), offset, length, ct)
+           ?? Task.FromResult(Array.Empty<byte>());
+
+    /// <summary>
+    /// Get a seekable .NET Stream for this file. Pieces download on demand as the
+    /// stream is read. Works on both desktop and browser. Use like any System.IO.Stream.
+    /// </summary>
+    public Stream CreateReadStream(long start = 0) => new TorrentReadStream(this, start);
+
+    /// <summary>Check if a piece index contains data from this file.</summary>
+    public bool Includes(int pieceIndex) => pieceIndex >= StartPiece && pieceIndex <= EndPiece;
+
+    // Events
+    public event Action? OnDone;
+    internal void CheckDone() { if (Done) OnDone?.Invoke(); }
 }
 
 /// <summary>Simple MIME type lookup from file extension.</summary>

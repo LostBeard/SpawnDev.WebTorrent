@@ -66,6 +66,9 @@ public class WebTorrentClient : IAsyncDisposable
     /// <summary>DHT discovery instance (desktop only). Null in browser.</summary>
     public DhtDiscovery? Dht { get; private set; }
 
+    /// <summary>Service worker stream handler for media streaming. Set via options or RegisterStreamHandler.</summary>
+    public ServiceWorkerStreamHandler? StreamHandler { get; private set; }
+
     /// <summary>Event fired when a BEP 46 mutable torrent updates to a new infohash.</summary>
     public event Action<Torrent, string>? OnMutableUpdate; // torrent, new infohash
 
@@ -120,6 +123,10 @@ public class WebTorrentClient : IAsyncDisposable
 
         _http = opts.HttpClient ?? new HttpClient();
         AsyncFileSystem = opts.AsyncFileSystem;
+
+        // Wire up stream handler if provided
+        if (opts.StreamHandler != null)
+            RegisterStreamHandler(opts.StreamHandler);
 
         Ready = true; // No blocklist to load in C# version
 
@@ -435,6 +442,31 @@ public class WebTorrentClient : IAsyncDisposable
     }
 
     // ========================
+    // SERVICE WORKER STREAMING
+    // ========================
+
+    /// <summary>Register a ServiceWorkerStreamHandler to enable media streaming via service worker.</summary>
+    public void RegisterStreamHandler(ServiceWorkerStreamHandler handler)
+    {
+        StreamHandler = handler;
+        handler.OnRequest += HandleStreamRequest;
+    }
+
+    /// <summary>Handle incoming stream requests from the service worker.</summary>
+    private void HandleStreamRequest(StreamRequest request)
+    {
+        if (request.Handled) return;
+
+        var torrent = Torrents.FirstOrDefault(t =>
+            t.HasMetadata && t.InfoHashHex == request.InfoHash);
+
+        if (torrent?.Files == null || request.FileIndex < 0 || request.FileIndex >= torrent.Files.Length)
+            return;
+
+        request.RespondWithStream(torrent, request.FileIndex);
+    }
+
+    // ========================
     // REMOVE TORRENT
     // ========================
 
@@ -526,6 +558,8 @@ public class WebTorrentClientOptions
     public HttpClient? HttpClient { get; set; }
     /// <summary>Async file system for persistent storage (OPFS in browser, native FS on desktop).</summary>
     public SpawnDev.AsyncFileSystem.IAsyncFS? AsyncFileSystem { get; set; }
+    /// <summary>Service worker stream handler for media streaming. Enables file.StreamURL and file.StreamTo().</summary>
+    public ServiceWorkerStreamHandler? StreamHandler { get; set; }
 }
 
 public class AddTorrentOptions

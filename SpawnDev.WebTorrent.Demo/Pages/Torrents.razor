@@ -906,9 +906,7 @@
 
     private async Task PlayMedia(Torrent torrent, TorrentFileInfo file)
     {
-        if (!file.Done || torrent.Files == null) return;
-        var fileIndex = System.Array.IndexOf(torrent.Files, file);
-        if (fileIndex < 0) return;
+        if (torrent.Files == null) return;
 
         _mediaFileName = file.Name;
         _mediaLoading = true;
@@ -918,11 +916,26 @@
 
         try
         {
-            var data = await torrent.ReadFileAsync(fileIndex);
-            using var blob = new Blob(new[] { data }, new BlobOptions { Type = file.Type });
-            _mediaBlobUrl = URL.CreateObjectURL(blob);
-            _mediaType = file.Type.StartsWith("video") ? "video" : file.Type.StartsWith("audio") ? "audio" : "image";
-            AddLog($"Playing: {file.Name} ({FormatSize(file.Length)})", "qb-log-done");
+            // Use service worker streaming URL — supports seeking and streams while downloading.
+            // No need to wait for file.Done — pieces download on demand as the media plays.
+            var streamUrl = file.StreamURL;
+            if (!string.IsNullOrEmpty(streamUrl))
+            {
+                _mediaBlobUrl = streamUrl;
+                _mediaType = file.Type.StartsWith("video") ? "video" : file.Type.StartsWith("audio") ? "audio" : "image";
+                AddLog($"Streaming: {file.Name} ({FormatSize(file.Length)})", "qb-log-done");
+            }
+            else
+            {
+                // Fallback for desktop or when SW not available: blob URL (requires full download)
+                if (!file.Done) { AddLog("File not complete and streaming not available", "qb-log-err"); _showMediaModal = false; return; }
+                var fileIndex = System.Array.IndexOf(torrent.Files, file);
+                var data = await torrent.ReadFileAsync(fileIndex);
+                using var blob = new Blob(new[] { data }, new BlobOptions { Type = file.Type });
+                _mediaBlobUrl = URL.CreateObjectURL(blob);
+                _mediaType = file.Type.StartsWith("video") ? "video" : file.Type.StartsWith("audio") ? "audio" : "image";
+                AddLog($"Playing: {file.Name} ({FormatSize(file.Length)})", "qb-log-done");
+            }
         }
         catch (Exception ex)
         {

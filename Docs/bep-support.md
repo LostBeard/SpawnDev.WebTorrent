@@ -34,12 +34,28 @@ Three BEPs are desktop-only due to a hard browser platform constraint: **browser
 |-----------|--------------|------------|
 | No UDP sockets in browser | BEP 5 (DHT), BEP 14 (LSD), BEP 15 (UDP tracker) | DHT → WebSocket tracker relay for BEP 44/46. LSD → not applicable (browser has no "local network"). UDP tracker → use WSS/HTTP trackers instead. |
 
+## Cryptographic Signing (BEP 44/46)
+
+| Algorithm | Desktop | Browser | Library | Notes |
+|-----------|---------|---------|---------|-------|
+| **Ed25519** | Yes | Yes | `SpawnDev.BlazorJS.Cryptography` 3.1.0+ | BEP 44 REQUIRED algorithm. 32-byte public keys, 64-byte signatures. |
+
+Ed25519 support was added to `SpawnDev.BlazorJS.Cryptography` specifically for BEP 44/46 compliance. The `Ed25519Signer` class works identically on both platforms:
+- **Browser:** WebCrypto API (native C++ — hardware-accelerated on most platforms)
+- **Desktop:** .NET `System.Security.Cryptography` Ed25519 implementation
+
+All BEP 44/46 operations (DHT mutable items, AgentChannel pub/sub, `btpk` magnet resolution) use Ed25519 exclusively. ECDSA-P256 was used in earlier versions but has been replaced — Ed25519 is the only signing algorithm for all new SpawnDev code.
+
 ## Piece Verification
 
 | Algorithm | Create | Verify | Auto-detect |
 |-----------|--------|--------|-------------|
 | SHA-1 (20 bytes) | Yes | Yes | For legacy compatibility |
 | SHA-256 (32 bytes) | Yes | Yes | Default for new torrents. Auto-detected from piece hash size. |
+
+Verification uses `IPortableCrypto` when available:
+- **Browser:** SubtleCrypto (native C++ — orders of magnitude faster than WASM SHA)
+- **Desktop:** `System.Security.Cryptography` (already fast)
 
 ## Tracker Support
 
@@ -65,6 +81,6 @@ Three BEPs are desktop-only due to a hard browser platform constraint: **browser
 
 ## Test Coverage
 
-104+ shared test methods (via `SpawnDev.UnitTesting`) covering all 17 implemented BEPs, running on both desktop (DemoConsole) and browser (Demo via PlaywrightMultiTest). Plus 66 NUnit desktop-only tests for wire protocol, piece management, seeding, torrent creation, file streaming, rate limiting, and lifecycle management.
+109 shared test methods (via `SpawnDev.UnitTesting`) covering all 17 implemented BEPs, running on both desktop (DemoConsole) and browser (Demo via PlaywrightMultiTest). Plus 66 NUnit desktop-only tests for wire protocol, piece management, seeding, torrent creation, file streaming, rate limiting, and lifecycle management.
 
 All tests use real data, real hashing, real protocol bytes. No mocks. Verified against live WebTorrent swarms (Sintel) and official BEP 46 test vectors.

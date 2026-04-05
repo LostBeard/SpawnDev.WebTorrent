@@ -1,6 +1,4 @@
-using SpawnDev.BlazorJS.Cryptography;
 using SpawnDev.WebTorrent;
-using SpawnDev.WebTorrent.Torrent;
 using System.Text.Json;
 
 namespace PlaywrightMultiTest;
@@ -14,7 +12,7 @@ namespace PlaywrightMultiTest;
 public class DesktopSeeder : IAsyncDisposable
 {
     private WebTorrentClient? _client;
-    private TorrentSwarm? _swarm;
+    private Torrent? _swarm;
 
     private static readonly string LogFile = Path.Combine(
         AppContext.BaseDirectory, "..", "..", "..", "desktop_seeder.log");
@@ -48,29 +46,19 @@ public class DesktopSeeder : IAsyncDisposable
         for (int i = 0; i < TestData.Length; i++)
             TestData[i] = (byte)((i * 7 + 13) % 256);
 
-        // Create desktop WebTorrent client with platform crypto
-        var crypto = new DotNetCrypto();
-        _client = new WebTorrentClient(crypto: crypto);
+        _client = new WebTorrentClient();
 
         // Enable verbose logging for diagnostics
         WebTorrentClient.VerboseLogging = true;
 
-        // Subscribe to client-level events BEFORE seeding so we catch tracker errors
-        _client.OnTorrentAdd += (swarm) =>
-        {
-            Log($"TorrentAdd: {swarm.InfoHashHex}");
-            swarm.OnLog += (msg) => Log($"[Swarm] {msg}");
-            swarm.OnPeerConnect += (peer) => Log($"[Swarm] Peer connected: {peer.Info.Address}");
-        };
-
         // Seed the data via real tracker
-        _swarm = await _client.SeedAsync(TestData, "crossplatform-test.bin",
+        _swarm = await _client.SeedAsync("crossplatform-test.bin", TestData,
             new TorrentCreatorOptions
             {
                 PieceLength = 16384,
                 Trackers = new[] { "wss://hub.spawndev.com:44365/announce" },
             });
-        MagnetUri = _swarm.MagnetURI;
+        MagnetUri = _swarm.ComputedMagnetUri;
 
         Log($"Seeding: {MagnetUri}");
         Log($"InfoHash: {_swarm.InfoHashHex}");
@@ -84,8 +72,7 @@ public class DesktopSeeder : IAsyncDisposable
         }
         Log($"After tracker wait: Ready={_swarm.Ready}, Done={_swarm.Done}, Peers={_swarm.PeerCount}");
 
-        _swarm.OnPeerConnect += (peer) => Log($"Peer connected: {peer.Info.Address}");
-        _swarm.OnLog += (msg) => Log(msg);
+        _swarm.OnWire += (wire, addr) => Log($"Peer connected: {addr}");
     }
 
     /// <summary>

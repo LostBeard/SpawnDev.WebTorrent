@@ -8,4 +8,5 @@
   <Project Path="SpawnDev.WebTorrent.WpfDemo\SpawnDev.WebTorrent.WpfDemo.csproj" />
   <Project Path="SpawnDev.WebTorrent.TestPeer\SpawnDev.WebTorrent.TestPeer.csproj" />
   <Project Path="PlaywrightMultiTest\PlaywrightMultiTest.csproj" />
+  <Project Path="SpawnDev.WebTorrent.DemoConsole\SpawnDev.WebTorrent.DemoConsole.csproj" />
 </Solution>

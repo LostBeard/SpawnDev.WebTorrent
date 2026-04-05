@@ -16,23 +16,23 @@
         </p>
         <div class="hero-buttons">
             <a href="torrents" class="btn btn-primary btn-lg">
-                <span class="btn-icon">🔗</span> Try Torrent Client
+                <span class="btn-icon">&#x1F517;</span> Try Torrent Client
             </a>
             <a href="tests" class="btn btn-secondary btn-lg">
-                <span class="btn-icon">🧪</span> Run Tests (442)
+                <span class="btn-icon">&#x1F9EA;</span> Run Tests
             </a>
             <a href="https://github.com/LostBeard/SpawnDev.WebTorrent" target="_blank" class="btn btn-secondary btn-lg">
-                <span class="btn-icon">📦</span> GitHub
+                <span class="btn-icon">&#x1F4E6;</span> GitHub
             </a>
             <a href="https://hub.spawndev.com:44365/" target="_blank" class="btn btn-secondary btn-lg">
-                <span class="btn-icon">🌐</span> Live Server
+                <span class="btn-icon">&#x1F310;</span> Live Server
             </a>
         </div>
 
         <div class="stats-banner">
             <div class="stat-item"><span class="stat-num">15</span><span class="stat-desc">BEPs</span></div>
-            <div class="stat-item"><span class="stat-num">442</span><span class="stat-desc">Tests</span></div>
-            <div class="stat-item"><span class="stat-num">19K</span><span class="stat-desc">LOC</span></div>
+            <div class="stat-item"><span class="stat-num">24</span><span class="stat-desc">Core Files</span></div>
+            <div class="stat-item"><span class="stat-num">5.5K</span><span class="stat-desc">LOC</span></div>
             <div class="stat-item"><span class="stat-num">4</span><span class="stat-desc">Transports</span></div>
             <div class="stat-item"><span class="stat-num">4</span><span class="stat-desc">Trackers</span></div>
             <div class="stat-item"><span class="stat-num">2</span><span class="stat-desc">Platforms</span></div>
@@ -52,19 +52,19 @@
 
     <div class="features-grid features-grid-3">
         <div class="feature-card feature-highlight-p2p">
-            <div class="feature-icon">🔗</div>
+            <div class="feature-icon">&#x1F517;</div>
             <h3>Pure C# Client</h3>
             <p>Full BitTorrent wire protocol, piece management, SHA-1 verification, WebRTC transport for browser peers, TCP for desktop. No JavaScript dependencies.</p>
             <div class="feature-tag">SpawnDev.WebTorrent</div>
         </div>
         <div class="feature-card feature-highlight-p2p">
-            <div class="feature-icon">📡</div>
+            <div class="feature-icon">&#x1F4E1;</div>
             <h3>Tracker + Web Seed Server</h3>
             <p>WebSocket tracker with WebRTC signaling relay. HTTP range request web seed (BEP 17/19). Reusable library — use it without HuggingFace.</p>
             <div class="feature-tag">SpawnDev.WebTorrent.Server</div>
         </div>
         <div class="feature-card feature-highlight-p2p">
-            <div class="feature-icon">🤗</div>
+            <div class="feature-icon">&#x1F917;</div>
             <h3>HuggingFace Proxy</h3>
             <p>Fetches model files from HuggingFace CDN, caches locally, generates .torrent files on demand, serves as web seed. Optional extension.</p>
             <div class="feature-tag">SpawnDev.WebTorrent.Server.HuggingFace</div>
@@ -75,32 +75,32 @@
 
     <div class="features-grid features-grid-3">
         <div class="feature-card">
-            <div class="feature-icon">🎯</div>
+            <div class="feature-icon">&#x1F3AF;</div>
             <h3>Random-Access Streaming</h3>
             <p>Read any byte range from a torrent file as it downloads. Perfect for ML weight loading — stream weights directly to GPU.</p>
         </div>
         <div class="feature-card">
-            <div class="feature-icon">💾</div>
+            <div class="feature-icon">&#x1F4BE;</div>
             <h3>Persistent Caching</h3>
             <p>Downloaded pieces persist in OPFS (browser) or filesystem (desktop). Models load instantly on return visits.</p>
         </div>
         <div class="feature-card">
-            <div class="feature-icon">🛡️</div>
+            <div class="feature-icon">&#x1F6E1;</div>
             <h3>Piece Verification</h3>
-            <p>Every piece is SHA-1 verified against the .torrent manifest. Corrupted data is rejected and re-requested automatically.</p>
+            <p>Every piece is SHA-1/SHA-256 verified against the .torrent manifest. Corrupted data is rejected and re-requested automatically.</p>
         </div>
         <div class="feature-card">
-            <div class="feature-icon">⚡</div>
+            <div class="feature-icon">&#x26A1;</div>
             <h3>Zero Config</h3>
             <p>ModelTorrentClient handles everything: .torrent fetch, piece download, verification, assembly. One line to download a model.</p>
         </div>
         <div class="feature-card">
-            <div class="feature-icon">🌍</div>
+            <div class="feature-icon">&#x1F30D;</div>
             <h3>Desktop + Browser</h3>
             <p>Same library runs on .NET console/desktop apps and Blazor WebAssembly. TCP transport for desktop, WebRTC for browser.</p>
         </div>
         <div class="feature-card">
-            <div class="feature-icon">📊</div>
+            <div class="feature-icon">&#x1F4CA;</div>
             <h3>Bandwidth Respectful</h3>
             <p>Configurable upload limits. Conservative defaults. Users choose how much they contribute. Nobody gets a surprise bandwidth bill.</p>
         </div>
@@ -166,17 +166,17 @@ app.<span class="method">MapHuggingFaceProxy</span>(proxy);
     <h2 class="section-title">The Vision</h2>
     <div class="vision-grid">
         <div class="vision-card">
-            <div class="vision-icon">🌐</div>
+            <div class="vision-icon">&#x1F310;</div>
             <h3>Swarm Training</h3>
-            <p>10,000 consumer GPUs donating idle cycles. TurboQuant-compressed gradients flowing through the DHT. ECDSA-signed updates via BEP 46. The volunteer supercomputer for AI — Folding@Home for neural networks.</p>
+            <p>10,000 consumer GPUs donating idle cycles. TurboQuant-compressed gradients flowing through the DHT. Ed25519-signed updates via BEP 46. The volunteer supercomputer for AI — Folding@@Home for neural networks.</p>
         </div>
         <div class="vision-card">
-            <div class="vision-icon">🧠</div>
+            <div class="vision-icon">&#x1F9E0;</div>
             <h3>AcceleratorType.P2P</h3>
             <p>A 7th <a href="https://github.com/LostBeard/SpawnDev.ILGPU" style="color:#a78bfa">SpawnDev.ILGPU</a> backend that distributes kernels across connected devices via <code>SwarmCompute</code>. Same C# kernel code runs on 1 GPU or 10,000 GPUs. Transparently.</p>
         </div>
         <div class="vision-card">
-            <div class="vision-icon">🤝</div>
+            <div class="vision-icon">&#x1F91D;</div>
             <h3>AI Agent Shared Memory</h3>
             <p>BEP 46 DHT mutable items + <code>AgentChannel</code> pub/sub. Agents share KV cache, model weights, and coordination state via the BitTorrent DHT. No server. WebCrypto-signed. Browser-native.</p>
         </div>

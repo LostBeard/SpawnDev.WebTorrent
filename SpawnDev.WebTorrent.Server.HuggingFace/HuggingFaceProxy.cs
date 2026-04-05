@@ -2,8 +2,6 @@ using System.Collections.Concurrent;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
-using SpawnDev.WebTorrent.Torrent;
-
 namespace SpawnDev.WebTorrent.Server.HuggingFace;
 
 /// <summary>
@@ -260,7 +258,7 @@ public class HuggingFaceProxy
             }, ct);
 
         _torrentCache[cacheKey] = torrentBytes;
-        Console.WriteLine($"[HF Proxy] .torrent ready: {cacheKey} ({metadata.PieceHashes.Length} pieces, infoHash={metadata.InfoHashHex})");
+        Console.WriteLine($"[HF Proxy] .torrent ready: {cacheKey} ({metadata.PieceHashes.Length} pieces, infoHash={metadata.InfoHash})");
 
         return torrentBytes;
     }
@@ -278,7 +276,7 @@ public class HuggingFaceProxy
         // xs= (exact source) lets the client fetch the full .torrent directly — no peers needed for metadata
         var exactSource = $"&xs={Uri.EscapeDataString($"{serverBaseUrl}/torrent/{repoId}/{filePath}")}";
 
-        return $"magnet:?xt=urn:btih:{metadata.InfoHashHex}&dn={Uri.EscapeDataString(metadata.Name)}{trackers}{webSeeds}{exactSource}";
+        return $"magnet:?xt=urn:btih:{metadata.InfoHash}&dn={Uri.EscapeDataString(metadata.Name)}{trackers}{webSeeds}{exactSource}";
     }
 
     /// <summary>
@@ -299,7 +297,7 @@ public class HuggingFaceProxy
             var trackers = string.Join("", _options.TrackerUrls.Select(t => $"&tr={Uri.EscapeDataString(t)}"));
             var webSeeds = $"&ws={Uri.EscapeDataString(BuildWebSeedUrl($"{serverBaseUrl}/hf/{repoId}", filePath))}";
             var exactSource = $"&xs={Uri.EscapeDataString($"{serverBaseUrl}/torrent/{repoId}/{filePath}")}";
-            var magnetUri = $"magnet:?xt=urn:btih:{metadata.InfoHashHex}&dn={Uri.EscapeDataString(metadata.Name)}{trackers}{webSeeds}{exactSource}";
+            var magnetUri = $"magnet:?xt=urn:btih:{metadata.InfoHash}&dn={Uri.EscapeDataString(metadata.Name)}{trackers}{webSeeds}{exactSource}";
 
             return new ModelRequestResult
             {

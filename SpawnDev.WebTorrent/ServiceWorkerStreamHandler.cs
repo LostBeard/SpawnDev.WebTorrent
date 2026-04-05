@@ -1,7 +1,5 @@
 using SpawnDev.BlazorJS;
 using SpawnDev.BlazorJS.JSObjects;
-using SpawnDev.WebTorrent.Storage;
-using SpawnDev.WebTorrent.Torrent;
 
 namespace SpawnDev.WebTorrent;
 
@@ -25,16 +23,6 @@ public class ServiceWorkerStreamHandler : IAsyncBackgroundService, IDisposable
 
     /// <summary>Fired when a streaming request is received from the service worker.</summary>
     public event Action<StreamRequest>? OnRequest;
-
-    private static readonly Dictionary<string, string> MimeTypes = new()
-    {
-        [".mp4"] = "video/mp4", [".webm"] = "video/webm", [".mkv"] = "video/x-matroska",
-        [".ogv"] = "video/ogg", [".mov"] = "video/quicktime",
-        [".mp3"] = "audio/mpeg", [".ogg"] = "audio/ogg", [".flac"] = "audio/flac",
-        [".wav"] = "audio/wav", [".aac"] = "audio/aac", [".opus"] = "audio/opus",
-        [".jpg"] = "image/jpeg", [".jpeg"] = "image/jpeg", [".png"] = "image/png",
-        [".gif"] = "image/gif", [".webp"] = "image/webp",
-    };
 
     private Task InitAsync()
     {
@@ -120,28 +108,20 @@ public class ServiceWorkerStreamHandler : IAsyncBackgroundService, IDisposable
     }
 
     /// <summary>
-    /// Get the MIME type for a file extension.
+    /// Get the streaming URL for a torrent file by index.
     /// </summary>
-    public static string GetMimeType(string ext)
-        => MimeTypes.TryGetValue(ext.ToLowerInvariant(), out var mime) ? mime : "application/octet-stream";
-
-    /// <summary>
-    /// Get the streaming URL for a torrent file.
-    /// </summary>
-    public static string GetStreamUrl(TorrentSwarm swarm, int fileIndex)
+    public static string GetStreamUrl(Torrent torrent, int fileIndex)
     {
-        var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
-        return $"/webtorrent/{hash}/{fileIndex}";
+        return $"/webtorrent/{torrent.InfoHashHex}/{fileIndex}";
     }
 
     /// <summary>
-    /// Get the streaming URL for a torrent file.
+    /// Get the streaming URL for a torrent file by TorrentFileInfo reference.
     /// </summary>
-    public static string GetStreamUrl(TorrentSwarm swarm, TorrentFileStream file)
+    public static string GetStreamUrl(Torrent torrent, TorrentFileInfo file)
     {
-        var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
-        var fileIdx = System.Array.IndexOf(swarm.Files!, file);
-        return $"/webtorrent/{hash}/{fileIdx}";
+        var fileIdx = torrent.Files != null ? System.Array.IndexOf(torrent.Files, file) : -1;
+        return $"/webtorrent/{torrent.InfoHashHex}/{fileIdx}";
     }
 
     public void Dispose()
@@ -178,15 +158,22 @@ public class StreamRequest
     public bool Handled { get; set; }
 
     /// <summary>
-    /// Respond with a STREAM for the given file, supporting range requests.
+    /// Respond with a STREAM for the given torrent file, supporting range requests.
+    /// Uses torrent.ReadFileAsync() which works during download (waits for pieces).
     /// Call this from your OnRequest handler.
     /// </summary>
-    public void RespondWithStream(TorrentFileStream file)
+    public void RespondWithStream(Torrent torrent, int fileIndex)
     {
         Handled = true;
+        if (torrent.Files == null || fileIndex < 0 || fileIndex >= torrent.Files.Length)
+        {
+            Port.PostMessage(new { status = 404, headers = new Dictionary<string, string>(), body = "File not found" });
+            return;
+        }
+
+        var file = torrent.Files[fileIndex];
         var totalSize = file.Length;
-        var ext = Path.GetExtension(file.Name).ToLowerInvariant();
-        var contentType = ServiceWorkerStreamHandler.GetMimeType(ext);
+        var contentType = file.Type;
 
         long rangeStart = 0;
         long rangeEnd = totalSize - 1;
@@ -221,24 +208,37 @@ public class StreamRequest
         };
 
         // Wire up pull handler FIRST, then Start, then PostMessage (order matters)
-        var stream = file.CreateReadStream(rangeStart);
-        var streamState = new StreamState(Port, stream, length);
+        var streamState = new StreamState(Port, torrent, fileIndex, rangeStart, length);
         Port.OnMessage += streamState.HandlePull;
         Port.Start();
         Port.PostMessage(response);
     }
 
+    /// <summary>
+    /// Respond with a STREAM for the given torrent file, supporting range requests.
+    /// Convenience overload that takes the TorrentFileInfo directly.
+    /// </summary>
+    public void RespondWithStream(Torrent torrent, TorrentFileInfo file)
+    {
+        var fileIdx = torrent.Files != null ? System.Array.IndexOf(torrent.Files, file) : -1;
+        RespondWithStream(torrent, fileIdx);
+    }
+
     private class StreamState
     {
         private readonly MessagePort _port;
-        private readonly Stream _stream;
+        private readonly Torrent _torrent;
+        private readonly int _fileIndex;
+        private long _offset;
         private int _remaining;
         private const int ChunkSize = 65536;
 
-        public StreamState(MessagePort port, Stream stream, int length)
+        public StreamState(MessagePort port, Torrent torrent, int fileIndex, long startOffset, int length)
         {
             _port = port;
-            _stream = stream;
+            _torrent = torrent;
+            _fileIndex = fileIndex;
+            _offset = startOffset;
             _remaining = length;
         }
 
@@ -267,22 +267,19 @@ public class StreamRequest
                     }
 
                     var toRead = Math.Min(ChunkSize, _remaining);
-                    var buffer = new byte[toRead];
-                    var bytesRead = await _stream.ReadAsync(buffer, 0, toRead);
+                    var data = await _torrent.ReadFileAsync(_fileIndex, _offset, toRead);
 
-                    if (bytesRead <= 0)
+                    if (data == null || data.Length == 0)
                     {
                         _port.PostMessage("");
                         Cleanup();
                         return;
                     }
 
-                    _remaining -= bytesRead;
+                    _remaining -= data.Length;
+                    _offset += data.Length;
 
-                    if (bytesRead < buffer.Length)
-                        buffer = buffer[..bytesRead];
-
-                    using var uint8 = new Uint8Array(buffer);
+                    using var uint8 = new Uint8Array(data);
                     _port.PostMessage(uint8);
                 }
                 catch (Exception ex)
@@ -297,7 +294,6 @@ public class StreamRequest
         private void Cleanup()
         {
             _port.OnMessage -= HandlePull;
-            _stream.Dispose();
         }
     }
 

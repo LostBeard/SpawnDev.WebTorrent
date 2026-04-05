@@ -9,10 +9,6 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using System.Windows.Threading;
-using SpawnDev.WebTorrent.Discovery;
-using SpawnDev.WebTorrent.Storage;
-using SpawnDev.WebTorrent.Torrent;
-using SpawnDev.WebTorrent.Transports;
 
 namespace SpawnDev.WebTorrent.WpfDemo;
 
@@ -42,18 +38,19 @@ public partial class MainWindow : Window
         // Start HTTP server for media streaming
         try
         {
-            _httpServer = _client.CreateServer(18770);
+            _httpServer = new TorrentHttpServer(_client, 18770);
+            _httpServer.Start();
             Log($"HTTP server started: {_httpServer.BaseUrl}");
         }
         catch (Exception ex) { Log($"HTTP server failed: {ex.Message}"); }
 
         TorrentListView.ItemsSource = _torrents;
-        StatusPeerId.Text = System.Text.Encoding.ASCII.GetString(_client.PeerId, 0, 8);
+        StatusPeerId.Text = _client.PeerId[..Math.Min(16, _client.PeerId.Length)];
 
         _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _refreshTimer.Tick += (_, _) =>
         {
-            foreach (var t in _torrents) t.Swarm.UpdateSpeed();
+            // Speed sampling is handled by Torrent's internal timer
             RefreshUI();
         };
         _refreshTimer.Start();
@@ -63,7 +60,7 @@ public partial class MainWindow : Window
         {
             _refreshTimer.Stop();
             _httpServer?.Stop();
-            foreach (var t in _torrents) _ = t.Swarm.DisposeAsync();
+            foreach (var t in _torrents) _ = t.Torrent.DisposeAsync();
             _ = _client.DisposeAsync();
         };
 
@@ -79,46 +76,60 @@ public partial class MainWindow : Window
                 {
                     try
                     {
-                        var bytes = await System.IO.File.ReadAllBytesAsync(arg);
-                        var metadata = Torrent.TorrentParser.Parse(bytes);
-                        await AddFromMetadata(metadata);
+                        var torrentBytes = await System.IO.File.ReadAllBytesAsync(arg);
+                        AddFromTorrentBytes(torrentBytes);
                         Log($"Opened: {arg}");
                     }
                     catch (Exception ex) { Log($"Failed to open {arg}: {ex.Message}"); }
                 }
                 else if (arg.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase))
                 {
-                    await AddMagnetAsync(arg, null);
+                    AddMagnet(arg, null);
                 }
             }
         };
     }
 
-    private async Task AddFromMetadata(Torrent.TorrentMetadata metadata)
+    private void AddFromTorrentBytes(byte[] torrentBytes)
     {
-        var hash = Convert.ToHexString(metadata.InfoHash).ToLowerInvariant();
+        var torrent = _client.Add(torrentBytes);
+        var hash = torrent.InfoHash ?? "";
         if (_torrents.Any(t => t.HashFull == hash)) return;
 
-        var swarm = await _client.AddAsync(metadata);
         var vm = new TorrentViewModel
         {
-            Swarm = swarm,
-            Name = metadata.Name,
+            Torrent = torrent,
+            Name = torrent.Name ?? hash,
             HashFull = hash,
-            HashShort = hash[..8] + "...",
-            SizeText = FormatBytes(metadata.TotalLength),
+            HashShort = hash.Length >= 8 ? hash[..8] + "..." : hash,
+            SizeText = FormatBytes(torrent.Length),
         };
-        foreach (var f in metadata.Files)
-            vm.Files.Add(new FileViewModel { Path = f.Path, SizeText = FormatBytes(f.Length), Ext = System.IO.Path.GetExtension(f.Path) });
+        if (torrent.Files != null)
+        {
+            foreach (var f in torrent.Files)
+                vm.Files.Add(new FileViewModel { Path = f.Path, SizeText = FormatBytes(f.Length), Ext = System.IO.Path.GetExtension(f.Path) });
+        }
 
         _torrents.Add(vm);
         TorrentListView.SelectedItem = vm;
 
-        foreach (var ws in metadata.UrlList) swarm.AddWebSeed(ws.TrimEnd('/'));
-        swarm.StartDownload();
+        // Web seeds are added automatically from metadata by the Torrent class.
+        // Discovery (trackers + WebRTC) is started automatically by InitFromMetadata.
 
-        await FetchMetadataAndDownloadAsync(vm, "");
-        await ConnectTrackersAsync(vm, "");
+        RegisterTorrentEvents(vm);
+    }
+
+    /// <summary>Register OnDone event for a torrent view model.</summary>
+    private void RegisterTorrentEvents(TorrentViewModel vm)
+    {
+        vm.Torrent.OnDone += () => Dispatcher.Invoke(() =>
+        {
+            Log($"[{vm.Name}] Download complete!");
+            Title = $"SpawnDev.WebTorrent -- {vm.Name} complete!";
+            System.Media.SystemSounds.Asterisk.Play();
+            _ = Task.Delay(5000).ContinueWith(_ => Dispatcher.Invoke(() =>
+                Title = "SpawnDev.WebTorrent -- Desktop Client"));
+        });
     }
 
     // ── Event Handlers ──
@@ -126,19 +137,19 @@ public partial class MainWindow : Window
     private void MagnetInput_KeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Enter && !string.IsNullOrWhiteSpace(MagnetInput.Text))
-            _ = AddMagnetAsync(MagnetInput.Text.Trim(), null);
+            AddMagnet(MagnetInput.Text.Trim(), null);
     }
 
     private void AddButton_Click(object sender, RoutedEventArgs e)
     {
         if (!string.IsNullOrWhiteSpace(MagnetInput.Text))
-            _ = AddMagnetAsync(MagnetInput.Text.Trim(), null);
+            AddMagnet(MagnetInput.Text.Trim(), null);
     }
 
     private void QuickAdd_Click(object sender, RoutedEventArgs e)
     {
         if (sender is Button btn && btn.Tag is string tag && CCMagnets.TryGetValue(tag, out var magnet))
-            _ = AddMagnetAsync(magnet, btn.Content?.ToString());
+            AddMagnet(magnet, btn.Content?.ToString());
     }
 
     private void SettingsButton_Click(object sender, RoutedEventArgs e)
@@ -176,36 +187,58 @@ public partial class MainWindow : Window
 
     // ── Core Logic ──
 
-    private async Task AddMagnetAsync(string magnetUri, string? displayName)
+    private void AddMagnet(string magnetUri, string? displayName)
     {
         MagnetInput.Text = "";
         try
         {
-            var swarm = await _client.AddAsync(magnetUri);
-            var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
-            if (_torrents.Any(t => t.HashFull == hash)) { Log($"Already added: {displayName ?? hash[..8]}"); return; }
+            var torrent = _client.Add(magnetUri);
+            var hash = torrent.InfoHash ?? "";
+            if (_torrents.Any(t => t.HashFull == hash)) { Log($"Already added: {displayName ?? (hash.Length >= 8 ? hash[..8] : hash)}"); return; }
 
             var vm = new TorrentViewModel
             {
-                Swarm = swarm,
-                Name = displayName ?? "Loading metadata...",
+                Torrent = torrent,
+                Name = displayName ?? torrent.Name ?? "Loading metadata...",
                 HashFull = hash,
-                HashShort = hash[..8] + "...",
+                HashShort = hash.Length >= 8 ? hash[..8] + "..." : hash,
             };
             _torrents.Add(vm);
             TorrentListView.SelectedItem = vm;
             Log($"Added: {vm.Name}");
 
-            await FetchMetadataAndDownloadAsync(vm, magnetUri);
-            await ConnectTrackersAsync(vm, magnetUri);
+            // When metadata arrives (via ut_metadata or xs= fetch), update the UI
+            torrent.OnMetadata += () => Dispatcher.Invoke(() =>
+            {
+                vm.Name = torrent.Name ?? vm.Name;
+                vm.SizeText = FormatBytes(torrent.Length);
+
+                vm.Files.Clear();
+                if (torrent.Files != null)
+                {
+                    foreach (var f in torrent.Files)
+                        vm.Files.Add(new FileViewModel { Path = f.Path, SizeText = FormatBytes(f.Length), Ext = System.IO.Path.GetExtension(f.Path) });
+                }
+
+                Log($"[{vm.Name}] {FormatBytes(torrent.Length)}, {torrent.PieceCount} pieces");
+            });
+
+            RegisterTorrentEvents(vm);
+
+            // Attempt to fetch .torrent from xs= URL for faster metadata
+            _ = TryFetchTorrentFileAsync(torrent, magnetUri);
         }
         catch (Exception ex) { Log($"Error: {ex.Message}"); }
     }
 
-    private async Task FetchMetadataAndDownloadAsync(TorrentViewModel vm, string magnetUri)
+    /// <summary>
+    /// Try to fetch .torrent file from the xs= URL in a magnet link.
+    /// If successful, sets metadata on the torrent for immediate download.
+    /// Discovery (trackers, WebRTC) is handled automatically by the Torrent class.
+    /// </summary>
+    private async Task TryFetchTorrentFileAsync(Torrent torrent, string magnetUri)
     {
         string? torrentUrl = null;
-        var webSeedUrls = new List<string>();
         foreach (var part in magnetUri.Split('&'))
         {
             var p = part.Contains('?') ? part.Split('?').Last() : part;
@@ -214,113 +247,31 @@ public partial class MainWindow : Window
             var k = p[..eq];
             var v = Uri.UnescapeDataString(p[(eq + 1)..].Replace('+', ' '));
             if (k == "xs") torrentUrl = v;
-            if (k == "ws") webSeedUrls.Add(v);
         }
 
-        if (torrentUrl == null) { Log($"[{vm.Name}] No xs= URL"); return; }
+        if (torrentUrl == null) return;
 
         try
         {
-            Log($"[{vm.Name}] Fetching .torrent...");
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
             var torrentBytes = await http.GetByteArrayAsync(torrentUrl);
             var metadata = TorrentParser.Parse(torrentBytes);
-            if (!metadata.InfoHash.SequenceEqual(vm.Swarm.InfoHash)) return;
+            if (!string.Equals(metadata.InfoHash, torrent.InfoHash, StringComparison.OrdinalIgnoreCase)) return;
 
-            foreach (var ws in metadata.UrlList)
-                if (!webSeedUrls.Contains(ws)) webSeedUrls.Add(ws);
-
-            await vm.Swarm.SetMetadataAsync(metadata);
-            vm.Name = metadata.Name;
-            vm.SizeText = FormatBytes(metadata.TotalLength);
-
-            vm.Files.Clear();
-            foreach (var f in metadata.Files)
-                vm.Files.Add(new FileViewModel { Path = f.Path, SizeText = FormatBytes(f.Length), Ext = System.IO.Path.GetExtension(f.Path) });
-
-            vm.TrackerEntries.Clear();
-
-            foreach (var ws in webSeedUrls) vm.Swarm.AddWebSeed(ws);
-            vm.Swarm.StartDownload();
-
-            vm.Swarm.OnDone += () => Dispatcher.Invoke(() =>
-            {
-                Log($"[{vm.Name}] Download complete!");
-                Title = $"SpawnDev.WebTorrent — {vm.Name} complete!";
-                // Flash taskbar
-                System.Media.SystemSounds.Asterisk.Play();
-                // Reset title after 5 seconds
-                _ = Task.Delay(5000).ContinueWith(_ => Dispatcher.Invoke(() =>
-                    Title = "SpawnDev.WebTorrent — Desktop Client"));
-            });
-
-            Log($"[{vm.Name}] {FormatBytes(metadata.TotalLength)}, {metadata.PieceCount} pieces, {webSeedUrls.Count} web seed(s)");
+            // SetMetadata is a no-op if metadata was already received via ut_metadata
+            torrent.SetMetadata(metadata);
         }
-        catch (Exception ex) { Log($"[{vm.Name}] {ex.Message}"); }
-    }
-
-    private async Task ConnectTrackersAsync(TorrentViewModel vm, string magnetUri)
-    {
-        var trackers = new List<string>();
-        foreach (var part in magnetUri.Split('&'))
-        {
-            var p = part.Contains('?') ? part.Split('?').Last() : part;
-            if (p.StartsWith("tr="))
-            {
-                var url = Uri.UnescapeDataString(p[3..].Replace('+', ' '));
-                if (url.StartsWith("wss://")) trackers.Add(url);
-            }
-        }
-        if (trackers.Count == 0) trackers.AddRange(new[] { "wss://hub.spawndev.com:44365/announce", "wss://tracker.openwebtorrent.com" });
-
-        // Create platform WebRTC transport for P2P
-        var webRtc = IWebRtcTransport.Create();
-
-        // PeerCoordinator handles WebRTC signaling via trackers
-        var coordinator = new PeerCoordinator(_client, vm.Swarm.InfoHash, webRtc);
-        vm.Coordinator = coordinator;
-
-        coordinator.OnPeerConnected += (peer) => Dispatcher.Invoke(() =>
-        {
-            Log($"[{vm.Name}] P2P connected: {peer.PeerId[..Math.Min(12, peer.PeerId.Length)]}");
-            _ = vm.Swarm.AddConnectedPeerAsync(peer.Wire, new PeerInfo { Address = peer.PeerId, Source = "webrtc" });
-        });
-        coordinator.OnPeerDisconnected += (peer) => Dispatcher.Invoke(() =>
-        {
-            Log($"[{vm.Name}] P2P disconnected: {peer.PeerId[..Math.Min(12, peer.PeerId.Length)]}");
-        });
-
-        foreach (var url in trackers)
-        {
-            _ = ConnectSingleTrackerAsync(vm, coordinator, url);
-        }
-    }
-
-    private async Task ConnectSingleTrackerAsync(TorrentViewModel vm, PeerCoordinator coordinator, string url)
-    {
-        var te = new TrackerViewModel { Url = url, Status = "Connecting..." };
-        Dispatcher.Invoke(() => vm.TrackerEntries.Add(te));
-        try
-        {
-            await coordinator.AddTrackerAsync(url);
-            te.Status = "Connected";
-            Dispatcher.Invoke(() => Log($"[{vm.Name}] Tracker + signaling: {new Uri(url).Host}"));
-        }
-        catch (Exception ex)
-        {
-            te.Status = "Failed";
-            Dispatcher.Invoke(() => Log($"[{vm.Name}] Tracker {new Uri(url).Host} failed: {ex.Message}"));
-        }
+        catch { /* xs= fetch is best-effort — discovery will handle metadata exchange */ }
     }
 
     // ── UI Updates ──
 
     private void RefreshUI()
     {
-        var totalDown = _torrents.Sum(t => t.Swarm.DownloadSpeed);
-        var totalUp = _torrents.Sum(t => t.Swarm.UploadSpeed);
+        var totalDown = _torrents.Sum(t => t.Torrent.DownloadSpeed);
+        var totalUp = _torrents.Sum(t => t.Torrent.UploadSpeed);
         StatusTorrents.Text = $"{_torrents.Count} torrents";
-        StatusPeers.Text = $"{_torrents.Sum(t => t.Swarm.PeerCount)} peers";
+        StatusPeers.Text = $"{_torrents.Sum(t => t.Torrent.PeerCount)} peers";
         StatusDL.Text = FormatSpeed(totalDown);
         StatusUL.Text = FormatSpeed(totalUp);
         DownSpeedText.Text = FormatSpeed(totalDown);
@@ -328,15 +279,24 @@ public partial class MainWindow : Window
 
         foreach (var vm in _torrents)
         {
-            var pm = vm.Swarm.PieceManager;
-            vm.ProgressPercent = (pm?.Progress ?? 0) * 100;
+            var t = vm.Torrent;
+            vm.ProgressPercent = t.Progress * 100;
             vm.ProgressText = $"{vm.ProgressPercent:F1}%";
-            vm.PeerCount = vm.Swarm.PeerCount;
-            vm.DownSpeedText = vm.Swarm.DownloadSpeed > 0 ? FormatSpeed(vm.Swarm.DownloadSpeed) : "";
-            vm.UpSpeedText = vm.Swarm.UploadSpeed > 0 ? FormatSpeed(vm.Swarm.UploadSpeed) : "";
-            vm.StatusText = pm?.IsComplete == true ? "Seeding" : pm != null && pm.CompletedCount > 0 ? "Downloading" : vm.Swarm.HasMetadata ? "Waiting" : "Metadata";
-            var eta = vm.Swarm.TimeRemaining;
-            vm.EtaText = eta < 0 ? (pm?.IsComplete == true ? "" : "∞") : eta < 60000 ? $"{eta / 1000}s" : eta < 3600000 ? $"{eta / 60000}m" : $"{eta / 3600000}h";
+            vm.PeerCount = t.PeerCount;
+            vm.DownSpeedText = t.DownloadSpeed > 0 ? FormatSpeed(t.DownloadSpeed) : "";
+            vm.UpSpeedText = t.UploadSpeed > 0 ? FormatSpeed(t.UploadSpeed) : "";
+            vm.StatusText = t.Done ? "Seeding" : t.CompletedPieces > 0 ? "Downloading" : t.HasMetadata ? "Waiting" : "Metadata";
+            // ETA: estimate from download speed
+            if (t.Done)
+                vm.EtaText = "";
+            else if (t.DownloadSpeed > 0 && t.Length > 0)
+            {
+                var remaining = t.Length - t.Downloaded;
+                var etaSec = remaining / t.DownloadSpeed;
+                vm.EtaText = etaSec < 60 ? $"{etaSec:F0}s" : etaSec < 3600 ? $"{etaSec / 60:F0}m" : $"{etaSec / 3600:F0}h";
+            }
+            else
+                vm.EtaText = "---";
             vm.Notify();
         }
 
@@ -348,16 +308,16 @@ public partial class MainWindow : Window
     {
         if (_selectedVm == null) return;
         var vm = _selectedVm;
-        var pm = vm.Swarm.PieceManager;
+        var t = vm.Torrent;
 
-        DetailName.Text = vm.Swarm.Metadata?.Name ?? vm.Name ?? "—";
-        DetailSize.Text = vm.Swarm.HasMetadata ? FormatBytes(vm.Swarm.Metadata!.TotalLength) : "—";
-        DetailPieces.Text = pm != null ? $"{pm.CompletedCount} / {pm.PieceCount}" : "—";
-        DetailDownloaded.Text = FormatBytes(vm.Swarm.Downloaded);
-        DetailUploaded.Text = FormatBytes(vm.Swarm.Uploaded);
-        DetailRatio.Text = vm.Swarm.Ratio.ToString("F3");
+        DetailName.Text = t.Name ?? vm.Name ?? "---";
+        DetailSize.Text = t.HasMetadata ? FormatBytes(t.Length) : "---";
+        DetailPieces.Text = t.HasMetadata ? $"{t.CompletedPieces} / {t.PieceCount}" : "---";
+        DetailDownloaded.Text = FormatBytes(t.Downloaded);
+        DetailUploaded.Text = FormatBytes(t.Uploaded);
+        DetailRatio.Text = t.Ratio.ToString("F3");
         DetailEta.Text = vm.EtaText;
-        DetailPeerCount.Text = $"{vm.Swarm.PeerCount + (vm.Coordinator?.PeerCount ?? 0)}";
+        DetailPeerCount.Text = $"{t.PeerCount}";
         DetailHash.Text = vm.HashFull;
 
         PanelFiles.ItemsSource = vm.Files;
@@ -388,16 +348,16 @@ public partial class MainWindow : Window
 
         if (_currentTab == "peers" && _selectedVm != null)
         {
-            var peerCount = _selectedVm.Swarm.PeerCount + (_selectedVm.Coordinator?.PeerCount ?? 0);
-            PanelPeers.Text = $"{peerCount} connected peer(s)\nWeb seeds: {_selectedVm.Swarm.WebSeedCount}\n\nPeers connect via WebSocket tracker signaling and WebRTC data channels.\nDesktop peers use SIPSorcery, browser peers use SpawnDev.BlazorJS.";
+            var t = _selectedVm.Torrent;
+            PanelPeers.Text = $"{t.PeerCount} connected peer(s)\nWeb seeds: {t.WebSeedCount}\n\nPeers connect via WebSocket tracker signaling and WebRTC data channels.\nDesktop peers use SIPSorcery, browser peers use SpawnDev.BlazorJS.";
         }
     }
 
     private void UpdatePieceMap()
     {
         PieceMapPanel.Children.Clear();
-        var bf = _selectedVm?.Swarm.PieceManager?.Bitfield;
-        if (bf == null) return;
+        var bf = _selectedVm?.Torrent.Bitfield;
+        if (bf == null || bf.Length == 0) return;
 
         int total = bf.Length;
         int cols = Math.Min(total, 120);
@@ -433,7 +393,7 @@ public partial class MainWindow : Window
         Random.Shared.NextBytes(data);
         var name = $"SpawnDev-Test-{DateTime.Now:HHmmss}.bin";
 
-        var swarm = await _client.SeedAsync(data, name,
+        var torrent = await _client.SeedAsync(name, data,
             new TorrentCreatorOptions
             {
                 PieceLength = 16384,
@@ -441,26 +401,28 @@ public partial class MainWindow : Window
                 Comment = "Test torrent from SpawnDev.WebTorrent WPF demo",
             });
 
-        var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
+        var hash = torrent.InfoHash ?? "";
         var vm = new TorrentViewModel
         {
-            Swarm = swarm, Name = name, HashFull = hash, HashShort = hash[..8] + "...",
+            Torrent = torrent, Name = name, HashFull = hash,
+            HashShort = hash.Length >= 8 ? hash[..8] + "..." : hash,
             SizeText = FormatBytes(data.Length),
         };
         _torrents.Add(vm);
         TorrentListView.SelectedItem = vm;
+        RegisterTorrentEvents(vm);
 
-        await ConnectTrackersAsync(vm, swarm.MagnetURI);
-        Log($"Seeding: {name}, magnet: {swarm.MagnetURI[..Math.Min(60, swarm.MagnetURI.Length)]}...");
+        var magnetUri = torrent.ComputedMagnetUri;
+        Log($"Seeding: {name}, magnet: {magnetUri[..Math.Min(60, magnetUri.Length)]}...");
     }
 
     // ── Pause/Resume/Filter ──
-    private void PauseAll_Click(object sender, RoutedEventArgs e) { foreach (var t in _torrents) t.Swarm.Pause(); }
-    private void ResumeAll_Click(object sender, RoutedEventArgs e) { foreach (var t in _torrents) t.Swarm.Resume(); }
+    private void PauseAll_Click(object sender, RoutedEventArgs e) { foreach (var t in _torrents) t.Torrent.Pause(); }
+    private void ResumeAll_Click(object sender, RoutedEventArgs e) { foreach (var t in _torrents) t.Torrent.Resume(); }
     private void FilterAll_Click(object sender, RoutedEventArgs e) { TorrentListView.ItemsSource = _torrents; }
-    private void FilterDownloading_Click(object sender, RoutedEventArgs e) { TorrentListView.ItemsSource = _torrents.Where(t => !t.Swarm.Done && t.Swarm.HasMetadata).ToList(); }
-    private void FilterSeeding_Click(object sender, RoutedEventArgs e) { TorrentListView.ItemsSource = _torrents.Where(t => t.Swarm.Done).ToList(); }
-    private void FilterPaused_Click(object sender, RoutedEventArgs e) { TorrentListView.ItemsSource = _torrents.Where(t => t.Swarm.Paused).ToList(); }
+    private void FilterDownloading_Click(object sender, RoutedEventArgs e) { TorrentListView.ItemsSource = _torrents.Where(t => !t.Torrent.Done && t.Torrent.HasMetadata).ToList(); }
+    private void FilterSeeding_Click(object sender, RoutedEventArgs e) { TorrentListView.ItemsSource = _torrents.Where(t => t.Torrent.Done).ToList(); }
+    private void FilterPaused_Click(object sender, RoutedEventArgs e) { TorrentListView.ItemsSource = _torrents.Where(t => t.Torrent.Paused).ToList(); }
 
     // ── Drag & Drop ──
 
@@ -485,35 +447,8 @@ public partial class MainWindow : Window
             try
             {
                 var torrentBytes = await System.IO.File.ReadAllBytesAsync(file);
-                var metadata = Torrent.TorrentParser.Parse(torrentBytes);
-                var hash = Convert.ToHexString(metadata.InfoHash).ToLowerInvariant();
-
-                if (_torrents.Any(t => t.HashFull == hash))
-                {
-                    Log($"Already added: {metadata.Name}");
-                    continue;
-                }
-
-                var swarm = await _client.AddAsync(metadata);
-                var vm = new TorrentViewModel
-                {
-                    Swarm = swarm,
-                    Name = metadata.Name,
-                    HashFull = hash,
-                    HashShort = hash[..8] + "...",
-                    SizeText = FormatBytes(metadata.TotalLength),
-                };
-                foreach (var f in metadata.Files)
-                    vm.Files.Add(new FileViewModel { Path = f.Path, SizeText = FormatBytes(f.Length), Ext = System.IO.Path.GetExtension(f.Path) });
-
-                _torrents.Add(vm);
-                TorrentListView.SelectedItem = vm;
-
-                // Add web seeds and start
-                foreach (var ws in metadata.UrlList) swarm.AddWebSeed(ws.TrimEnd('/'));
-                swarm.StartDownload();
-
-                Log($"Added via drag-drop: {metadata.Name}");
+                AddFromTorrentBytes(torrentBytes);
+                Log($"Added via drag-drop: {file}");
             }
             catch (Exception ex) { Log($"Drop error: {ex.Message}"); }
         }
@@ -522,14 +457,14 @@ public partial class MainWindow : Window
     private void CopyMagnet_Click(object sender, RoutedEventArgs e)
     {
         if (_selectedVm == null) return;
-        var magnet = _selectedVm.Swarm.MagnetURI;
+        var magnet = _selectedVm.Torrent.ComputedMagnetUri;
         Clipboard.SetText(magnet);
         Log("Magnet URI copied to clipboard");
     }
 
     private void ExportTorrent_Click(object sender, RoutedEventArgs e)
     {
-        if (_selectedVm?.Swarm.TorrentFileBytes == null) return;
+        if (_selectedVm?.Torrent.TorrentFileBytes == null) return;
         var dlg = new Microsoft.Win32.SaveFileDialog
         {
             FileName = $"{_selectedVm.Name}.torrent",
@@ -537,7 +472,7 @@ public partial class MainWindow : Window
         };
         if (dlg.ShowDialog() == true)
         {
-            System.IO.File.WriteAllBytes(dlg.FileName, _selectedVm.Swarm.TorrentFileBytes);
+            System.IO.File.WriteAllBytes(dlg.FileName, _selectedVm.Torrent.TorrentFileBytes);
             Log($"Exported: {dlg.FileName}");
         }
     }
@@ -551,23 +486,24 @@ public partial class MainWindow : Window
         var name = System.IO.Path.GetFileName(dlg.FileName);
         Log($"Loading: {name} ({FormatBytes(data.Length)})...");
 
-        var swarm = await _client.SeedAsync(data, name,
+        var torrent = await _client.SeedAsync(name, data,
             new TorrentCreatorOptions
             {
                 PieceLength = data.Length > 1048576 ? 262144 : 16384,
                 Trackers = new[] { "wss://hub.spawndev.com:44365/announce", "wss://tracker.openwebtorrent.com" },
             });
 
-        var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
+        var hash = torrent.InfoHash ?? "";
         var vm = new TorrentViewModel
         {
-            Swarm = swarm, Name = name, HashFull = hash, HashShort = hash[..8] + "...",
+            Torrent = torrent, Name = name, HashFull = hash,
+            HashShort = hash.Length >= 8 ? hash[..8] + "..." : hash,
             SizeText = FormatBytes(data.Length),
         };
         _torrents.Add(vm);
         TorrentListView.SelectedItem = vm;
-        await ConnectTrackersAsync(vm, swarm.MagnetURI);
-        Log($"Seeding: {name}, {swarm.PieceManager!.PieceCount} pieces");
+        RegisterTorrentEvents(vm);
+        Log($"Seeding: {name}, {torrent.PieceCount} pieces");
     }
 
     private void PanelFiles_DoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
@@ -602,11 +538,11 @@ public partial class MainWindow : Window
 
 public class TorrentViewModel : INotifyPropertyChanged
 {
-    public TorrentSwarm Swarm { get; init; } = null!;
+    public Torrent Torrent { get; init; } = null!;
     public string Name { get; set; } = "";
     public string HashFull { get; set; } = "";
     public string HashShort { get; set; } = "";
-    public string SizeText { get; set; } = "—";
+    public string SizeText { get; set; } = "---";
     public string ProgressText { get; set; } = "0.0%";
     public double ProgressPercent { get; set; }
     public int PeerCount { get; set; }
@@ -616,7 +552,6 @@ public class TorrentViewModel : INotifyPropertyChanged
     public string EtaText { get; set; } = "";
     public ObservableCollection<FileViewModel> Files { get; } = new();
     public ObservableCollection<TrackerViewModel> TrackerEntries { get; } = new();
-    public PeerCoordinator? Coordinator { get; set; }
 
     public event PropertyChangedEventHandler? PropertyChanged;
     public void Notify()

@@ -1,658 +1,536 @@
-using SpawnDev.BlazorJS;
-using SpawnDev.WebTorrent.Discovery;
-using SpawnDev.WebTorrent.Storage;
-using SpawnDev.WebTorrent.Torrent;
-using SpawnDev.WebTorrent.Transports;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace SpawnDev.WebTorrent;
 
 /// <summary>
-/// Pure C# WebTorrent client. Runs on desktop (.NET) and browser (Blazor WASM).
-/// No JavaScript dependencies. Manages torrents, peers, and piece downloads.
-///
-/// Register as a singleton via DI:
-///   builder.Services.AddSingleton&lt;WebTorrentClient&gt;();
-///
-/// Implements IAsyncBackgroundService — starts with the app via BlazorJSRunAsync().
-/// Automatically handles SW streaming requests for its torrents.
+/// WebTorrent client — manages torrents, peer connections, and trackers.
+/// Direct 1:1 port of webtorrent/index.js.
 /// </summary>
-public class WebTorrentClient : IAsyncBackgroundService, IAsyncDisposable
+public class WebTorrentClient : IAsyncDisposable
 {
-    private readonly WebTorrentOptions _options;
-    private readonly List<TorrentSwarm> _torrents = new();
-    private readonly List<ITransport> _transports = new();
-    private readonly List<IDiscovery> _discoveryProviders = new();
-    private readonly List<Func<TorrentSwarm, Wire.WireProtocol, Wire.WireExtension>> _extensionFactories = new();
-    private readonly byte[] _peerId;
+    // ========================
+    // CONSTANTS (match JS exactly)
+    // ========================
+    public const int DefaultMaxConns = 55;
 
-    /// <summary>Enable verbose logging to Console. Default: false.</summary>
-    public static bool VerboseLogging { get; set; }
+    /// <summary>
+    /// Version prefix for peer ID. WebTorrent uses Azureus-style:
+    /// -WW0102- followed by random bytes.
+    /// </summary>
+    private const string VersionPrefix = "-WW0208-";
+
+    // ========================
+    // CONFIGURATION
+    // ========================
+
+    /// <summary>Peer ID as hex string (40 chars).</summary>
+    public string PeerId { get; }
+
+    /// <summary>Peer ID as 20 bytes.</summary>
+    public byte[] PeerIdBuffer { get; }
+
+    /// <summary>Max peer connections across all torrents.</summary>
+    public int MaxConns { get; set; } = DefaultMaxConns;
+
+    /// <summary>Enable web seeds (BEP 19). Default true.</summary>
+    public bool EnableWebSeeds { get; set; } = true;
+
+    /// <summary>Is the client destroyed?</summary>
+    public bool Destroyed { get; private set; }
+
+    /// <summary>Is the client ready?</summary>
+    public bool Ready { get; private set; }
 
     /// <summary>Active torrents.</summary>
-    public IReadOnlyList<TorrentSwarm> Torrents => _torrents;
+    public List<Torrent> Torrents { get; } = new();
 
-    /// <summary>This client's peer ID (20 bytes, Azureus-style).</summary>
-    public byte[] PeerId => _peerId;
+    /// <summary>Verbose logging flag — gate all Console output behind this.</summary>
+    public static bool VerboseLogging { get; set; }
 
-    /// <summary>Aggregate download speed in bytes/sec.</summary>
-    public double DownloadSpeed => _torrents.Sum(t => t.DownloadSpeed);
+    // ICE servers for WebRTC
+    public string[] IceServers { get; set; } = SimplePeer.DefaultIceServers;
 
-    /// <summary>Aggregate upload speed in bytes/sec.</summary>
-    public double UploadSpeed => _torrents.Sum(t => t.UploadSpeed);
+    // HTTP client for web seeds
+    private readonly HttpClient _http;
 
-    /// <summary>Overall progress across all active torrents (0.0 to 1.0).</summary>
-    public double Progress => _torrents.Count > 0 ? _torrents.Average(t => t.Progress) : 0;
+    /// <summary>Async file system for persistent storage.</summary>
+    public SpawnDev.AsyncFileSystem.IAsyncFS? AsyncFileSystem { get; set; }
 
-    /// <summary>Aggregate seed ratio (uploaded/downloaded).</summary>
-    public double Ratio
-    {
-        get
-        {
-            long down = _torrents.Sum(t => t.Downloaded);
-            long up = _torrents.Sum(t => t.Uploaded);
-            return down > 0 ? (double)up / down : 0;
-        }
-    }
+    /// <summary>Upload rate limiter. Rate = -1 for unlimited, 0 for paused, positive for bytes/sec.</summary>
+    public RateLimiter UploadRateLimiter { get; } = new RateLimiter(-1);
 
-    /// <summary>Upload rate limiter.</summary>
-    public RateLimiter UploadLimiter { get; } = new(-1);
+    /// <summary>Download rate limiter. Rate = -1 for unlimited, 0 for paused, positive for bytes/sec.</summary>
+    public RateLimiter DownloadRateLimiter { get; } = new RateLimiter(-1);
 
-    /// <summary>Download rate limiter.</summary>
-    public RateLimiter DownloadLimiter { get; } = new(-1);
+    /// <summary>DHT discovery instance (desktop only). Null in browser.</summary>
+    public DhtDiscovery? Dht { get; private set; }
 
-    /// <summary>Maximum upload rate in bytes/sec (-1 = unlimited, 0 = disabled).</summary>
-    public long UploadLimit
-    {
-        get => UploadLimiter.Rate;
-        set => UploadLimiter.Rate = value;
-    }
+    /// <summary>Event fired when a BEP 46 mutable torrent updates to a new infohash.</summary>
+    public event Action<Torrent, string>? OnMutableUpdate; // torrent, new infohash
 
-    /// <summary>Maximum download rate in bytes/sec (-1 = unlimited).</summary>
-    public long DownloadLimit
-    {
-        get => DownloadLimiter.Rate;
-        set => DownloadLimiter.Rate = value;
-    }
+    // Extension factories — registered before torrent creation
+    private readonly List<Func<Wire, IWireExtension>> _extensionFactories = new();
 
-    /// <summary>Client options.</summary>
-    public WebTorrentOptions Options => _options;
+    // ========================
+    // EVENTS
+    // ========================
 
-    /// <summary>Maximum peers per torrent.</summary>
-    public int MaxConns => _options.MaxConns;
-
-    // Events
-    public event Action<TorrentSwarm>? OnTorrentAdd;
-    public event Action<TorrentSwarm>? OnTorrentRemove;
-    public event Action<TorrentSwarm>? OnTorrentReady;
-    public event Action<TorrentSwarm>? OnTorrentDone;
+    public event Action<Torrent>? OnAdd;
+    public event Action<Torrent>? OnRemove;
+    public event Action<Torrent>? OnTorrentReady;
+    public event Action<string>? OnWarning;
     public event Action<Exception>? OnError;
 
-    /// <summary>IAsyncBackgroundService — awaited during app startup.</summary>
-    public Task Ready => _ready ??= InitAsync();
-    private Task? _ready;
+    // ========================
+    // CONSTRUCTOR
+    // ========================
 
-    /// <summary>Service worker stream handler (injected via DI, may be null on desktop without DI).</summary>
-    public ServiceWorkerStreamHandler? StreamHandler { get; private set; }
-
-    private SpawnDev.AsyncFileSystem.IAsyncFS? _asyncFs;
-    private readonly BlazorJS.Cryptography.IPortableCrypto? _crypto;
-    private const string TorrentStateDir = "webtorrent/_state";
-
-    /// <summary>Crypto implementation for piece hash verification (SubtleCrypto in browser, .NET on desktop).</summary>
-    public BlazorJS.Cryptography.IPortableCrypto? Crypto => _crypto;
-
-    public WebTorrentClient(ServiceWorkerStreamHandler? streamHandler = null,
-        SpawnDev.AsyncFileSystem.IAsyncFS? asyncFs = null,
-        BlazorJS.Cryptography.IPortableCrypto? crypto = null,
-        WebTorrentOptions? options = null)
+    public WebTorrentClient(WebTorrentClientOptions? opts = null)
     {
-        _options = options ?? new WebTorrentOptions();
-        StreamHandler = streamHandler;
-        _asyncFs = asyncFs;
-        _crypto = crypto;
-        UploadLimit = _options.UploadLimit;
-        DownloadLimit = _options.DownloadLimit;
+        opts ??= new WebTorrentClientOptions();
 
-        // Generate peer ID: -SDMmBB- + 12 random bytes (Azureus-style)
-        // SD = SpawnDev, M = major (0-9), m = minor (0-9), BB = build (00-99)
-        _peerId = new byte[20];
-        var v = typeof(WebTorrentClient).Assembly.GetName().Version ?? new Version(0, 0, 0);
-        int major = Math.Min(v.Major, 9);
-        int minor = Math.Min(v.Minor, 9);
-        int build = Math.Min(Math.Max(v.Build, 0), 99);
-        var versionStr = $"-SD{major}{minor}{build:D2}-";
-        System.Text.Encoding.ASCII.GetBytes(versionStr).CopyTo(_peerId, 0);
-        Random.Shared.NextBytes(_peerId.AsSpan(8));
-    }
-
-    private async Task InitAsync()
-    {
-        if (_asyncFs is  IAsyncBackgroundService asyncBackgroundService) await asyncBackgroundService.Ready;
-        // Register to handle SW streaming requests for our torrents
-        if (StreamHandler != null)
+        // Generate peer ID (Azureus-style, matches JS)
+        if (!string.IsNullOrEmpty(opts.PeerId))
         {
-            StreamHandler.OnRequest += HandleStreamRequest;
+            PeerId = opts.PeerId;
+        }
+        else
+        {
+            var randomSuffix = Convert.ToBase64String(RandomNumberGenerator.GetBytes(9))
+                .Replace("+", "").Replace("/", "").Replace("=", "");
+            var peerIdStr = VersionPrefix + randomSuffix;
+            // Peer ID must be exactly 20 bytes
+            PeerIdBuffer = Encoding.ASCII.GetBytes(peerIdStr[..Math.Min(20, peerIdStr.Length)]);
+            if (PeerIdBuffer.Length < 20)
+            {
+                var padded = new byte[20];
+                PeerIdBuffer.CopyTo(padded, 0);
+                RandomNumberGenerator.Fill(padded.AsSpan(PeerIdBuffer.Length));
+                PeerIdBuffer = padded;
+            }
+            PeerId = Convert.ToHexString(PeerIdBuffer).ToLowerInvariant();
         }
 
-        // Restore persisted torrents from storage
-        await RestoreTorrentsAsync();
-    }
+        PeerIdBuffer ??= Convert.FromHexString(PeerId);
 
-    /// <summary>Persisted torrent state (saved alongside .torrent bytes).</summary>
-    private class TorrentState
-    {
-        public bool Paused { get; set; }
-        public bool Sequential { get; set; }
-        public int[]? SelectedFileIndices { get; set; }
-        public long UploadLimit { get; set; } = -1;
-        public long DownloadLimit { get; set; } = -1;
-    }
+        if (opts.MaxConns > 0) MaxConns = opts.MaxConns;
+        EnableWebSeeds = opts.EnableWebSeeds;
+        if (opts.IceServers != null) IceServers = opts.IceServers;
 
-    /// <summary>Save torrent bytes + operational state to OPFS.</summary>
-    internal async Task SaveTorrentStateAsync(TorrentSwarm swarm)
-    {
-        if (_asyncFs == null) return;
-        if (!swarm.HasMetadata) return;
-        try
+        _http = opts.HttpClient ?? new HttpClient();
+        AsyncFileSystem = opts.AsyncFileSystem;
+
+        Ready = true; // No blocklist to load in C# version
+
+        // Register ut_pex extension (BEP 11) — peer exchange for all wires
+        UseExtension((wire) =>
         {
-            var hash = swarm.InfoHashHex;
-            var torrentBytes = swarm.Metadata!.OriginalTorrentBytes;
-            if (torrentBytes == null || torrentBytes.Length == 0) return;
+            var ext = new UtPexExtension();
+            ext.SetWire(wire);
+            return ext;
+        });
+    }
 
-            if (!await _asyncFs.DirectoryExists(TorrentStateDir))
-                await _asyncFs.CreateDirectory(TorrentStateDir);
+    // ========================
+    // EXTENSION REGISTRATION (matches JS client.use / torrent.use pattern)
+    // ========================
 
-            await _asyncFs.Write($"{TorrentStateDir}/{hash}.torrent", torrentBytes);
+    /// <summary>Register a wire extension factory. Extensions are created per-wire before handshake.</summary>
+    public void UseExtension(Func<Wire, IWireExtension> factory)
+    {
+        _extensionFactories.Add(factory);
+    }
 
-            var state = new TorrentState
+    /// <summary>Apply all registered extension factories to a wire.</summary>
+    internal void ApplyExtensions(Wire wire)
+    {
+        foreach (var factory in _extensionFactories)
+        {
+            var ext = factory(wire);
+            wire.Use(ext);
+        }
+    }
+
+    // ========================
+    // ADD TORRENT
+    // ========================
+
+    /// <summary>
+    /// Add a torrent to download. Accepts magnet URI or info hash hex.
+    /// Returns the Torrent immediately (metadata may still be resolving via ut_metadata).
+    /// </summary>
+    public Torrent Add(string magnetOrInfoHash, AddTorrentOptions? opts = null)
+    {
+        if (Destroyed) throw new InvalidOperationException("Client is destroyed");
+        opts ??= new AddTorrentOptions();
+
+        var torrent = new Torrent();
+
+        // Register ut_metadata extension — this is how magnet links get metadata
+        UseExtension((wire) =>
+        {
+            var ext = new UtMetadataExtension();
+            ext.SetWire(wire);
+            ext.OnMetadata += (infoDictBytes) =>
             {
-                Paused = swarm.Paused,
-                Sequential = swarm.Sequential,
-                SelectedFileIndices = swarm.SelectedFileIndices,
-                UploadLimit = swarm.PerTorrentUploadLimit,
-                DownloadLimit = swarm.PerTorrentDownloadLimit,
+                if (torrent.HasMetadata) return;
+                // Parse the received info dict
+                var infoHashBytes = Convert.FromHexString(torrent.InfoHash ?? "");
+                var metadata = TorrentParser.ParseInfoDict(infoDictBytes, infoHashBytes);
+                if (metadata != null)
+                    torrent.SetMetadata(metadata);
             };
-            var stateJson = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(state);
-            await _asyncFs.Write($"{TorrentStateDir}/{hash}.json", stateJson);
-        }
-        catch (Exception ex)
+            ext.OnWarning += (msg) => OnWarning?.Invoke(msg);
+            return ext;
+        });
+
+        // Start the torrent — parse magnet and begin discovery
+        _ = torrent.InitFromMagnetAsync(magnetOrInfoHash, this, opts);
+
+        // Check for duplicate after InfoHash is set
+        var existing = Torrents.FirstOrDefault(t => t.InfoHash == torrent.InfoHash && t != torrent);
+        if (existing != null)
         {
-            Console.WriteLine($"[WebTorrent] Failed to save torrent state: {ex.Message}");
+            OnWarning?.Invoke($"Duplicate torrent: {torrent.InfoHash}");
+            return existing;
         }
+
+        Torrents.Add(torrent);
+        OnAdd?.Invoke(torrent);
+
+        return torrent;
     }
 
-    /// <summary>Remove a torrent's persisted state.</summary>
-    private async Task RemoveTorrentStateAsync(TorrentSwarm swarm)
+    /// <summary>
+    /// Add a BEP 46 mutable torrent by public key. Resolves the current infohash from the DHT,
+    /// downloads it, and subscribes for updates. When the publisher pushes a new version,
+    /// OnMutableUpdate fires and the client can transition to the new torrent.
+    /// </summary>
+    /// <param name="publicKey">Publisher's Ed25519 public key (32 bytes).</param>
+    /// <param name="salt">Optional salt for multi-channel publishers.</param>
+    /// <param name="signer">Signer for verifying received items. Required for signature checks.</param>
+    public async Task<Torrent?> AddBtpkAsync(byte[] publicKey, byte[]? salt = null,
+        IDhtSigner? signer = null, AddTorrentOptions? opts = null, CancellationToken ct = default)
     {
-        if (_asyncFs == null) return;
-        try
+        if (Destroyed) throw new InvalidOperationException("Client is destroyed");
+        if (Dht == null && !OperatingSystem.IsBrowser())
         {
-            var hash = swarm.InfoHashHex;
-            var torrentPath = $"{TorrentStateDir}/{hash}.torrent";
-            var statePath = $"{TorrentStateDir}/{hash}.json";
-            if (await _asyncFs.FileExists(torrentPath)) await _asyncFs.Remove(torrentPath);
-            if (await _asyncFs.FileExists(statePath)) await _asyncFs.Remove(statePath);
+            // Auto-start DHT if not running
+            Dht = new DhtDiscovery();
+            await Dht.StartAsync(new byte[20], ct: ct);
         }
-        catch (Exception ex)
+
+        if (Dht == null)
         {
-            if (VerboseLogging) Console.WriteLine($"[WebTorrent] Failed to remove torrent state: {ex.Message}");
+            OnWarning?.Invoke("BEP 46 requires DHT (desktop only) or tracker relay (browser)");
+            return null;
         }
-    }
 
-    /// <summary>Restore all persisted torrents on startup.</summary>
-    private async Task RestoreTorrentsAsync()
-    {
-        if (_asyncFs == null) { if (VerboseLogging) Console.WriteLine("[WebTorrent] RestoreTorrents skipped: _asyncFs is null"); return; }
-        try
+        // Resolve the current infohash from DHT
+        var items = signer != null ? Dht.CreateMutableItems(signer) : Dht.CreateMutableItems(new NoOpSigner(publicKey));
+        var result = await items.GetAsync(publicKey, salt, ct);
+
+        Torrent? torrent = null;
+        if (result.HasValue)
         {
-            //await _asyncFs.CreateDirectory(TorrentStateDir);
-            if (!await _asyncFs.DirectoryExists(TorrentStateDir)) { if (VerboseLogging) Console.WriteLine("[WebTorrent] RestoreTorrents: no state directory"); return; }
+            var infoHashHex = Convert.ToHexString(result.Value.value).ToLowerInvariant();
+            torrent = Add(infoHashHex, opts);
+            torrent.BtpkPublicKey = publicKey;
+        }
 
-            var fileNames = await _asyncFs.GetFiles(TorrentStateDir);
-            foreach (var fileName in fileNames)
+        // Subscribe for updates — fires OnMutableUpdate when publisher pushes new version
+        _ = Task.Run(async () =>
+        {
+            items.OnValueUpdated += (key, value, seq) =>
             {
-                if (!fileName.EndsWith(".torrent")) continue;
-                var filePath = $"{TorrentStateDir}/{fileName}";
+                var newInfoHash = Convert.ToHexString(value).ToLowerInvariant();
+                if (torrent != null && newInfoHash != torrent.InfoHash)
+                {
+                    torrent.NotifyMutableUpdate(newInfoHash);
+                    OnMutableUpdate?.Invoke(torrent, newInfoHash);
+                }
+            };
+            await items.SubscribeAsync(publicKey, salt, ct: ct);
+        }, ct);
+
+        return torrent;
+    }
+
+    /// <summary>
+    /// Add a torrent from a .torrent file (byte array).
+    /// Metadata is immediately available — no ut_metadata needed.
+    /// </summary>
+    public Torrent Add(byte[] torrentBytes, AddTorrentOptions? opts = null)
+    {
+        if (Destroyed) throw new InvalidOperationException("Client is destroyed");
+        opts ??= new AddTorrentOptions();
+
+        var metadata = TorrentParser.Parse(torrentBytes);
+        var torrent = new Torrent();
+        torrent.InitFromMetadata(metadata, this, opts);
+
+        var existing = Torrents.FirstOrDefault(t => t.InfoHash == torrent.InfoHash && t != torrent);
+        if (existing != null) return existing;
+
+        Torrents.Add(torrent);
+        OnAdd?.Invoke(torrent);
+        return torrent;
+    }
+
+    // ========================
+    // PERSISTENCE (restore from OPFS)
+    // ========================
+
+    /// <summary>
+    /// Restore previously persisted torrents from async file system storage.
+    /// Call after construction if using persistent storage.
+    /// </summary>
+    public async Task RestoreFromStorageAsync()
+    {
+        if (AsyncFileSystem == null) return;
+        var stateDir = "webtorrent/_state";
+        try
+        {
+            if (!await AsyncFileSystem.DirectoryExists(stateDir)) return;
+            var files = await AsyncFileSystem.GetFiles(stateDir);
+            foreach (var file in files)
+            {
+                if (!file.EndsWith(".torrent")) continue;
                 try
                 {
-                    var torrentBytes = await _asyncFs.ReadBytes(filePath);
+                    var torrentBytes = await AsyncFileSystem.ReadBytes($"{stateDir}/{file}");
                     if (torrentBytes == null || torrentBytes.Length == 0) continue;
+                    var metadata = TorrentParser.Parse(torrentBytes);
+                    metadata.OriginalTorrentBytes = torrentBytes;
 
-                    var metadata = Torrent.TorrentParser.Parse(torrentBytes);
-                    var hash = Convert.ToHexString(metadata.InfoHash).ToLowerInvariant();
+                    // Skip if already loaded
+                    if (Torrents.Any(t => t.InfoHash == metadata.InfoHash)) continue;
 
-                    // Don't add duplicates
-                    if (_torrents.Any(t => Convert.ToHexString(t.InfoHash).ToLowerInvariant() == hash))
-                        continue;
+                    var torrent = new Torrent();
+                    torrent.InitFromMetadata(metadata, this, new AddTorrentOptions());
 
-                    // Read operational state if available
-                    var stateJsonPath = $"{TorrentStateDir}/{hash}.json";
-                    TorrentState? state = null;
-                    if (await _asyncFs.FileExists(stateJsonPath))
+                    // Check which pieces are already stored
+                    if (torrent._store is Storage.AsyncFSChunkStore opfsStore)
                     {
-                        try
+                        for (int i = 0; i < torrent.PieceCount; i++)
                         {
-                            var stateBytes = await _asyncFs.ReadBytes(stateJsonPath);
-                            if (stateBytes != null && stateBytes.Length > 0)
-                                state = System.Text.Json.JsonSerializer.Deserialize<TorrentState>(stateBytes);
+                            var piece = await torrent._store.GetAsync(i);
+                            if (piece != null)
+                            {
+                                torrent.Bitfield[i] = true;
+                                torrent.Pieces[i] = new Piece(0);
+                            }
                         }
-                        catch { }
+                        if (torrent.Bitfield.All(b => b))
+                            torrent.Done = true;
                     }
 
-                    var swarm = await AddAsync(metadata, new AddTorrentOptions { AsyncFileSystem = _asyncFs });
-
-                    // Apply saved state
-                    if (state != null)
-                    {
-                        if (state.Sequential) swarm.Sequential = true;
-                        if (state.SelectedFileIndices != null) swarm.SelectedFileIndices = state.SelectedFileIndices;
-                        if (state.UploadLimit != -1) swarm.PerTorrentUploadLimit = state.UploadLimit;
-                        if (state.DownloadLimit != -1) swarm.PerTorrentDownloadLimit = state.DownloadLimit;
-                    }
-
-                    if (state?.Paused == true)
-                        swarm.Pause();
-                    else if (!swarm.Done)
-                        swarm.StartDownload();
-
-                    if (VerboseLogging) Console.WriteLine($"[WebTorrent] Restored: {metadata.Name} ({hash[..8]}...) progress={swarm.Progress:P0} paused={swarm.Paused}");
+                    Torrents.Add(torrent);
+                    OnAdd?.Invoke(torrent);
+                    if (VerboseLogging) Console.WriteLine($"[WebTorrentClient] Restored: {torrent.Name} ({torrent.CompletedPieces}/{torrent.PieceCount} pieces)");
                 }
                 catch (Exception ex)
                 {
-                    if (VerboseLogging) Console.WriteLine($"[WebTorrent] Failed to restore {filePath}: {ex.Message}");
+                    if (VerboseLogging) Console.WriteLine($"[WebTorrentClient] Failed to restore {file}: {ex.Message}");
                 }
             }
         }
         catch (Exception ex)
         {
-            if (VerboseLogging) Console.WriteLine($"[WebTorrent] Failed to restore torrents: {ex.Message}");
+            if (VerboseLogging) Console.WriteLine($"[WebTorrentClient] Restore error: {ex.Message}");
         }
     }
 
-    private void HandleStreamRequest(StreamRequest request)
+    // ========================
+    // SEED TORRENT
+    // ========================
+
+    /// <summary>
+    /// Create a torrent from in-memory data and begin seeding it.
+    /// Returns the Torrent immediately, already marked as Done with all pieces stored.
+    /// </summary>
+    public async Task<Torrent> SeedAsync(string name, byte[] data, TorrentCreatorOptions? options = null, AddTorrentOptions? addOpts = null)
     {
-        if (request.Handled) return;
+        if (Destroyed) throw new InvalidOperationException("Client is destroyed");
+        options ??= new TorrentCreatorOptions();
+        addOpts ??= new AddTorrentOptions();
 
-        var swarm = _torrents.FirstOrDefault(t =>
-            t.HasMetadata && Convert.ToHexString(t.InfoHash).ToLowerInvariant() == request.InfoHash);
-
-        if (swarm == null || swarm.Files == null || request.FileIndex < 0 || request.FileIndex >= swarm.Files.Length)
-            return;
-
-        var file = swarm.Files[request.FileIndex];
-        request.RespondWithStream(file);
+        var (torrentBytes, metadata) = TorrentCreator.CreateFromBytes(name, data, options);
+        return await SeedFromMetadataAsync(metadata, new[] { data }, addOpts);
     }
 
     /// <summary>
-    /// Register a transport (TCP, WebRTC, etc.).
-    /// Call before adding torrents. Different transports for desktop vs browser.
+    /// Create a multi-file torrent and begin seeding it.
     /// </summary>
-    public void AddTransport(ITransport transport)
+    public async Task<Torrent> SeedAsync(string torrentName, (string path, byte[] data)[] files, TorrentCreatorOptions? options = null, AddTorrentOptions? addOpts = null)
     {
-        _transports.Add(transport);
-        transport.OnConnection += HandleIncomingConnection;
-    }
+        if (Destroyed) throw new InvalidOperationException("Client is destroyed");
+        options ??= new TorrentCreatorOptions();
+        addOpts ??= new AddTorrentOptions();
 
-    /// <summary>
-    /// Register a discovery provider (tracker, DHT, etc.).
-    /// </summary>
-    public void AddDiscovery(IDiscovery discovery)
-    {
-        _discoveryProviders.Add(discovery);
-    }
+        var (torrentBytes, metadata) = TorrentCreator.CreateFromMultipleFiles(torrentName, files, options);
 
-    /// <summary>
-    /// Register a wire extension factory for all swarms. Extensions are created for every
-    /// new peer BEFORE the BEP 10 handshake. Same pattern as JS WebTorrent's wire.use().
-    /// </summary>
-    public void UseExtension(Func<TorrentSwarm, Wire.WireProtocol, Wire.WireExtension> factory)
-    {
-        _extensionFactories.Add(factory);
-        foreach (var torrent in _torrents)
-            torrent.UseExtension(factory);
-    }
-
-    /// <summary>
-    /// Add a torrent by magnet URI, info hash, HTTP URL to .torrent file, or parsed metadata.
-    /// </summary>
-    public async Task<TorrentSwarm> AddAsync(string magnetOrInfoHash, AddTorrentOptions? options = null)
-    {
-        // HTTP/HTTPS URL to .torrent file
-        if (magnetOrInfoHash.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-            magnetOrInfoHash.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        // Concatenate all file data for piece storage
+        var allData = new byte[files.Sum(f => (long)f.data.Length)];
+        long offset = 0;
+        foreach (var file in files)
         {
-            return await AddFromUrlAsync(magnetOrInfoHash, options);
+            Array.Copy(file.data, 0, allData, offset, file.data.Length);
+            offset += file.data.Length;
         }
 
-        options ??= new AddTorrentOptions();
-        if (options.AsyncFileSystem == null && _asyncFs != null)
-            options.AsyncFileSystem = _asyncFs;
-
-        var swarm = new TorrentSwarm(this, options);
-        WireSwarmEvents(swarm);
-        _torrents.Add(swarm);
-        OnTorrentAdd?.Invoke(swarm);
-
-        // Parse magnet URI or info hash
-        await swarm.InitializeAsync(magnetOrInfoHash);
-
-        // Start discovery
-        foreach (var discovery in _discoveryProviders)
-        {
-            discovery.OnPeer += peer => swarm.AddPeer(peer);
-            await discovery.StartAsync(swarm.InfoHash, 0);
-        }
-
-        return swarm;
+        return await SeedFromMetadataAsync(metadata, new[] { allData }, addOpts);
     }
 
     /// <summary>
-    /// Add a torrent from parsed metadata (e.g., from a .torrent file).
+    /// Add a torrent from .torrent file bytes and begin seeding if we have data.
     /// </summary>
-    public async Task<TorrentSwarm> AddAsync(TorrentMetadata metadata, AddTorrentOptions? options = null)
+    public Torrent AddFromTorrentFile(byte[] torrentFileBytes, AddTorrentOptions? opts = null)
     {
-        options ??= new AddTorrentOptions();
-        if (options.AsyncFileSystem == null && _asyncFs != null)
-            options.AsyncFileSystem = _asyncFs;
-
-        var swarm = new TorrentSwarm(this, options);
-        WireSwarmEvents(swarm);
-        _torrents.Add(swarm);
-        OnTorrentAdd?.Invoke(swarm);
-
-        await swarm.SetMetadataAsync(metadata);
-
-        foreach (var discovery in _discoveryProviders)
-        {
-            discovery.OnPeer += peer => swarm.AddPeer(peer);
-            await discovery.StartAsync(metadata.InfoHash, 0);
-        }
-
-        // Persist torrent state for restore after page reload
-        await SaveTorrentStateAsync(swarm);
-
-        return swarm;
+        return Add(torrentFileBytes, opts);
     }
 
-    private void WireSwarmEvents(TorrentSwarm swarm)
+    /// <summary>Get a torrent by info hash hex.</summary>
+    public Torrent? Get(string infoHash)
     {
-        // Apply any client-wide extension factories to the new swarm
-        foreach (var factory in _extensionFactories)
-            swarm.UseExtension(factory);
-
-        swarm.OnReady += () =>
-        {
-            OnTorrentReady?.Invoke(swarm);
-            _ = SaveTorrentStateAsync(swarm);
-        };
-        swarm.OnStateChanged += () => _ = SaveTorrentStateAsync(swarm);
-        swarm.OnDone += () => OnTorrentDone?.Invoke(swarm);
-        swarm.OnError += (ex) => OnError?.Invoke(ex);
+        return Torrents.FirstOrDefault(t =>
+            string.Equals(t.InfoHash, infoHash, StringComparison.OrdinalIgnoreCase));
     }
 
-    /// <summary>Seed data by creating a torrent and making it available.</summary>
-    public async Task<TorrentSwarm> SeedAsync(byte[] data, string name,
-        TorrentCreatorOptions? createOptions = null, AddTorrentOptions? addOptions = null)
+    private async Task<Torrent> SeedFromMetadataAsync(TorrentMetadata metadata, byte[][] dataChunks, AddTorrentOptions addOpts)
     {
-        var (torrentBytes, metadata) = Torrent.TorrentCreator.CreateFromBytes(name, data, createOptions);
-        addOptions ??= new AddTorrentOptions();
-        if (addOptions.AsyncFileSystem == null && _asyncFs != null)
-            addOptions.AsyncFileSystem = _asyncFs;
-        var swarm = await AddAsync(metadata, addOptions);
+        var torrent = new Torrent();
+        torrent.InitFromMetadata(metadata, this, addOpts);
 
-        // Store all pieces in the chunk store so we can serve them
-        if (swarm.Store != null && swarm.PieceManager != null)
+        // Write all pieces to the store
+        var data = dataChunks[0]; // For single-file, this is the full data
+        for (int i = 0; i < metadata.PieceCount; i++)
         {
-            for (int i = 0; i < metadata.PieceCount; i++)
+            int pieceOffset = i * metadata.PieceLength;
+            int pieceLen = (i == metadata.PieceCount - 1)
+                ? (int)(metadata.TotalLength - (long)i * metadata.PieceLength)
+                : metadata.PieceLength;
+
+            if (pieceOffset + pieceLen <= data.Length)
             {
-                int pieceStart = i * metadata.PieceLength;
-                int pieceLen = Math.Min(metadata.PieceLength, data.Length - pieceStart);
-                var pieceData = new byte[pieceLen];
-                Array.Copy(data, pieceStart, pieceData, 0, pieceLen);
-                await swarm.Store.PutAsync(i, pieceData);
-                swarm.PieceManager.MarkComplete(i);
+                await torrent._store!.PutAsync(i, data.AsMemory(pieceOffset, pieceLen));
             }
 
-            // Mark swarm as done since all pieces are seeded
-            swarm.MarkDone();
+            // Mark piece as verified and done
+            torrent.Bitfield[i] = true;
+            torrent.Pieces[i] = new Piece(0);
         }
 
-        return swarm;
+        torrent.Done = true;
+
+        // Check for duplicate
+        var existing = Torrents.FirstOrDefault(t => t.InfoHash == torrent.InfoHash && t != torrent);
+        if (existing != null) return existing;
+
+        Torrents.Add(torrent);
+        OnAdd?.Invoke(torrent);
+
+        return torrent;
     }
 
-    /// <summary>Seed multiple files as a multi-file torrent.</summary>
-    public async Task<TorrentSwarm> SeedAsync((string path, byte[] data)[] files, string torrentName,
-        TorrentCreatorOptions? createOptions = null, AddTorrentOptions? addOptions = null)
+    // ========================
+    // REMOVE TORRENT
+    // ========================
+
+    /// <summary>Remove a torrent from the client.</summary>
+    public async Task RemoveAsync(Torrent torrent)
     {
-        var (torrentBytes, metadata) = Torrent.TorrentCreator.CreateFromMultipleFiles(torrentName, files, createOptions);
-        addOptions ??= new AddTorrentOptions();
-        if (addOptions.AsyncFileSystem == null && _asyncFs != null)
-            addOptions.AsyncFileSystem = _asyncFs;
-        var swarm = await AddAsync(metadata, addOptions);
-
-        // Concatenate file data for piece storage (BitTorrent stores pieces across concatenated files)
-        var combined = new byte[files.Sum(f => (long)f.data.Length)];
-        int offset = 0;
-        foreach (var f in files)
-        {
-            Array.Copy(f.data, 0, combined, offset, f.data.Length);
-            offset += f.data.Length;
-        }
-
-        // Store all pieces in the chunk store so we can serve them
-        if (swarm.Store != null && swarm.PieceManager != null)
-        {
-            for (int i = 0; i < metadata.PieceCount; i++)
-            {
-                int pieceStart = i * metadata.PieceLength;
-                int pieceLen = Math.Min(metadata.PieceLength, combined.Length - pieceStart);
-                var pieceData = new byte[pieceLen];
-                Array.Copy(combined, pieceStart, pieceData, 0, pieceLen);
-                await swarm.Store.PutAsync(i, pieceData);
-                swarm.PieceManager.MarkComplete(i);
-            }
-
-            swarm.MarkDone();
-        }
-
-        return swarm;
-    }
-
-    /// <summary>Get a torrent by info hash hex string (must be exactly 40 hex characters).</summary>
-    public TorrentSwarm? Get(string infoHashHex)
-    {
-        if (infoHashHex.Length != 40)
-            throw new ArgumentException("Info hash hex string must be exactly 40 characters");
-        var hash = Convert.FromHexString(infoHashHex);
-        return _torrents.FirstOrDefault(t => t.InfoHash.SequenceEqual(hash));
-    }
-
-    /// <summary>Get a torrent by info hash bytes.</summary>
-    public TorrentSwarm? Get(byte[] infoHash)
-        => _torrents.FirstOrDefault(t => t.InfoHash.SequenceEqual(infoHash));
-
-    /// <summary>
-    /// Create an HTTP server that serves torrent content with range request support.
-    /// Access files at: http://localhost:{port}/{infoHash}/{filePath}
-    /// Desktop only — browser uses blob URLs for streaming.
-    /// </summary>
-    public TorrentHttpServer CreateServer(int port = 8080)
-    {
-        var server = new TorrentHttpServer(this, port);
-        server.Start();
-        return server;
-    }
-
-    /// <summary>Remove a torrent and optionally destroy its data.</summary>
-    public async Task RemoveAsync(TorrentSwarm torrent, bool destroyStore = false)
-    {
-        _torrents.Remove(torrent);
-        OnTorrentRemove?.Invoke(torrent);
-        await RemoveTorrentStateAsync(torrent);
-        if (destroyStore && torrent.Store != null)
-            await torrent.Store.ClearAsync();
+        if (!Torrents.Remove(torrent)) return;
         await torrent.DisposeAsync();
+        OnRemove?.Invoke(torrent);
     }
 
-    /// <summary>
-    /// Add a torrent from a URL pointing to a .torrent file.
-    /// Downloads the .torrent, parses it, and starts the torrent.
-    /// </summary>
-    public async Task<TorrentSwarm> AddFromUrlAsync(string url, AddTorrentOptions? options = null)
+    /// <summary>Remove a torrent by info hash.</summary>
+    public async Task RemoveAsync(string infoHash)
     {
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-        var torrentBytes = await http.GetByteArrayAsync(url);
-        return await AddFromTorrentFileAsync(torrentBytes, options);
+        var torrent = Torrents.FirstOrDefault(t => t.InfoHash == infoHash);
+        if (torrent != null) await RemoveAsync(torrent);
     }
 
-    /// <summary>
-    /// Add a torrent from .torrent file bytes. Parses metadata and starts discovery.
-    /// </summary>
-    public async Task<TorrentSwarm> AddFromTorrentFileAsync(byte[] torrentFileBytes,
-        AddTorrentOptions? options = null)
+    /// <summary>Remove a torrent and delete all associated data from storage.</summary>
+    public async Task RemoveWithDataAsync(Torrent torrent)
     {
-        var metadata = Torrent.TorrentParser.Parse(torrentFileBytes);
-        return await AddAsync(metadata, options);
-    }
-
-    /// <summary>
-    /// Quick setup: create client with default tracker and add a magnet URI.
-    /// Convenience method for the simplest use case.
-    /// </summary>
-    public static async Task<(WebTorrentClient client, TorrentSwarm swarm)> QuickStartAsync(
-        string magnetUri, WebTorrentOptions? options = null)
-    {
-        var client = new WebTorrentClient(options: options);
-        var swarm = await client.AddAsync(magnetUri);
-        return (client, swarm);
-    }
-
-    private void HandleIncomingConnection(IConnection connection)
-    {
-        _ = HandleIncomingConnectionAsync(connection);
-    }
-
-    private async Task HandleIncomingConnectionAsync(IConnection connection)
-    {
-        try
+        var infoHash = torrent.InfoHash;
+        await RemoveAsync(torrent);
+        if (AsyncFileSystem != null && !string.IsNullOrEmpty(infoHash))
         {
-            // Perform handshake to determine which torrent this peer wants
-            var wire = new Wire.WireProtocol(connection);
-
-            // Receive their handshake first
-            if (!await wire.ReceiveHandshakeAsync())
-            {
-                await connection.CloseAsync();
-                return;
-            }
-
-            if (wire.RemoteInfoHash == null)
-            {
-                await connection.CloseAsync();
-                return;
-            }
-
-            // Find the matching torrent
-            var swarm = _torrents.FirstOrDefault(t => t.InfoHash.SequenceEqual(wire.RemoteInfoHash));
-            if (swarm == null)
-            {
-                await connection.CloseAsync();
-                return;
-            }
-
-            // Register extensions before our handshake so BEP 10 bit is set
-            swarm.RegisterExtensions(wire);
-
-            // Send our handshake back
-            await wire.SendHandshakeAsync(swarm.InfoHash, _peerId);
-
-            // Add as a connected peer
-            var peerInfo = new Discovery.PeerInfo
-            {
-                Address = connection.RemoteId,
-                Source = connection.TransportType,
-            };
-            await swarm.AddConnectedPeerAsync(wire, peerInfo);
-        }
-        catch
-        {
-            try { await connection.CloseAsync(); } catch { }
+            // Delete piece data
+            var dataDir = $"webtorrent/{infoHash}";
+            if (await AsyncFileSystem.DirectoryExists(dataDir))
+                await AsyncFileSystem.Remove(dataDir, recursive: true);
+            // Delete persisted .torrent metadata
+            var metaFile = $"webtorrent/_state/{infoHash}.torrent";
+            if (await AsyncFileSystem.FileExists(metaFile))
+                await AsyncFileSystem.Remove(metaFile);
         }
     }
+
+    /// <summary>Remove a torrent by info hash and delete all associated data.</summary>
+    public async Task RemoveWithDataAsync(string infoHash)
+    {
+        var torrent = Torrents.FirstOrDefault(t => t.InfoHash == infoHash);
+        if (torrent != null) await RemoveWithDataAsync(torrent);
+    }
+
+    // ========================
+    // PEER FACTORY (for tracker to create WebRTC peers)
+    // ========================
+
+    /// <summary>Factory for creating WebRTC peers. Override for platform-specific implementations.</summary>
+    public Func<bool, SimplePeer>? PeerFactory { get; set; }
+
+    /// <summary>Create a SimplePeer instance for use by trackers.</summary>
+    public SimplePeer CreatePeer(bool initiator)
+    {
+        if (PeerFactory != null)
+            return PeerFactory(initiator);
+
+        // Default: SipSorcery for desktop (NUnit/console), BrowserPeer for Blazor WASM
+        // Runtime detection: if SIPSorcery types are available, use them
+        return new SipSorceryPeer(initiator, IceServers, trickle: false);
+    }
+
+    // ========================
+    // DESTROY
+    // ========================
 
     public async ValueTask DisposeAsync()
     {
-        foreach (var torrent in _torrents.ToArray())
+        if (Destroyed) return;
+        Destroyed = true;
+
+        foreach (var torrent in Torrents.ToArray())
+        {
             await torrent.DisposeAsync();
-        _torrents.Clear();
-
-        foreach (var transport in _transports)
-            await transport.DisposeAsync();
-        _transports.Clear();
-
-        foreach (var discovery in _discoveryProviders)
-            await discovery.DisposeAsync();
-        _discoveryProviders.Clear();
+        }
+        Torrents.Clear();
     }
 }
 
-/// <summary>Client-level configuration.</summary>
-public class WebTorrentOptions
+// ========================
+// OPTIONS
+// ========================
+
+public class WebTorrentClientOptions
 {
-    /// <summary>Maximum peers per torrent (default 55).</summary>
-    public int MaxConns { get; set; } = 55;
-
-    /// <summary>Upload rate limit in bytes/sec (-1 = unlimited, 0 = disabled).</summary>
-    public long UploadLimit { get; set; } = -1;
-
-    /// <summary>Download rate limit in bytes/sec (-1 = unlimited).</summary>
-    public long DownloadLimit { get; set; } = -1;
-
-    /// <summary>Tracker announce URLs.</summary>
-    public string[] Trackers { get; set; } = new[]
-    {
-        "wss://hub.spawndev.com:44365/announce",
-        "wss://tracker.openwebtorrent.com",
-        "wss://tracker.files.fm:7073/announce",
-    };
-
-    /// <summary>
-    /// Disable web seed (HTTP) downloads globally for all torrents.
-    /// When true, pieces will only be downloaded from WebRTC/TCP peers.
-    /// Useful for debugging peer-to-peer data transfer without HTTP fallback masking issues.
-    /// Per-torrent override available in AddTorrentOptions.
-    /// </summary>
-    public bool DisableWebSeeds { get; set; }
+    public string? PeerId { get; set; }
+    public int MaxConns { get; set; } = WebTorrentClient.DefaultMaxConns;
+    public bool EnableWebSeeds { get; set; } = true;
+    public string[]? IceServers { get; set; }
+    public HttpClient? HttpClient { get; set; }
+    /// <summary>Async file system for persistent storage (OPFS in browser, native FS on desktop).</summary>
+    public SpawnDev.AsyncFileSystem.IAsyncFS? AsyncFileSystem { get; set; }
 }
 
-/// <summary>Per-torrent options.</summary>
 public class AddTorrentOptions
 {
-    /// <summary>Start paused (don't connect to peers immediately).</summary>
-    public bool Paused { get; set; }
-
-    /// <summary>Don't select any files for download initially.</summary>
-    public bool Deselect { get; set; }
-
-    /// <summary>Web seed URLs (HTTP fallback for piece downloads).</summary>
-    public string[] WebSeeds { get; set; } = Array.Empty<string>();
-
-    /// <summary>Piece selection strategy: "rarest" or "sequential".</summary>
-    public string Strategy { get; set; } = "rarest";
-
-    /// <summary>Custom chunk store factory. If null, uses platform default.</summary>
-    public Func<int, IChunkStore>? StoreFactory { get; set; }
-
-    /// <summary>
-    /// Async file system for persistent storage (OPFS in browser, native on desktop).
-    /// If provided, AsyncFSChunkStore is used instead of MemoryChunkStore.
-    /// </summary>
-    public SpawnDev.AsyncFileSystem.IAsyncFS? AsyncFileSystem { get; set; }
-
-    /// <summary>
-    /// Disable web seed (HTTP) downloads for this torrent.
-    /// When true, pieces will only be downloaded from WebRTC/TCP peers.
-    /// Overrides the global WebTorrentOptions.DisableWebSeeds setting when set to true.
-    /// </summary>
     public bool DisableWebSeeds { get; set; }
+    public string Strategy { get; set; } = "rarest";
+    public string? Path { get; set; }
 }

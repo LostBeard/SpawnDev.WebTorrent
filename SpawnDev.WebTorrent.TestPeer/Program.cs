@@ -1,7 +1,4 @@
 using SpawnDev.WebTorrent;
-using SpawnDev.WebTorrent.Discovery;
-using SpawnDev.WebTorrent.Torrent;
-using SpawnDev.WebTorrent.Transports;
 
 /// <summary>
 /// Test peer console app for controlled swarm testing.
@@ -17,7 +14,7 @@ using SpawnDev.WebTorrent.Transports;
 ///   MAGNET: magnet:?xt=urn:btih:...    # Machine-readable magnet URI for other clients
 ///   HASH: dd8255ec...                   # Info hash hex
 ///   READY                              # Seeding and ready for connections
-///   PIECE_SERVED: 0                    # When a piece is served to a peer
+///   PIECE: 0                           # When a piece is verified (downloading)
 ///   DONE                               # All pieces downloaded (if downloading)
 /// </summary>
 
@@ -40,7 +37,7 @@ for (int i = 0; i < args.Length; i++)
 Console.Error.WriteLine($"[TestPeer] Mode: {mode}, Size: {dataSize}, Tracker: {trackerUrl}");
 
 await using var client = new WebTorrentClient();
-Console.Error.WriteLine($"[TestPeer] Peer ID: {System.Text.Encoding.ASCII.GetString(client.PeerId, 0, 8)}");
+Console.Error.WriteLine($"[TestPeer] Peer ID: {client.PeerId[..8]}");
 
 if (mode == "seed")
 {
@@ -49,39 +46,22 @@ if (mode == "seed")
     var rng = new Random(dataSize);
     rng.NextBytes(data);
 
-    var swarm = await client.SeedAsync(data, $"test-{dataSize}.bin",
+    // SeedAsync creates torrent, writes pieces to store, and connects to trackers
+    var torrent = await client.SeedAsync($"test-{dataSize}.bin", data,
         new TorrentCreatorOptions
         {
             PieceLength = 16384,
             Trackers = new[] { trackerUrl },
         });
 
-    var hash = Convert.ToHexString(swarm.InfoHash).ToLowerInvariant();
-    var magnet = swarm.MagnetURI;
-
     // Machine-readable output
-    Console.WriteLine($"HASH: {hash}");
-    Console.WriteLine($"MAGNET: {magnet}");
-    Console.WriteLine($"PIECES: {swarm.PieceManager!.PieceCount}");
+    Console.WriteLine($"HASH: {torrent.InfoHashHex}");
+    Console.WriteLine($"MAGNET: {torrent.ComputedMagnetUri}");
+    Console.WriteLine($"PIECES: {torrent.PieceCount}");
     Console.WriteLine($"SIZE: {dataSize}");
 
-    // Connect to tracker
-    var tracker = new WebSocketTrackerClient(trackerUrl, client.PeerId);
-    tracker.OnPeer += (p) => Console.Error.WriteLine($"[TestPeer] Peer discovered: {p.Address}");
-    tracker.OnAnnounceResponse += (s, l) => Console.Error.WriteLine($"[TestPeer] Announce: {s}S/{l}L");
-
-    // Wire up piece serve logging
-    swarm.OnUpload += (bytes) => Console.WriteLine($"PIECE_SERVED: {bytes}");
-
-    try
-    {
-        await tracker.StartAsync(swarm.InfoHash, 0);
-        Console.Error.WriteLine("[TestPeer] Tracker connected");
-    }
-    catch (Exception ex)
-    {
-        Console.Error.WriteLine($"[TestPeer] Tracker failed: {ex.Message}");
-    }
+    // Wire events for logging
+    torrent.OnWire += (wire, addr) => Console.Error.WriteLine($"[TestPeer] Peer connected: {addr}");
 
     Console.WriteLine("READY");
     Console.Error.WriteLine("[TestPeer] Seeding... Press Ctrl+C to stop.");
@@ -93,41 +73,13 @@ if (mode == "seed")
 }
 else if (mode == "download" && magnetUri != null)
 {
-    var swarm = await client.AddAsync(magnetUri);
-    Console.WriteLine($"HASH: {Convert.ToHexString(swarm.InfoHash).ToLowerInvariant()}");
+    // Add torrent from magnet — tracker connections handled internally
+    var torrent = client.Add(magnetUri);
+    Console.WriteLine($"HASH: {torrent.InfoHashHex}");
 
-    // Try to fetch .torrent from xs= URL
-    foreach (var part in magnetUri.Split('&'))
-    {
-        var p = part.Contains('?') ? part.Split('?').Last() : part;
-        var eq = p.IndexOf('=');
-        if (eq >= 0 && p[..eq] == "xs")
-        {
-            var url = Uri.UnescapeDataString(p[(eq + 1)..]);
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
-            var torrentBytes = await http.GetByteArrayAsync(url);
-            var metadata = TorrentParser.Parse(torrentBytes);
-            if (metadata.InfoHash.SequenceEqual(swarm.InfoHash))
-            {
-                await swarm.SetMetadataAsync(metadata);
-                foreach (var ws in metadata.UrlList) swarm.AddWebSeed(ws.TrimEnd('/'));
-            }
-        }
-    }
-
-    // Connect to tracker
-    var tracker = new WebSocketTrackerClient(trackerUrl, client.PeerId);
-    tracker.OnPeer += (p) =>
-    {
-        Console.Error.WriteLine($"[TestPeer] Peer: {p.Address}");
-        swarm.AddPeer(p);
-    };
-    await tracker.StartAsync(swarm.InfoHash, 0);
-
-    swarm.OnPieceVerified += (idx) => Console.WriteLine($"PIECE: {idx}");
-    swarm.OnDone += () => Console.WriteLine("DONE");
-
-    swarm.StartDownload();
+    torrent.OnPieceVerified += (idx) => Console.WriteLine($"PIECE: {idx}");
+    torrent.OnDone += () => Console.WriteLine("DONE");
+    torrent.OnWire += (wire, addr) => Console.Error.WriteLine($"[TestPeer] Peer connected: {addr}");
 
     Console.WriteLine("DOWNLOADING");
     Console.Error.WriteLine("[TestPeer] Downloading... Press Ctrl+C to stop.");

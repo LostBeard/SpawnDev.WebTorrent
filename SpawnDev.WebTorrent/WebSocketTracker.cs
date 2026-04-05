@@ -1,0 +1,525 @@
+using System.Net.WebSockets;
+using System.Text;
+using System.Text.Json;
+
+namespace SpawnDev.WebTorrent;
+
+/// <summary>
+/// WebSocket BitTorrent tracker client.
+/// Direct 1:1 port of bittorrent-tracker/lib/client/websocket-tracker.js.
+/// Handles announce, offer/answer relay, reconnection, and offer generation.
+/// </summary>
+public class WebSocketTracker : IAsyncDisposable
+{
+    // Constants matching JS exactly
+    public const int ReconnectMinimum = 10_000;
+    public const int ReconnectMaximum = 3_600_000;     // 1 hour
+    public const int ReconnectVariance = 300_000;       // 5 min
+    public const int OfferTimeout = 50_000;             // 50s
+    public const int DefaultAnnounceInterval = 30_000;  // 30s
+    public const int MaxOffers = 5;
+
+    // ========================
+    // STATE
+    // ========================
+
+    public string AnnounceUrl { get; }
+    public bool Destroyed { get; private set; }
+    public bool Reconnecting { get; private set; }
+    public int Retries { get; private set; }
+
+    private ClientWebSocket? _ws;
+    private bool _connected;
+    private AnnounceOptions? _pendingAnnounce;
+    private bool _expectingResponse;
+    private string? _trackerId;
+    private Timer? _reconnectTimer;
+    private Timer? _announceTimer;
+    private CancellationTokenSource? _readCts;
+
+    // Peer tracking: offerId (hex) → SimplePeer
+    private readonly Dictionary<string, (SimplePeer peer, Timer? timeout)> _pendingOffers = new();
+
+    // Binary strings for tracker protocol (match JS hex2bin encoding)
+    private readonly byte[] _infoHash;     // 20 bytes
+    private readonly byte[] _peerId;       // 20 bytes
+    private readonly string _infoHashBinary;  // latin1 binary string
+    private readonly string _peerIdBinary;    // latin1 binary string
+
+    // Factory for creating SimplePeer instances
+    private readonly Func<bool, SimplePeer> _createPeerFunc;
+
+    // ========================
+    // EVENTS
+    // ========================
+
+    /// <summary>A WebRTC peer is ready (offer received and answered, or our offer was answered).</summary>
+    public event Action<SimplePeer>? OnPeer;
+
+    /// <summary>Tracker response with swarm stats.</summary>
+    public event Action<TrackerUpdate>? OnUpdate;
+
+    /// <summary>Non-fatal warning.</summary>
+    public event Action<string>? OnWarning;
+
+    /// <summary>Tracker announced (for Discovery to forward).</summary>
+    public event Action? OnAnnounce;
+
+    // ========================
+    // CONSTRUCTOR
+    // ========================
+
+    public WebSocketTracker(string announceUrl, byte[] infoHash, byte[] peerId, Func<bool, SimplePeer> createPeerFunc)
+    {
+        AnnounceUrl = announceUrl;
+        _infoHash = infoHash;
+        _peerId = peerId;
+        _infoHashBinary = ToBinaryString(infoHash);
+        _peerIdBinary = ToBinaryString(peerId);
+        _createPeerFunc = createPeerFunc;
+
+        _ = OpenSocketAsync();
+    }
+
+    // ========================
+    // ANNOUNCE
+    // ========================
+
+    /// <summary>Send announce to tracker with WebRTC offers.</summary>
+    public async Task AnnounceAsync(AnnounceOptions opts)
+    {
+        if (Destroyed || Reconnecting) { Console.WriteLine($"[WSTracker] AnnounceAsync skipped: destroyed={Destroyed} reconnecting={Reconnecting}"); return; }
+        if (!_connected)
+        {
+            // Not connected yet — queue announce for when socket connects (matches JS behavior)
+            Console.WriteLine($"[WSTracker] AnnounceAsync queued (not yet connected to {AnnounceUrl})");
+            _pendingAnnounce = opts;
+            return;
+        }
+        Console.WriteLine($"[WSTracker] AnnounceAsync to {AnnounceUrl}, event={opts.Event ?? "none"}");
+
+        var msg = new Dictionary<string, object?>
+        {
+            ["action"] = "announce",
+            ["info_hash"] = _infoHashBinary,
+            ["peer_id"] = _peerIdBinary,
+            ["uploaded"] = opts.Uploaded,
+            ["downloaded"] = opts.Downloaded,
+            ["left"] = opts.Left,
+        };
+
+        if (!string.IsNullOrEmpty(opts.Event))
+            msg["event"] = opts.Event;
+        if (_trackerId != null)
+            msg["trackerid"] = _trackerId;
+
+        if (opts.Event == "stopped" || opts.Event == "completed")
+        {
+            // Don't include offers with stopped/completed
+            await SendAsync(msg);
+        }
+        else
+        {
+            // Generate WebRTC offers (capped at 5, matching JS numwant cap)
+            int numwant = Math.Min(opts.Numwant, MaxOffers);
+            var offers = await GenerateOffersAsync(numwant);
+            msg["numwant"] = numwant;
+            msg["offers"] = offers;
+            await SendAsync(msg);
+        }
+    }
+
+    // ========================
+    // SOCKET MANAGEMENT
+    // ========================
+
+    private async Task OpenSocketAsync()
+    {
+        Destroyed = false;
+        try
+        {
+            Console.WriteLine($"[WSTracker] Connecting to {AnnounceUrl}...");
+            _ws = new ClientWebSocket();
+            _readCts = new CancellationTokenSource();
+            await _ws.ConnectAsync(new Uri(AnnounceUrl), CancellationToken.None);
+            _connected = true;
+            Console.WriteLine($"[WSTracker] Connected to {AnnounceUrl}");
+
+            if (Reconnecting)
+            {
+                Reconnecting = false;
+                Retries = 0;
+                OnAnnounce?.Invoke();
+            }
+
+            // Process any queued announce (matches JS: socket.once('connect', () => announce(opts)))
+            if (_pendingAnnounce != null)
+            {
+                var pending = _pendingAnnounce;
+                _pendingAnnounce = null;
+                Console.WriteLine($"[WSTracker] Processing queued announce to {AnnounceUrl}");
+                _ = AnnounceAsync(pending);
+            }
+
+            // Start read loop
+            _ = ReadLoopAsync(_readCts.Token);
+        }
+        catch (Exception ex)
+        {
+            OnWarning?.Invoke($"WebSocket connect failed: {ex.Message}");
+            StartReconnectTimer();
+        }
+    }
+
+    private async Task ReadLoopAsync(CancellationToken ct)
+    {
+        var buffer = new byte[64 * 1024];
+        try
+        {
+            while (!ct.IsCancellationRequested && _ws?.State == WebSocketState.Open)
+            {
+                var result = await _ws.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
+                if (result.MessageType == WebSocketMessageType.Close)
+                {
+                    OnSocketClose();
+                    return;
+                }
+
+                // Collect full message (may span multiple frames)
+                var ms = new MemoryStream();
+                ms.Write(buffer, 0, result.Count);
+                while (!result.EndOfMessage)
+                {
+                    result = await _ws.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
+                    ms.Write(buffer, 0, result.Count);
+                }
+
+                var json = Encoding.UTF8.GetString(ms.ToArray());
+                _expectingResponse = false;
+                OnSocketData(json);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (WebSocketException)
+        {
+            OnSocketClose();
+        }
+        catch (Exception ex)
+        {
+            OnWarning?.Invoke($"WebSocket read error: {ex.Message}");
+            OnSocketClose();
+        }
+    }
+
+    private void OnSocketData(string json)
+    {
+        if (Destroyed) return;
+
+        JsonDocument doc;
+        try { doc = JsonDocument.Parse(json); }
+        catch
+        {
+            OnWarning?.Invoke("Invalid tracker response JSON");
+            return;
+        }
+
+        var root = doc.RootElement;
+        var action = root.TryGetProperty("action", out var actionProp) ? actionProp.GetString() : null;
+
+        if (action == "announce")
+            OnAnnounceResponse(root);
+        else if (action == "scrape")
+        {
+            // Scrape response — emit for consumer
+        }
+        else
+        {
+            // Check for offer/answer by field presence (matches JS behavior)
+            if (root.TryGetProperty("offer", out _) || root.TryGetProperty("answer", out _))
+                OnAnnounceResponse(root);
+            else
+                OnWarning?.Invoke($"Invalid tracker action: {action}");
+        }
+    }
+
+    private void OnAnnounceResponse(JsonElement data)
+    {
+        // Verify info_hash matches ours
+        if (data.TryGetProperty("info_hash", out var ihProp))
+        {
+            var responseInfoHash = ihProp.GetString() ?? "";
+            if (responseInfoHash != _infoHashBinary) return; // not for us
+        }
+
+        // Ignore messages from ourselves
+        if (data.TryGetProperty("peer_id", out var pidProp))
+        {
+            var responsePeerId = pidProp.GetString() ?? "";
+            if (responsePeerId == _peerIdBinary) return;
+        }
+
+        // Failure reason
+        if (data.TryGetProperty("failure reason", out var failProp))
+        {
+            OnWarning?.Invoke(failProp.GetString() ?? "tracker failure");
+            return;
+        }
+
+        // Warning message
+        if (data.TryGetProperty("warning message", out var warnProp))
+            OnWarning?.Invoke(warnProp.GetString() ?? "");
+
+        // Interval
+        if (data.TryGetProperty("interval", out var intProp) && intProp.TryGetInt32(out var interval))
+            SetAnnounceInterval(interval * 1000);
+        else if (data.TryGetProperty("min interval", out var minIntProp) && minIntProp.TryGetInt32(out var minInterval))
+            SetAnnounceInterval(minInterval * 1000);
+
+        // Tracker ID
+        if (data.TryGetProperty("tracker id", out var tidProp))
+            _trackerId = tidProp.GetString();
+
+        // Swarm stats
+        if (data.TryGetProperty("complete", out _))
+        {
+            var update = new TrackerUpdate
+            {
+                AnnounceUrl = AnnounceUrl,
+                Complete = data.TryGetProperty("complete", out var cp) ? cp.GetInt32() : 0,
+                Incomplete = data.TryGetProperty("incomplete", out var ip) ? ip.GetInt32() : 0,
+            };
+            OnUpdate?.Invoke(update);
+        }
+
+        // Incoming offer from another peer — create answering peer
+        if (data.TryGetProperty("offer", out var offerProp) && data.TryGetProperty("peer_id", out var offerPeerId))
+        {
+            var peer = _createPeerFunc(false); // responder
+            var offerId = data.TryGetProperty("offer_id", out var oidProp) ? oidProp.GetString() ?? "" : "";
+            var remotePeerId = offerPeerId.GetString() ?? "";
+
+            peer.OnSignal += (signal) =>
+            {
+                if (signal.Type != "answer") return;
+                // Send answer back through tracker — action MUST be "announce" (matches JS exactly)
+                var answerMsg = new Dictionary<string, object?>
+                {
+                    ["action"] = "announce",
+                    ["info_hash"] = _infoHashBinary,
+                    ["peer_id"] = _peerIdBinary,
+                    ["to_peer_id"] = remotePeerId,
+                    ["answer"] = new { type = signal.Type, sdp = signal.Sdp },
+                    ["offer_id"] = offerId,
+                };
+                if (_trackerId != null) answerMsg["trackerid"] = _trackerId;
+                _ = SendAsync(answerMsg);
+            };
+
+            OnPeer?.Invoke(peer);
+
+            // Signal the offer to the peer (triggers answer generation)
+            _ = peer.Signal(new SignalData { Type = "offer", Sdp = offerProp.TryGetProperty("sdp", out var sdpProp) ? sdpProp.GetString() : null });
+        }
+
+        // Incoming answer to one of our offers
+        if (data.TryGetProperty("answer", out var answerProp) && data.TryGetProperty("offer_id", out var answerOidProp))
+        {
+            // Convert offer_id from binary string to hex for lookup (matches JS bin2hex)
+            var offerIdBinary = answerOidProp.GetString() ?? "";
+            var offerIdHex = BinaryStringToHex(offerIdBinary);
+
+            if (_pendingOffers.TryGetValue(offerIdHex, out var entry))
+            {
+                var peer = entry.peer;
+                entry.timeout?.Dispose();
+                _pendingOffers.Remove(offerIdHex);
+
+                OnPeer?.Invoke(peer);
+
+                var answerSdp = answerProp.TryGetProperty("sdp", out var aSdpProp) ? aSdpProp.GetString() : null;
+                _ = peer.Signal(new SignalData { Type = "answer", Sdp = answerSdp });
+            }
+        }
+    }
+
+    private void OnSocketClose()
+    {
+        if (Destroyed) return;
+        _connected = false;
+        StartReconnectTimer();
+    }
+
+    // ========================
+    // RECONNECTION (exponential backoff matching JS exactly)
+    // ========================
+
+    private void StartReconnectTimer()
+    {
+        var random = new Random();
+        int ms = random.Next(ReconnectVariance) +
+                 Math.Min((int)Math.Pow(2, Retries) * ReconnectMinimum, ReconnectMaximum);
+
+        Reconnecting = true;
+        _reconnectTimer?.Dispose();
+        _reconnectTimer = new Timer(_ =>
+        {
+            Retries++;
+            _ = OpenSocketAsync();
+        }, null, ms, Timeout.Infinite);
+    }
+
+    // ========================
+    // OFFER GENERATION (matches JS _generateOffers exactly)
+    // ========================
+
+    private async Task<List<object>> GenerateOffersAsync(int numwant)
+    {
+        var offers = new List<object>();
+
+        for (int i = 0; i < numwant; i++)
+        {
+            // Generate 20-byte random offer ID (matches JS: arr2hex(randomBytes(20)))
+            var offerIdBytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(20);
+            var offerIdHex = Convert.ToHexString(offerIdBytes).ToLowerInvariant();
+
+            var peer = _createPeerFunc(true); // initiator
+
+            var signalTcs = new TaskCompletionSource<SignalData>();
+            peer.OnSignal += (signal) =>
+            {
+                if (signal.Type == "offer")
+                    signalTcs.TrySetResult(signal);
+            };
+
+            // Start the peer (triggers offer creation)
+            await peer.InitAsync();
+
+            // Wait for offer signal (with timeout)
+            var timeoutTask = Task.Delay(15_000);
+            var completedTask = await Task.WhenAny(signalTcs.Task, timeoutTask);
+
+            if (completedTask == signalTcs.Task)
+            {
+                var signal = signalTcs.Task.Result;
+                // Store pending offer for answer matching
+                var offerTimer = new Timer(_ =>
+                {
+                    if (_pendingOffers.Remove(offerIdHex, out var entry))
+                        _ = entry.peer.DisposeAsync();
+                }, null, OfferTimeout, Timeout.Infinite);
+
+                _pendingOffers[offerIdHex] = (peer, offerTimer);
+
+                // offer_id transmitted as binary string (matches JS hex2bin(offerId))
+                offers.Add(new
+                {
+                    offer = new { type = signal.Type, sdp = signal.Sdp },
+                    offer_id = ToBinaryString(offerIdBytes),
+                });
+            }
+            else
+            {
+                // Timeout generating offer
+                await peer.DisposeAsync();
+            }
+        }
+
+        return offers;
+    }
+
+    // ========================
+    // SEND
+    // ========================
+
+    private async Task SendAsync(object msg)
+    {
+        if (Destroyed || _ws?.State != WebSocketState.Open) return;
+        _expectingResponse = true;
+
+        var json = JsonSerializer.Serialize(msg, new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+        });
+        var bytes = Encoding.UTF8.GetBytes(json);
+        await _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
+    }
+
+    // ========================
+    // INTERVAL
+    // ========================
+
+    private void SetAnnounceInterval(int ms)
+    {
+        _announceTimer?.Dispose();
+        _announceTimer = new Timer(_ => OnAnnounce?.Invoke(), null, ms, ms);
+    }
+
+    // ========================
+    // BINARY STRING ENCODING (matches JS hex2bin/bin2hex exactly)
+    // ========================
+
+    /// <summary>
+    /// Convert bytes to a "binary string" — each byte becomes a latin1 char.
+    /// Matches JS hex2bin() / String.fromCharCode() encoding used by bittorrent-tracker.
+    /// </summary>
+    public static string ToBinaryString(byte[] bytes)
+        => new string(bytes.Select(b => (char)b).ToArray());
+
+    /// <summary>
+    /// Convert a "binary string" back to hex.
+    /// Matches JS bin2hex() encoding.
+    /// </summary>
+    public static string BinaryStringToHex(string binaryString)
+        => Convert.ToHexString(binaryString.Select(c => (byte)c).ToArray()).ToLowerInvariant();
+
+    // ========================
+    // DISPOSE
+    // ========================
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Destroyed) return;
+        Destroyed = true;
+        _connected = false;
+
+        _reconnectTimer?.Dispose();
+        _announceTimer?.Dispose();
+        _readCts?.Cancel();
+
+        foreach (var (_, entry) in _pendingOffers)
+        {
+            entry.timeout?.Dispose();
+            await entry.peer.DisposeAsync();
+        }
+        _pendingOffers.Clear();
+
+        if (_ws?.State == WebSocketState.Open)
+        {
+            try { await _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None); }
+            catch { }
+        }
+        _ws?.Dispose();
+        _ws = null;
+    }
+}
+
+// ========================
+// SUPPORTING TYPES
+// ========================
+
+public class AnnounceOptions
+{
+    public long Uploaded { get; set; }
+    public long Downloaded { get; set; }
+    public long Left { get; set; }
+    public string? Event { get; set; }
+    public int Numwant { get; set; } = 5;
+}
+
+public class TrackerUpdate
+{
+    public string AnnounceUrl { get; set; } = "";
+    public int Complete { get; set; }
+    public int Incomplete { get; set; }
+}

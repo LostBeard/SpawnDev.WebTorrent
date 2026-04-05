@@ -1,36 +1,45 @@
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.Components.WebAssembly.Hosting;
-using SpawnDev.AsyncFileSystem;
 using SpawnDev.BlazorJS;
 using SpawnDev.BlazorJS.Cryptography;
+using SpawnDev.AsyncFileSystem;
 using SpawnDev.WebTorrent;
 using SpawnDev.WebTorrent.Demo;
-using SpawnDev.WebTorrent.Demo.UnitTests;
 
 Console.WriteLine($"[SpawnDev.WebTorrent.Demo] Build: {BuildTimestamp.Value}");
 
 var builder = WebAssemblyHostBuilder.CreateDefault(args);
 
-// BlazorJSRuntime handles all JavaScript interop (required)
+// BlazorJSRuntime handles all JavaScript interop (required for SpawnDev.BlazorJS)
 builder.Services.AddBlazorJSRuntime();
 
-// Unit tests for browser environment - not required, but useful for testing in CI and as examples of using the API.
-builder.Services.AddSingleton<BrowserTests>();
-
-// Adds IPortableCrypto - Cross-platform crypto for BEP 46 signing (ECDSA-P256)
+// Cross-platform crypto for Ed25519 signing (BEP 44)
 builder.Services.AddPlatformCrypto();
 
-// Adds IAsyncFS - Cross-platform persistent file system (OPFS in browser, native on desktop)
+// Async file system for persistent storage (OPFS in browser)
 builder.Services.AddAsyncFileSystem();
 
-// WebTorrent services — singletons, start with app via IAsyncBackgroundService
-// ServiceWorkerStreamHandler is optional and only needed if you intend to stream torents to media elements using the service worker.
-// If not registered, streamign will not be available, but all other WebTorrent features will work as normal.
+// Service worker stream handler for media streaming (implements IAsyncBackgroundService)
 builder.Services.AddSingleton<ServiceWorkerStreamHandler>();
-// WebTorrentClient is the main service for managing torrents, and also implements IAsyncBackgroundService to start automatically with the app.
-builder.Services.AddSingleton<WebTorrentClient>();
 
-// HttpClient with BaseAddress set to the app's base URI, for fetching torrent files and other resources relative to the app's location.
+// WebTorrent client — uses BrowserPeer for WebRTC in WASM, OPFS for persistence
+builder.Services.AddSingleton<WebTorrentClient>(sp =>
+{
+    var asyncFs = sp.GetService<IAsyncFS>();
+    var client = new WebTorrentClient(new WebTorrentClientOptions
+    {
+        AsyncFileSystem = asyncFs,
+    });
+    // In browser, use BrowserPeer (SpawnDev.BlazorJS RTCPeerConnection) for WebRTC
+    client.PeerFactory = (initiator) => new BrowserPeer(initiator, trickle: false);
+    // Restore persisted torrents (fire and forget — completes before first page render)
+    _ = client.RestoreFromStorageAsync();
+    return client;
+});
+
+// Register BrowserTests for test discovery via Tests.razor UnitTestsView
+builder.Services.AddSingleton<BrowserTests>();
+
 builder.Services.AddSingleton(sp => new HttpClient { BaseAddress = new Uri(builder.HostEnvironment.BaseAddress) });
 
 builder.RootComponents.Add<App>("#app");

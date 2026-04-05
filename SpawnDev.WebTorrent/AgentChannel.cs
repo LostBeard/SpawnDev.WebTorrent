@@ -1,45 +1,31 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using SpawnDev.WebTorrent.Discovery;
 
 namespace SpawnDev.WebTorrent;
 
 /// <summary>
 /// High-level pub/sub channel for AI agent communication.
-/// Works on BOTH browser and desktop:
+/// Adapted from the original SpawnDev.WebTorrent implementation for _Alt.
+///
+/// Works on both browser and desktop:
 /// - Desktop: DHT mutable items (BEP 46) via UDP
 /// - Browser: WebSocket tracker relay (same API, same signing)
 ///
-/// Each agent has a cryptographic identity (ECDSA key pair, WebCrypto native).
+/// Each agent has a cryptographic identity (Ed25519 key pair).
 /// Agents publish state updates and subscribe to others by public key.
-///
-/// Usage:
-///   // Desktop (DHT)
-///   var signer = new EcdsaP256Signer(crypto);
-///   await signer.GenerateKeyAsync();
-///   var channel = new AgentChannel(dht, signer);
-///
-///   // Browser (tracker relay)
-///   var channel = new AgentChannel(trackerClient, peerId);
-///
-///   // Both work the same:
-///   await channel.PublishStateAsync(myStateBytes);
-///   channel.OnAgentUpdate += (pubKey, data, seq) => { ... };
-///   await channel.SubscribeAsync(otherAgentPublicKey);
 /// </summary>
 public class AgentChannel : IAsyncDisposable
 {
     private readonly DhtMutableItems? _dhtItems;
-    private readonly WebSocketTrackerClient? _tracker;
     private readonly IDhtSigner? _signer;
     private readonly byte[] _publicKey;
-    private readonly byte[] _peerId;
     private readonly List<CancellationTokenSource> _subscriptions = new();
     private long _sequence;
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> _subscribedSequences = new();
+    private readonly ConcurrentDictionary<string, long> _subscribedSequences = new();
 
-    /// <summary>This agent's public key identity (32 bytes).</summary>
+    /// <summary>This agent's public key identity.</summary>
     public byte[] PublicKey => _publicKey;
 
     /// <summary>Hex string of public key (for sharing).</summary>
@@ -48,15 +34,11 @@ public class AgentChannel : IAsyncDisposable
     /// <summary>Current publish sequence number.</summary>
     public long Sequence => _dhtItems?.Sequence ?? _sequence;
 
-    /// <summary>Whether this channel uses the browser relay path.</summary>
-    public bool IsBrowserRelay => _tracker != null && _dhtItems == null;
-
     /// <summary>Fired when a subscribed agent publishes a new value.</summary>
     public event Action<byte[], byte[], long>? OnAgentUpdate; // publicKey, value, sequence
 
     /// <summary>
     /// Create an agent channel backed by DHT (desktop — BEP 46 over UDP).
-    /// The signer must have its key generated/imported before construction.
     /// </summary>
     public AgentChannel(DhtDiscovery dht, IDhtSigner signer)
     {
@@ -64,40 +46,23 @@ public class AgentChannel : IAsyncDisposable
         _dhtItems = dht.CreateMutableItems(signer);
         _dhtItems.OnValueUpdated += (key, value, seq) => OnAgentUpdate?.Invoke(key, value, seq);
         _publicKey = _dhtItems.PublicKey;
-        _peerId = new byte[20];
     }
 
     /// <summary>
-    /// Create an agent channel backed by WebSocket tracker relay (browser).
-    /// Uses the tracker's signaling channel to relay agent messages.
-    /// No UDP required — works in browser.
+    /// Create with no transport — for testing, deferred init, or browser relay (to be wired later).
     /// </summary>
-    public AgentChannel(WebSocketTrackerClient tracker, byte[] peerId, IDhtSigner signer)
+    public AgentChannel(IDhtSigner? signer = null)
     {
-        _tracker = tracker;
         _signer = signer;
-        _peerId = peerId;
-        _publicKey = signer.PublicKey;
-
-        // Listen for agent messages relayed through the tracker
-        _tracker.OnOffer += HandleTrackerRelay;
+        _publicKey = signer?.PublicKey ?? new byte[32];
+        if (_publicKey.Length == 0 || _publicKey.All(b => b == 0))
+        {
+            _publicKey = new byte[32];
+            RandomNumberGenerator.Fill(_publicKey);
+        }
     }
 
-    /// <summary>
-    /// Create with no transport — for testing or deferred initialization.
-    /// </summary>
-    public AgentChannel()
-    {
-        _publicKey = new byte[32];
-        RandomNumberGenerator.Fill(_publicKey);
-        _peerId = new byte[20];
-    }
-
-    /// <summary>
-    /// Publish arbitrary state data under our identity.
-    /// Desktop: published to DHT. Browser: sent via tracker relay.
-    /// Max 1000 bytes.
-    /// </summary>
+    /// <summary>Publish arbitrary state data under our identity.</summary>
     public async Task PublishStateAsync(byte[] state, string? channel = null, CancellationToken ct = default)
     {
         var salt = channel != null ? Encoding.UTF8.GetBytes(channel) : null;
@@ -106,20 +71,13 @@ public class AgentChannel : IAsyncDisposable
         {
             await _dhtItems.PublishAsync(state, salt, ct);
         }
-        else if (_tracker != null)
-        {
-            _sequence++;
-            await PublishViaTrackerAsync(state, salt, ct);
-        }
         else
         {
             _sequence++;
         }
     }
 
-    /// <summary>
-    /// Publish a torrent info hash. Subscribed agents auto-discover + download.
-    /// </summary>
+    /// <summary>Publish a torrent info hash. Subscribed agents auto-discover + download.</summary>
     public async Task PublishTorrentAsync(byte[] infoHash, string? channel = null, CancellationToken ct = default)
     {
         if (infoHash.Length != 20) throw new ArgumentException("Info hash must be 20 bytes");
@@ -129,21 +87,13 @@ public class AgentChannel : IAsyncDisposable
         {
             await _dhtItems.PublishInfoHashAsync(infoHash, salt, ct);
         }
-        else if (_tracker != null)
-        {
-            _sequence++;
-            await PublishViaTrackerAsync(infoHash, salt, ct);
-        }
         else
         {
             _sequence++;
         }
     }
 
-    /// <summary>
-    /// Subscribe to updates from another agent.
-    /// Desktop: polls DHT. Browser: listens on tracker relay.
-    /// </summary>
+    /// <summary>Subscribe to updates from another agent.</summary>
     public Task SubscribeAsync(byte[] agentPublicKey, string? channel = null, int pollIntervalMs = 30000)
     {
         var cts = new CancellationTokenSource();
@@ -155,112 +105,29 @@ public class AgentChannel : IAsyncDisposable
             return _dhtItems.SubscribeAsync(agentPublicKey, salt, pollIntervalMs, cts.Token);
         }
 
-        if (_tracker != null)
-        {
-            // Join the agent's virtual swarm on the tracker
-            var agentHash = ComputeAgentInfoHash(agentPublicKey, salt);
-            var pubKeyHex = Convert.ToHexString(agentPublicKey).ToLowerInvariant();
-            _subscribedSequences[pubKeyHex] = -1;
-
-            return _tracker.StartAsync(agentHash, 0, cts.Token);
-        }
-
         return Task.CompletedTask;
     }
 
-    /// <summary>
-    /// Create a named channel for a specific purpose.
-    /// </summary>
+    /// <summary>Create a named sub-channel for a specific purpose.</summary>
     public AgentNamedChannel Channel(string name) => new(this, name);
 
-    #region Browser Tracker Relay
-
     /// <summary>
-    /// Publish data via the WebSocket tracker by sending an "offer" with agent payload.
-    /// The tracker relays to all peers subscribed to the same info hash.
+    /// Verify a received agent message signature.
     /// </summary>
-    private async Task PublishViaTrackerAsync(byte[] data, byte[]? salt, CancellationToken ct)
+    public async Task<bool> VerifyMessageAsync(byte[] publicKey, byte[] data, byte[] signature)
     {
-        if (_tracker == null || !_tracker.IsConnected) return;
-
-        var agentHash = ComputeAgentInfoHash(_publicKey, salt);
-
-        // Announce to our virtual swarm so peers can see us
-        await _tracker.AnnounceAsync(agentHash, 0, 0, 0, 0, ct: ct);
-
-        // Send data as a custom offer to all peers in the swarm
-        // The "offer" contains the agent state as serialized JSON
-        // Sign the data for verification by receivers
-        var signature = _signer != null ? await _signer.SignAsync(data) : Array.Empty<byte>();
-
-        var payload = JsonSerializer.SerializeToElement(new AgentRelayMessage
-        {
-            PublicKey = Convert.ToHexString(_publicKey).ToLowerInvariant(),
-            Sequence = _sequence,
-            Data = Convert.ToBase64String(data),
-            Salt = salt != null ? Convert.ToBase64String(salt) : null,
-            Signature = Convert.ToBase64String(signature),
-        });
-
-        // Broadcast to "all" by sending an offer with a special offer ID prefix
-        var offerId = $"agent:{Convert.ToHexString(_publicKey[..8]).ToLowerInvariant()}:{_sequence}";
-        await _tracker.SendOfferAsync("*", payload, offerId, ct);
-    }
-
-    /// <summary>
-    /// Handle incoming relay messages from the tracker.
-    /// </summary>
-    private void HandleTrackerRelay(string fromPeerId, string offerId, JsonElement offerData)
-    {
-        _ = HandleTrackerRelayAsync(fromPeerId, offerId, offerData);
-    }
-
-    private async Task HandleTrackerRelayAsync(string fromPeerId, string offerId, JsonElement offerData)
-    {
-        // Only process agent relay messages (prefixed with "agent:")
-        if (!offerId.StartsWith("agent:")) return;
-
-        try
-        {
-            var msg = offerData.Deserialize<AgentRelayMessage>();
-            if (msg == null || string.IsNullOrEmpty(msg.PublicKey)) return;
-
-            // Check if we're subscribed to this agent
-            if (!_subscribedSequences.ContainsKey(msg.PublicKey)) return;
-
-            // Check sequence (only process newer)
-            if (msg.Sequence <= _subscribedSequences[msg.PublicKey]) return;
-            _subscribedSequences[msg.PublicKey] = msg.Sequence;
-
-            var pubKeyBytes = Convert.FromHexString(msg.PublicKey);
-            var dataBytes = Convert.FromBase64String(msg.Data);
-
-            // Verify signature if we have a signer
-            if (_signer != null && !string.IsNullOrEmpty(msg.Signature))
-            {
-                var sigBytes = Convert.FromBase64String(msg.Signature);
-                var verified = await _signer.VerifyAsync(pubKeyBytes, dataBytes, sigBytes);
-                if (!verified) return; // Reject forged messages
-            }
-
-            OnAgentUpdate?.Invoke(pubKeyBytes, dataBytes, msg.Sequence);
-        }
-        catch { }
+        if (_signer == null) return false;
+        return await _signer.VerifyAsync(publicKey, data, signature);
     }
 
     /// <summary>
     /// Compute a deterministic info hash for an agent's virtual swarm.
-    /// All subscribers to the same agent key join this hash.
     /// </summary>
-    private static byte[] ComputeAgentInfoHash(byte[] publicKey, byte[]? salt)
+    public static byte[] ComputeAgentInfoHash(byte[] publicKey, byte[]? salt)
     {
-        var input = salt != null
-            ? publicKey.Concat(salt).ToArray()
-            : publicKey;
+        var input = salt != null ? publicKey.Concat(salt).ToArray() : publicKey;
         return SHA1.HashData(input);
     }
-
-    #endregion
 
     public async ValueTask DisposeAsync()
     {
@@ -270,16 +137,11 @@ public class AgentChannel : IAsyncDisposable
             cts.Dispose();
         }
         _subscriptions.Clear();
-
-        if (_tracker != null)
-            _tracker.OnOffer -= HandleTrackerRelay;
     }
 }
 
-/// <summary>
-/// Agent state message relayed through the WebSocket tracker.
-/// </summary>
-internal class AgentRelayMessage
+/// <summary>Agent state message format for relay/serialization.</summary>
+public class AgentRelayMessage
 {
     public string PublicKey { get; set; } = "";
     public long Sequence { get; set; }
@@ -288,9 +150,7 @@ internal class AgentRelayMessage
     public string? Signature { get; set; }
 }
 
-/// <summary>
-/// A named sub-channel within an agent channel.
-/// </summary>
+/// <summary>A named sub-channel within an agent channel.</summary>
 public class AgentNamedChannel
 {
     private readonly AgentChannel _parent;

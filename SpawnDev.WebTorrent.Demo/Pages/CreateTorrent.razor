@@ -1,5 +1,4 @@
 @using SpawnDev.WebTorrent
-@using SpawnDev.WebTorrent.Torrent
 @using SpawnDev.BlazorJS
 @using SpawnDev.BlazorJS.JSObjects
 @inject BlazorJSRuntime JS
@@ -11,11 +10,11 @@
 <div class="modal-content" @onclick:stopPropagation style="max-width:800px;width:90vw;max-height:85vh;overflow-y:auto;">
     <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #334155;">
         <h3 style="margin:0;color:#e2e8f0;">Create Torrent</h3>
-        <button class="qb-btn-sm" @onclick="Close" style="font-size:1.2rem;">✕</button>
+        <button class="qb-btn-sm" @onclick="Close" style="font-size:1.2rem;">&#10005;</button>
     </div>
 
     <div style="display:flex;gap:16px;padding:16px;flex-wrap:wrap;">
-        @* ═══ Left: File List ═══ *@
+        @* --- Left: File List --- *@
         <div style="flex:1;min-width:300px;">
             <div class="qb-panel">
                 <div class="qb-panel-header">
@@ -50,7 +49,7 @@
                                         <td>@FormatSize(f.Size)</td>
                                         <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px;color:#94a3b8;font-size:0.85rem;" title="@f.Path">
                                             @f.Path
-                                            <button class="qb-btn-sm" style="float:right;" @onclick="() => RemoveFile(f)" title="Remove">✕</button>
+                                            <button class="qb-btn-sm" style="float:right;" @onclick="() => RemoveFile(f)" title="Remove">&#10005;</button>
                                         </td>
                                     </tr>
                                 }
@@ -86,7 +85,7 @@
             </div>
         </div>
 
-        @* ═══ Right: Options ═══ *@
+        @* --- Right: Options --- *@
         <div style="flex:0 0 280px;min-width:240px;">
             <div class="qb-panel">
                 <div class="qb-panel-header">Options</div>
@@ -129,7 +128,7 @@
         </div>
     </div>
 
-    @* ═══ Footer ═══ *@
+    @* --- Footer --- *@
     <div style="padding:12px 16px;border-top:1px solid #334155;display:flex;gap:8px;justify-content:flex-end;align-items:center;">
         @if (!string.IsNullOrEmpty(_statusMessage))
         {
@@ -149,7 +148,6 @@
     [Parameter] public bool Visible { get; set; }
     [Parameter] public EventCallback OnClose { get; set; }
 
-    // ═══ State ═══
     private List<FileEntry> _files = new();
     private TorrentCreatorOptions _options = new()
     {
@@ -310,9 +308,9 @@
                 {
                     _createProgress = "seeding...";
                     StateHasChanged();
-                    await Client.SeedAsync(file.Data!, _options.Name, _options);
+                    await Client.SeedAsync(_options.Name, file.Data!, _options);
                 }
-                SetStatus($"Created: {metadata.Name} ({FormatSize(metadata.TotalLength)}, {metadata.PieceCount} pieces, {metadata.PieceHashAlgorithm})", false);
+                SetStatus($"Created: {metadata.Name} ({FormatSize(metadata.TotalLength)}, {metadata.PieceCount} pieces, {_options.HashAlgorithm})", false);
             }
             else
             {
@@ -326,8 +324,8 @@
                 {
                     _createProgress = "seeding...";
                     StateHasChanged();
-                    var swarm = await Client.SeedAsync(filesArray, torrentName, _options);
-                    SetStatus($"Created: {swarm.Name} ({FormatSize(swarm.Length)}, {swarm.Metadata?.PieceCount ?? 0} pieces, {swarm.Files?.Length ?? 0} files)", false);
+                    var torrent = await Client.SeedAsync(torrentName, filesArray, _options);
+                    SetStatus($"Created: {torrent.Name} ({FormatSize(torrent.Length)}, {torrent.PieceCount} pieces, {torrent.Files?.Length ?? 0} files)", false);
                 }
                 else
                 {

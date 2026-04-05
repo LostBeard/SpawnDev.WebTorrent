@@ -1,6 +1,5 @@
 using System.Net;
 using System.Text;
-using SpawnDev.WebTorrent.Torrent;
 
 namespace SpawnDev.WebTorrent;
 
@@ -9,13 +8,13 @@ namespace SpawnDev.WebTorrent;
 /// Enables streaming to media players, browsers, or any HTTP client.
 ///
 /// Usage:
-///   var server = new TorrentHttpServer(client, port: 8080);
+///   var server = new TorrentHttpServer(client, port: 18770);
 ///   server.Start();
-///   // Access files at: http://localhost:8080/{infoHash}/{filePath}
-///   // Or stream video: &lt;video src="http://localhost:8080/{hash}/movie.mp4"&gt;
+///   // Access files at: http://localhost:18770/{infoHash}/{filePath}
+///   // Or stream video: &lt;video src="http://localhost:18770/{hash}/movie.mp4"&gt;
 ///
 /// Equivalent to WebTorrent JS client.createServer().
-/// Desktop only — browser uses blob URLs instead.
+/// Desktop only — browser uses blob URLs or service worker streaming instead.
 /// </summary>
 public class TorrentHttpServer : IAsyncDisposable
 {
@@ -31,7 +30,7 @@ public class TorrentHttpServer : IAsyncDisposable
     /// <summary>Whether the server is running.</summary>
     public bool IsRunning => _listenTask != null;
 
-    public TorrentHttpServer(WebTorrentClient client, int port = 8080)
+    public TorrentHttpServer(WebTorrentClient client, int port = 18770)
     {
         _client = client;
         _port = port;
@@ -108,27 +107,46 @@ public class TorrentHttpServer : IAsyncDisposable
             var filePath = Uri.UnescapeDataString(path[(slashIdx + 1)..]);
 
             // Find torrent
-            var swarm = _client.Get(hashStr);
-            if (swarm?.Metadata == null)
+            var torrent = _client.Get(hashStr);
+            if (torrent?.Files == null)
             {
                 res.StatusCode = 404;
                 await WriteText(res, "Torrent not found");
                 return;
             }
 
-            // Find file
-            var file = swarm.Files.FirstOrDefault(f =>
-                f.Path.Equals(filePath, StringComparison.OrdinalIgnoreCase) ||
-                f.Name.Equals(filePath, StringComparison.OrdinalIgnoreCase));
+            // Find file — match by path or name, also support numeric file index
+            TorrentFileInfo? file = null;
+            int fileIndex = -1;
 
-            if (file == null)
+            if (int.TryParse(filePath, out var idx) && idx >= 0 && idx < torrent.Files.Length)
+            {
+                file = torrent.Files[idx];
+                fileIndex = idx;
+            }
+            else
+            {
+                for (int i = 0; i < torrent.Files.Length; i++)
+                {
+                    var f = torrent.Files[i];
+                    if (f.Path.Equals(filePath, StringComparison.OrdinalIgnoreCase) ||
+                        f.Name.Equals(filePath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        file = f;
+                        fileIndex = i;
+                        break;
+                    }
+                }
+            }
+
+            if (file == null || fileIndex < 0)
             {
                 res.StatusCode = 404;
                 await WriteText(res, "File not found");
                 return;
             }
 
-            await ServeFile(req, res, file);
+            await ServeFile(req, res, torrent, file, fileIndex);
         }
         catch (Exception ex)
         {
@@ -141,9 +159,8 @@ public class TorrentHttpServer : IAsyncDisposable
         }
     }
 
-    private async Task ServeFile(HttpListenerRequest req, HttpListenerResponse res, TorrentFileStream file)
+    private async Task ServeFile(HttpListenerRequest req, HttpListenerResponse res, Torrent torrent, TorrentFileInfo file, int fileIndex)
     {
-        var ext = System.IO.Path.GetExtension(file.Path).ToLowerInvariant();
         res.ContentType = file.Type;
 
         // Parse Range header
@@ -185,13 +202,13 @@ public class TorrentHttpServer : IAsyncDisposable
             return;
         }
 
-        // Stream the data in chunks
+        // Stream the data in chunks using torrent.ReadFileAsync
         int chunkSize = 65536;
         long pos = start;
         while (pos <= end)
         {
             int readLen = (int)Math.Min(chunkSize, end - pos + 1);
-            var data = await file.ReadAsync(pos, readLen);
+            var data = await torrent.ReadFileAsync(fileIndex, pos, readLen);
             await res.OutputStream.WriteAsync(data);
             pos += readLen;
         }
@@ -208,8 +225,8 @@ public class TorrentHttpServer : IAsyncDisposable
         sb.AppendLine("<ul>");
         foreach (var torrent in _client.Torrents)
         {
-            var hash = Convert.ToHexString(torrent.InfoHash).ToLowerInvariant();
-            var name = torrent.Metadata?.Name ?? hash[..8];
+            var hash = torrent.InfoHashHex;
+            var name = torrent.Name ?? hash[..Math.Min(8, hash.Length)];
             sb.AppendLine($"<li><a href='/{hash}/' style='color:#10b981'>{name}</a></li>");
         }
         sb.AppendLine("</ul></body></html>");
@@ -218,8 +235,8 @@ public class TorrentHttpServer : IAsyncDisposable
 
     private async Task ServeTorrentIndex(HttpListenerResponse res, string hashStr)
     {
-        var swarm = _client.Get(hashStr);
-        if (swarm?.Metadata == null)
+        var torrent = _client.Get(hashStr);
+        if (torrent?.Files == null)
         {
             res.StatusCode = 404;
             await WriteText(res, "Not found");
@@ -229,9 +246,9 @@ public class TorrentHttpServer : IAsyncDisposable
         res.ContentType = "text/html";
         var sb = new StringBuilder();
         sb.AppendLine("<html><body style='font-family:monospace;background:#0f172a;color:#f1f5f9'>");
-        sb.AppendLine($"<h2>{swarm.Metadata.Name}</h2>");
+        sb.AppendLine($"<h2>{torrent.Name ?? torrent.InfoHashHex}</h2>");
         sb.AppendLine("<ul>");
-        foreach (var file in swarm.Files)
+        foreach (var file in torrent.Files)
         {
             var url = $"/{hashStr}/{Uri.EscapeDataString(file.Path)}";
             sb.AppendLine($"<li><a href='{url}' style='color:#10b981'>{file.Path}</a> ({file.Length:N0} bytes)</li>");

@@ -3,7 +3,7 @@
 [![NuGet](https://img.shields.io/nuget/v/SpawnDev.WebTorrent.svg)](https://www.nuget.org/packages/SpawnDev.WebTorrent)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Runs on desktop (.NET) and browser (Blazor WASM). 374 real tests (426 pass, 0 fake). 15 BEPs implemented.
+Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Runs on desktop (.NET) and browser (Blazor WASM). 175 tests (109 shared + 66 NUnit). 17 BEPs implemented.
 
 ## Features
 
@@ -11,7 +11,7 @@ Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Run
 - **Desktop + Browser** — Same library, same API. WPF, console, Blazor WebAssembly.
 - **DI Singleton Services** — `WebTorrentClient` and `ServiceWorkerStreamHandler` implement `IAsyncBackgroundService`. Register once, start with the app, inject anywhere.
 - **Real WebRTC P2P** — Browser (SpawnDev.BlazorJS) and desktop (SIPSorcery) peers interop seamlessly via the same tracker.
-- **15 BEPs** — Full wire protocol, DHT, Fast Extension, ut_metadata, ut_pex, private torrents, magnet file selection, and more.
+- **17 BEPs** — Full wire protocol, DHT, Fast Extension, ut_metadata, ut_pex, private torrents, magnet file selection, tracker scrape, local service discovery, and more.
 - **3 Tracker Types** — WebSocket (browser+desktop), HTTP/HTTPS, UDP (desktop).
 - **Web Seed Download** — HTTP range requests with multi-file piece assembly (BEP 17/19).
 - **Persistent Storage** — Torrents and pieces persist in OPFS (browser) or filesystem (desktop). Survive page reloads. Resume downloading automatically.
@@ -21,11 +21,11 @@ Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Run
 - **Random-Access Streaming** — Read any byte range from a torrent file as it downloads. Pieces download on demand. Perfect for ML model weight streaming.
 - **Seeding** — Upload pieces to requesting peers with configurable rate limiting.
 - **Speed Tracking** — Real-time download/upload bytes/sec per torrent.
-- **AI Agent Communication** — BEP 46 DHT mutable items with real ECDSA-P256 signing via SpawnDev.BlazorJS.Cryptography. AgentChannel pub/sub for shared AI state.
+- **AI Agent Communication** — BEP 46 DHT mutable items with Ed25519 signing via SpawnDev.BlazorJS.Cryptography 3.1.0. AgentChannel pub/sub for shared AI state. `btpk` magnet URI support for mutable torrent subscriptions.
 - **HuggingFace Integration** — Optional server extension that proxies HuggingFace model CDN with local caching and automatic torrent generation.
 - **Custom Wire Extensions** — `UseExtension()` factory pattern (same as JS WebTorrent `wire.use()`). Build custom P2P protocols on top of the BitTorrent wire — distributed compute, AI agents, anything. Extensions negotiate via BEP 10.
 - **.torrent Creation** — Create and parse .torrent files. Complete Bencode encoder/decoder.
-- **374 Real Unit Tests** (426 pass, 92 fake tests purged 2026-04-03) — Every BEP tested, ECDSA crypto verified in browser, service worker streaming verified end-to-end, security tests for signature verification. Every test exercises real production code with meaningful assertions.
+- **175 Real Tests** (109 shared browser+desktop, 66 NUnit desktop) — Every BEP tested, Ed25519 signing verified, official BEP 46 test vector validated, live WebRTC interop with JS WebTorrent peers. No mocks. Every test exercises real production code with real data.
 
 ## Packages
 
@@ -47,11 +47,8 @@ using SpawnDev.WebTorrent;
 var builder = WebAssemblyHostBuilder.CreateDefault(args);
 builder.Services.AddBlazorJSRuntime();
 
-// Cross-platform crypto for BEP 46 signing
-if (OperatingSystem.IsBrowser())
-    builder.Services.AddSingleton<IPortableCrypto, BrowserWASMCrypto>();
-else
-    builder.Services.AddSingleton<IPortableCrypto, DotNetCrypto>();
+// Cross-platform Ed25519 crypto for BEP 44/46 signing
+builder.Services.AddPlatformCrypto();
 
 // Persistent file system (OPFS in browser)
 builder.Services.AddSingleton<IAsyncFS, AsyncFSFileSystemDirectoryHandle>();

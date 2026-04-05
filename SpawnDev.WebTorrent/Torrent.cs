@@ -179,7 +179,7 @@ public partial class Torrent : IAsyncDisposable
     public event Action<Wire, string>? OnWire;
     public event Action? OnMetadata;
     public event Action? OnReady;
-    public event Action<string>? OnInfoHash;
+    public event Action? OnInfoHash;
     public event Action<int>? OnDownload;  // bytes downloaded in this chunk
     public event Action<int>? OnUpload;    // bytes uploaded in this chunk
     public event Action? OnIdle;           // no active selections, now seeding

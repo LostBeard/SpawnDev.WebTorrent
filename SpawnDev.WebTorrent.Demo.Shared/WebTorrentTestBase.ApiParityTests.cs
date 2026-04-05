@@ -289,6 +289,55 @@ public abstract partial class WebTorrentTestBase
         await client.DisposeAsync();
     }
 
+    // ── Blob API ──
+
+    [TestMethod]
+    public async Task Torrent_TorrentFileBlob_ExistsInBrowser()
+    {
+        if (!OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("Blob requires browser JS runtime");
+        var torrent = await Client.SeedAsync("blob.bin", MakeDeterministicData(16384, seed: 970));
+        using var blob = torrent.TorrentFileBlob;
+        if (blob == null) throw new Exception("TorrentFileBlob should not be null in browser");
+        await Client.RemoveAsync(torrent);
+    }
+
+    [TestMethod]
+    public async Task Torrent_TorrentFileBlob_NullOnDesktop()
+    {
+        if (OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("Testing desktop behavior");
+        var client = CreateIsolatedClient();
+        var torrent = await client.SeedAsync("blob-dt.bin", MakeDeterministicData(16384, seed: 971));
+        if (torrent.TorrentFileBlob != null)
+            throw new Exception("TorrentFileBlob should be null on desktop (no JS runtime)");
+        await client.DisposeAsync();
+    }
+
+    [TestMethod]
+    public async Task File_BlobAsync_InBrowser()
+    {
+        if (!OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("Blob requires browser JS runtime");
+        var torrent = await Client.SeedAsync("fblob.bin", MakeDeterministicData(16384, seed: 972));
+        using var blob = await torrent.Files![0].BlobAsync();
+        if (blob == null) throw new Exception("File BlobAsync should not be null");
+        if (blob.Size != 16384) throw new Exception($"Blob size wrong: {blob.Size}");
+        await Client.RemoveAsync(torrent);
+    }
+
+    [TestMethod]
+    public async Task File_BlobAsync_NullWhenNotDone()
+    {
+        var client = CreateIsolatedClient();
+        var (torrentBytes, _) = TorrentCreator.CreateFromBytes("blobnd.bin", MakeDeterministicData(16384, seed: 973));
+        var torrent = client.Add(torrentBytes, new AddTorrentOptions { Paused = true });
+        // File not done — BlobAsync should return null
+        var blob = await torrent.Files![0].BlobAsync();
+        if (blob != null) throw new Exception("BlobAsync should return null when file not done");
+        await client.DisposeAsync();
+    }
+
     // ── File.StreamAsync() IAsyncEnumerable ──
 
     [TestMethod]

@@ -298,6 +298,22 @@ public partial class Torrent : IAsyncDisposable
     /// <summary>Original .torrent file bytes for export/re-distribution.</summary>
     public byte[]? TorrentFileBytes { get; set; }
 
+    /// <summary>
+    /// Get the .torrent file as a JS Blob (browser) for zero-copy download links.
+    /// Returns null if TorrentFileBytes is null or not in browser.
+    /// The caller owns the Blob and must dispose it.
+    /// </summary>
+    public SpawnDev.BlazorJS.JSObjects.Blob? TorrentFileBlob
+    {
+        get
+        {
+            if (TorrentFileBytes == null || !OperatingSystem.IsBrowser()) return null;
+            return new SpawnDev.BlazorJS.JSObjects.Blob(
+                new[] { TorrentFileBytes },
+                new SpawnDev.BlazorJS.JSObjects.BlobOptions { Type = "application/x-bittorrent" });
+        }
+    }
+
     /// <summary>Comment embedded in .torrent file.</summary>
     public string? Comment { get; set; }
 
@@ -809,6 +825,72 @@ public class TorrentFileInfo
 
     /// <summary>Alias for Length (matches JS WebTorrent file.size).</summary>
     public long Size => Length;
+
+    /// <summary>
+    /// Get the file as a JS Blob. In browser with OPFS, uses zero-copy Uint8Array path
+    /// (data stays in JS land, no .NET→JS round-trip). On desktop, falls back to byte[].
+    /// The caller owns the Blob and must dispose it.
+    /// </summary>
+    public async Task<SpawnDev.BlazorJS.JSObjects.Blob?> BlobAsync(CancellationToken ct = default)
+    {
+        if (Torrent == null || !Done) return null;
+
+        // Try zero-copy path: assemble Blob from Uint8Array pieces directly in JS
+        if (Torrent._store is Storage.AsyncFSChunkStore opfsStore && opfsStore.SupportsUint8Array)
+        {
+            var parts = new List<SpawnDev.BlazorJS.JSObjects.Uint8Array>();
+            try
+            {
+                for (int i = StartPiece; i <= EndPiece; i++)
+                {
+                    var uint8 = await opfsStore.GetUint8ArrayAsync(i, ct);
+                    if (uint8 == null) { DisposeParts(parts); return null; }
+
+                    // Trim to file boundaries for first/last piece
+                    if (i == StartPiece || i == EndPiece)
+                    {
+                        long pieceStart = (long)i * Torrent.PieceLength;
+                        int sliceStart = i == StartPiece ? (int)(Offset - pieceStart) : 0;
+                        int sliceEnd = i == EndPiece ? (int)(Offset + Length - pieceStart) : (int)uint8.Length;
+                        if (sliceStart > 0 || sliceEnd < uint8.Length)
+                        {
+                            var sliced = uint8.Slice(sliceStart, sliceEnd);
+                            uint8.Dispose();
+                            uint8 = sliced;
+                        }
+                    }
+                    parts.Add(uint8);
+                }
+
+                // Convert Uint8Arrays to byte arrays for Blob construction
+                // (SpawnDev.BlazorJS Blob accepts byte[][] — the conversion is fast
+                // since the Uint8Array is already in JS memory)
+                var byteArrays = new List<byte[]>();
+                foreach (var part in parts)
+                    byteArrays.Add(part.ReadBytes());
+                var blob = new SpawnDev.BlazorJS.JSObjects.Blob(
+                    byteArrays.ToArray(),
+                    new SpawnDev.BlazorJS.JSObjects.BlobOptions { Type = Type });
+                return blob;
+            }
+            finally
+            {
+                DisposeParts(parts);
+            }
+        }
+
+        // Fallback: read full file as byte[], create Blob from that
+        var data = await GetArrayBufferAsync(ct);
+        return new SpawnDev.BlazorJS.JSObjects.Blob(
+            new[] { data },
+            new SpawnDev.BlazorJS.JSObjects.BlobOptions { Type = Type });
+    }
+
+    private static void DisposeParts(List<SpawnDev.BlazorJS.JSObjects.Uint8Array> parts)
+    {
+        foreach (var p in parts) p.Dispose();
+        parts.Clear();
+    }
 
     /// <summary>Check if a piece index contains data from this file.</summary>
     public bool Includes(int pieceIndex) => pieceIndex >= StartPiece && pieceIndex <= EndPiece;

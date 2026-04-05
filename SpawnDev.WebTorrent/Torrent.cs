@@ -189,6 +189,8 @@ public partial class Torrent : IAsyncDisposable
         MagnetUri = magnetUri;
         Strategy = opts.Strategy;
 
+        if (opts.Paused) Paused = true;
+
         ParseMagnet(magnetUri);
         if (string.IsNullOrEmpty(InfoHash))
             throw new Exception("Malformed magnet: no info hash");
@@ -204,6 +206,7 @@ public partial class Torrent : IAsyncDisposable
         _http = new HttpClient();
         PeerIdHex = client.PeerId;
         Strategy = opts.Strategy;
+        if (opts.Paused) Paused = true;
 
         SetMetadata(metadata);
         StartRechoke();
@@ -343,7 +346,8 @@ public partial class Torrent : IAsyncDisposable
         if (_client?.EnableWebSeeds == true)
             foreach (var url in UrlList) AddWebSeed(url);
 
-        if (Pieces.Length > 0)
+        // Select all pieces for download — unless torrent was added in paused mode
+        if (Pieces.Length > 0 && !Paused)
             _selections.Insert(new SelectionItem { From = 0, To = Pieces.Length - 1, Priority = 0 });
 
         foreach (var wire in Wires.ToArray())
@@ -518,6 +522,14 @@ public partial class Torrent : IAsyncDisposable
         long absOffset = file.Offset + offset;
         var result = new byte[length];
         int resultPos = 0;
+
+        // Auto-select file pieces and resume if needed — enables on-demand streaming
+        if (Paused || !_selections.Any())
+        {
+            // Select this file's piece range so pieces will be requested
+            Select(file.StartPiece, file.EndPiece, 1);
+            if (Paused) Resume();
+        }
 
         while (resultPos < length)
         {

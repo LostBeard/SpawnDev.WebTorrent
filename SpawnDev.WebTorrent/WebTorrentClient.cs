@@ -567,4 +567,10 @@ public class AddTorrentOptions
     public bool DisableWebSeeds { get; set; }
     public string Strategy { get; set; } = "rarest";
     public string? Path { get; set; }
+    /// <summary>
+    /// Add torrent in paused state. Metadata will download (via ut_metadata),
+    /// but no piece data downloads until files are selected or a read/stream is requested.
+    /// Enables "metadata-only" mode for browsing torrent contents before downloading.
+    /// </summary>
+    public bool Paused { get; set; }
 }

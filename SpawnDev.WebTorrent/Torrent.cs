@@ -127,6 +127,7 @@ public partial class Torrent : IAsyncDisposable
 
     private const int MaxSpeedHistoryLength = 60;
     private Timer? _speedTimer;
+    private Timer? _noPeersTimer;
 
     /// <summary>Sample current speed. Called periodically by speed timer.</summary>
     internal void SampleSpeed()
@@ -159,6 +160,28 @@ public partial class Torrent : IAsyncDisposable
         _lastSpeedSample = DateTime.UtcNow;
         _speedTimer?.Dispose();
         _speedTimer = new Timer(_ => SampleSpeed(), null, 1000, 1000);
+    }
+
+    /// <summary>Seconds between "no peers" event checks. Default 30.</summary>
+    private int _noPeersIntervalTime = 30;
+
+    /// <summary>Start noPeers timer. Fires OnNoPeers for each enabled source with zero peers.</summary>
+    private void StartNoPeersTimer()
+    {
+        var intervalMs = _noPeersIntervalTime * 1000;
+        _noPeersTimer?.Dispose();
+        _noPeersTimer = new Timer(_ => CheckNoPeers(), null, intervalMs, intervalMs);
+    }
+
+    private void CheckNoPeers()
+    {
+        if (Destroyed || Done) return;
+        if (_peers.Count == 0)
+        {
+            // Fire for each enabled source — matches JS behavior
+            if (AnnounceUrls.Length > 0) OnNoPeers?.Invoke("tracker");
+            if (_discovery != null) OnNoPeers?.Invoke("dht");
+        }
     }
 
     // Discovery
@@ -201,11 +224,13 @@ public partial class Torrent : IAsyncDisposable
         if (opts.Paused) Paused = true;
         if (opts.Deselect) _deselect = true;
         if (opts.MaxWebConns > 0) MaxWebConns = opts.MaxWebConns;
+        if (opts.NoPeersIntervalTime > 0) _noPeersIntervalTime = opts.NoPeersIntervalTime;
 
         ParseMagnet(magnetUri);
         if (string.IsNullOrEmpty(InfoHash))
             throw new Exception("Malformed magnet: no info hash");
 
+        OnInfoHash?.Invoke();
         StartRechoke();
         StartDiscovery();
     }
@@ -220,6 +245,7 @@ public partial class Torrent : IAsyncDisposable
         if (opts.Paused) Paused = true;
         if (opts.Deselect) _deselect = true;
         if (opts.MaxWebConns > 0) MaxWebConns = opts.MaxWebConns;
+        if (opts.NoPeersIntervalTime > 0) _noPeersIntervalTime = opts.NoPeersIntervalTime;
 
         SetMetadata(metadata);
         StartRechoke();
@@ -329,6 +355,7 @@ public partial class Torrent : IAsyncDisposable
         if (HasMetadata) return;
 
         InfoHash = metadata.InfoHash;
+        OnInfoHash?.Invoke();
         Name = metadata.Name;
         PieceLength = metadata.PieceLength;
         Length = metadata.TotalLength;
@@ -383,6 +410,7 @@ public partial class Torrent : IAsyncDisposable
             OnWireWithMetadata(wire);
 
         StartSpeedTimer();
+        StartNoPeersTimer();
 
         // Persist .torrent metadata for restore after page reload
         if (_client?.AsyncFileSystem != null && TorrentFileBytes != null && !string.IsNullOrEmpty(InfoHash))
@@ -474,6 +502,21 @@ public partial class Torrent : IAsyncDisposable
             {
                 _client?.ApplyExtensions(peer.WireInstance);
                 Wires.Add(peer.WireInstance);
+
+                // Bubble wire download/upload events → peer → torrent → client
+                peer.WireInstance.OnDownload += (bytes) =>
+                {
+                    peer.EmitDownload(bytes);
+                    OnDownload?.Invoke(bytes);
+                    _client?.EmitDownload(bytes);
+                };
+                peer.WireInstance.OnUpload += (bytes) =>
+                {
+                    peer.EmitUpload(bytes);
+                    OnUpload?.Invoke(bytes);
+                    _client?.EmitUpload(bytes);
+                };
+
                 OnWire?.Invoke(peer.WireInstance, peer.Id);
                 if (HasMetadata) OnWireWithMetadata(peer.WireInstance);
 
@@ -685,6 +728,7 @@ public partial class Torrent : IAsyncDisposable
         Destroyed = true;
 
         _speedTimer?.Dispose();
+        _noPeersTimer?.Dispose();
         _rechokeTimer?.Dispose();
         _rarityMap?.Destroy();
 

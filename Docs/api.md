@@ -135,6 +135,8 @@ Destroy the client and all torrents.
 | `OnAdd` | `Action<Torrent>` | Torrent added to client |
 | `OnRemove` | `Action<Torrent>` | Torrent removed from client |
 | `OnTorrentReady` | `Action<Torrent>` | Torrent metadata resolved and ready |
+| `OnDownload` | `Action<int>` | Bytes downloaded across any torrent (bubbles from Wire -> Torrent -> Client) |
+| `OnUpload` | `Action<int>` | Bytes uploaded across any torrent (bubbles from Wire -> Torrent -> Client) |
 | `OnWarning` | `Action<string>` | Non-fatal warning |
 | `OnError` | `Action<Exception>` | Fatal error |
 | `OnMutableUpdate` | `Action<Torrent, string>` | BEP 46: mutable torrent updated to new info hash |
@@ -146,7 +148,10 @@ Destroy the client and all torrents.
 | `DisableWebSeeds` | `bool` | `false` | Disable web seeds for this torrent |
 | `Strategy` | `string` | `"rarest"` | Piece selection strategy: `"rarest"` or `"sequential"` |
 | `Path` | `string?` | `null` | Download path (desktop) |
-| `Paused` | `bool` | `false` | Add in paused state — metadata downloads but no pieces until files selected or read requested |
+| `Paused` | `bool` | `false` | Add in paused state - metadata downloads but no pieces. Chokes all wires and cancels requests. Auto-resumes on `ReadFileAsync`. |
+| `Deselect` | `bool` | `false` | Add without selecting any pieces. Peers connect normally but no pieces are requested until files are individually `Select()`'d. Unlike `Paused`, wires are not choked. |
+| `MaxWebConns` | `int` | `4` | Max simultaneous web seed connections for this torrent |
+| `NoPeersIntervalTime` | `int` | `30` | Seconds between `OnNoPeers` event checks. Fires per enabled source (tracker, dht) when no peers are connected. |
 
 ### TorrentCreatorOptions
 
@@ -196,6 +201,7 @@ Represents a torrent in the client. Returned by `client.Add()` and `client.SeedA
 | `ComputedMagnetUri` | `string` | Magnet URI with trackers and web seeds |
 | `MagnetUri` | `string?` | Original magnet URI (if added via magnet) |
 | `TorrentFileBytes` | `byte[]?` | Raw `.torrent` file bytes |
+| `TorrentFileBlob` | `Blob?` | Zero-copy JS Blob of the `.torrent` file (browser only). Caller owns the Blob and must dispose it. |
 | `Files` | `TorrentFileInfo[]?` | Array of files in the torrent |
 | `Pieces` | `Piece[]` | Array of piece objects |
 | `Bitfield` | `bool[]` | Per-piece download status |
@@ -272,10 +278,15 @@ Fire the `OnMutableUpdate` event (used by BEP 46 subscription system).
 
 | Event | Signature | Description |
 |-------|-----------|-------------|
-| `OnWire` | `Action<Wire, string>` | New peer wire connected (wire, address) |
+| `OnWire` | `Action<Wire, string>` | New peer wire connected (wire, peerId) |
 | `OnMetadata` | `Action` | Metadata resolved (files, pieces available) |
 | `OnReady` | `Action` | Torrent ready for use |
-| `OnDone` | `Action` | All pieces downloaded |
+| `OnInfoHash` | `Action` | Info hash determined (fires after magnet parse or metadata set, before `OnReady`) |
+| `OnDownload` | `Action<int>` | Bytes downloaded from a peer (bubbles from Wire -> Peer -> Torrent) |
+| `OnUpload` | `Action<int>` | Bytes uploaded to a peer (bubbles from Wire -> Peer -> Torrent) |
+| `OnDone` | `Action` | All pieces downloaded and verified |
+| `OnIdle` | `Action` | All selections complete, now seeding. Fires alongside `OnDone`. |
+| `OnNoPeers` | `Action<string>` | No peers found via source. Arg is source name: `"tracker"`, `"dht"`. Fires on a periodic timer. |
 | `OnWarning` | `Action<string>` | Non-fatal warning |
 | `OnPieceVerified` | `Action<int>` | Piece verified successfully (piece index) |
 | `OnMutableUpdate` | `Action<string>` | BEP 46: new info hash published by mutable torrent owner |
@@ -338,6 +349,15 @@ var buffer = new byte[4096];
 var bytesRead = await stream.ReadAsync(buffer);
 stream.Position = 1_000_000; // seek
 bytesRead = await stream.ReadAsync(buffer);
+```
+
+#### `BlobAsync(CancellationToken ct = default)`
+
+Get the entire file as a JS `Blob` for zero-copy download links or object URLs. Browser only. Waits for all pieces to download.
+
+```csharp
+var blob = await file.BlobAsync();
+var url = URL.CreateObjectURL(blob);
 ```
 
 #### `StreamTo(HTMLMediaElement elem)`
@@ -447,6 +467,8 @@ Feed raw bytes from the transport into the wire protocol parser.
 | `OnCancel` | `Action<int, int, int>` | Request cancelled (index, offset, length) |
 | `OnPort` | `Action<int>` | DHT port received |
 | `OnHaveAll` / `OnHaveNone` | `Action` | BEP 6 Fast Extension |
+| `OnDownload` | `Action<int>` | Bytes downloaded from peer (piece data received) |
+| `OnUpload` | `Action<int>` | Bytes uploaded to peer (piece data sent) |
 | `OnExtended` | `Action<string, byte[]>` | BEP 10 extended message (name, data) |
 | `OnClose` | `Action` | Wire closed |
 

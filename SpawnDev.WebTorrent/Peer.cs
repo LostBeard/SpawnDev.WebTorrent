@@ -79,6 +79,12 @@ public class Peer
     public event Action<long>? OnDownload;  // bytes
     public event Action<long>? OnUpload;    // bytes
 
+    /// <summary>Fire download event (called by Torrent when wire data arrives).</summary>
+    internal void EmitDownload(long bytes) => OnDownload?.Invoke(bytes);
+
+    /// <summary>Fire upload event (called by Torrent when wire data is sent).</summary>
+    internal void EmitUpload(long bytes) => OnUpload?.Invoke(bytes);
+
     // ========================
     // CONSTRUCTOR
     // ========================

@@ -129,8 +129,16 @@ public class WebTorrentClient : IAsyncDisposable
     public event Action<Torrent>? OnAdd;
     public event Action<Torrent>? OnRemove;
     public event Action<Torrent>? OnTorrentReady;
+    public event Action<int>? OnDownload;   // bytes downloaded across any torrent
+    public event Action<int>? OnUpload;     // bytes uploaded across any torrent
     public event Action<string>? OnWarning;
     public event Action<Exception>? OnError;
+
+    /// <summary>Called by Torrent when wire download event bubbles up.</summary>
+    internal void EmitDownload(int bytes) => OnDownload?.Invoke(bytes);
+
+    /// <summary>Called by Torrent when wire upload event bubbles up.</summary>
+    internal void EmitUpload(int bytes) => OnUpload?.Invoke(bytes);
 
     // ========================
     // CONSTRUCTOR
@@ -258,6 +266,7 @@ public class WebTorrentClient : IAsyncDisposable
         }
 
         Torrents.Add(torrent);
+        torrent.OnReady += () => OnTorrentReady?.Invoke(torrent);
         OnAdd?.Invoke(torrent);
 
         return torrent;
@@ -335,6 +344,7 @@ public class WebTorrentClient : IAsyncDisposable
         if (existing != null) return existing;
 
         Torrents.Add(torrent);
+        torrent.OnReady += () => OnTorrentReady?.Invoke(torrent);
         OnAdd?.Invoke(torrent);
         return torrent;
     }
@@ -490,6 +500,7 @@ public class WebTorrentClient : IAsyncDisposable
         if (existing != null) return existing;
 
         Torrents.Add(torrent);
+        torrent.OnReady += () => OnTorrentReady?.Invoke(torrent);
         OnAdd?.Invoke(torrent);
 
         return torrent;

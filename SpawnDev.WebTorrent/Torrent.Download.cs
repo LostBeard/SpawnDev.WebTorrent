@@ -477,6 +477,7 @@ public partial class Torrent
         {
             Done = true;
             OnDone?.Invoke();
+            OnIdle?.Invoke();
         }
     }
 

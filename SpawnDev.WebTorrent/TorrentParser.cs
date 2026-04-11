@@ -32,13 +32,22 @@ public static class TorrentParser
                 metadata.AnnounceUrls = urls.ToArray();
         }
 
-        // Web seeds (url-list)
+        // Web seeds - BEP 19 (url-list)
         if (dict.TryGetValue("url-list", out var urlList))
         {
             if (urlList is List<object> urls)
                 metadata.UrlList = urls.OfType<byte[]>().Select(u => Encoding.UTF8.GetString(u)).ToArray();
             else if (urlList is byte[] singleUrl)
                 metadata.UrlList = new[] { Encoding.UTF8.GetString(singleUrl) };
+        }
+
+        // HTTP seeds - BEP 17 Hoffman-style (httpseeds)
+        if (dict.TryGetValue("httpseeds", out var httpSeeds))
+        {
+            if (httpSeeds is List<object> seeds)
+                metadata.HttpSeeds = seeds.OfType<byte[]>().Select(u => Encoding.UTF8.GetString(u)).ToArray();
+            else if (httpSeeds is byte[] singleSeed)
+                metadata.HttpSeeds = new[] { Encoding.UTF8.GetString(singleSeed) };
         }
 
         // Info dictionary

@@ -29,6 +29,8 @@ public partial class Torrent : IAsyncDisposable
     public bool HasMetadata => _hashes.Length > 0;
     public string[] AnnounceUrls { get; set; } = Array.Empty<string>();
     public string[] UrlList { get; set; } = Array.Empty<string>();
+    /// <summary>BEP 17 Hoffman-style HTTP seed URLs.</summary>
+    public string[] HttpSeeds { get; set; } = Array.Empty<string>();
     public bool IsPrivate { get; set; }
 
     /// <summary>BEP 53: Selected file indices from magnet so= parameter. Null if not specified.</summary>
@@ -411,6 +413,8 @@ public partial class Torrent : IAsyncDisposable
             AnnounceUrls = metadata.AnnounceUrls;
         if (UrlList.Length == 0 && metadata.UrlList != null)
             UrlList = metadata.UrlList;
+        if (HttpSeeds.Length == 0 && metadata.HttpSeeds != null)
+            HttpSeeds = metadata.HttpSeeds;
 
         // Initialize chunk store if not already set (e.g., by SeedAsync)
         if (_store == null)
@@ -424,7 +428,12 @@ public partial class Torrent : IAsyncDisposable
         _rarityMap = new RarityMap(this);
 
         if (_client?.EnableWebSeeds == true)
+        {
+            // BEP 19: GetRight-style web seeds (url-list)
             foreach (var url in UrlList) AddWebSeed(url);
+            // BEP 17: Hoffman-style HTTP seeds (httpseeds)
+            foreach (var url in HttpSeeds) AddHttpSeed(url);
+        }
 
         // Select pieces for download - unless paused or deselect mode
         if (Pieces.Length > 0 && !Paused && !_deselect)
@@ -735,6 +744,87 @@ public partial class Torrent : IAsyncDisposable
         wire.AmInterested = true;
 
         OnWire?.Invoke(wire, url);
+        if (HasMetadata) OnWireWithMetadata(wire);
+    }
+
+    /// <summary>Add a BEP 17 Hoffman-style HTTP seed. Uses ?info_hash=X&piece=N query format.</summary>
+    public void AddHttpSeed(string seedUrl)
+    {
+        if (Destroyed || !HasMetadata || _http == null || string.IsNullOrEmpty(InfoHash)) return;
+        if (_webConns.Any(wc => wc.Url == seedUrl)) return;
+
+        var webConn = new WebConn(seedUrl, this, _http);
+        var wire = webConn.WireInstance;
+        wire.RemoteAddress = seedUrl;
+
+        // BEP 17: intercept request messages and fetch via ?info_hash=X&piece=N&ranges=offset-length
+        var infoHashBytes = Convert.FromHexString(InfoHash);
+        wire.SendRaw = async (data) =>
+        {
+            try
+            {
+                if (data.Length >= 17 && data[4] == 6)
+                {
+                    int pieceIndex = (data[5] << 24) | (data[6] << 16) | (data[7] << 8) | data[8];
+                    int offset = (data[9] << 24) | (data[10] << 16) | (data[11] << 8) | data[12];
+                    int length = (data[13] << 24) | (data[14] << 16) | (data[15] << 8) | data[16];
+
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var pendingReq = wire.Requests.ToArray().FirstOrDefault(r => r.Piece == pieceIndex && r.Offset == offset);
+                            if (pendingReq == null) return;
+
+                            // BEP 17 URL: seedUrl?info_hash=XXXX&piece=N&ranges=offset-length
+                            var encodedHash = Uri.EscapeDataString(System.Text.Encoding.Latin1.GetString(infoHashBytes));
+                            var requestUrl = $"{seedUrl}?info_hash={encodedHash}&piece={pieceIndex}";
+                            if (offset > 0 || length < PieceLength)
+                                requestUrl += $"&ranges={offset}-{offset + length - 1}";
+
+                            using var cts = new CancellationTokenSource(60_000);
+                            var pieceData = await _http!.GetByteArrayAsync(requestUrl, cts.Token);
+
+                            // Extract the requested range from the response
+                            byte[] block;
+                            if (offset > 0 || pieceData.Length > length)
+                            {
+                                block = new byte[Math.Min(length, pieceData.Length - offset)];
+                                Array.Copy(pieceData, offset, block, 0, block.Length);
+                            }
+                            else
+                            {
+                                block = pieceData;
+                            }
+
+                            wire.Downloaded += block.Length;
+                            Interlocked.Add(ref wire._downloadedSinceLastCheck, block.Length);
+                            wire.Requests.Remove(pendingReq);
+                            pendingReq.Callback(null, block);
+                        }
+                        catch (Exception ex)
+                        {
+                            var pendingReq = wire.Requests.ToArray().FirstOrDefault(r => r.Piece == pieceIndex && r.Offset == offset);
+                            if (pendingReq != null)
+                            {
+                                wire.Requests.Remove(pendingReq);
+                                pendingReq.Callback(ex, null);
+                            }
+                        }
+                    });
+                }
+            }
+            catch { }
+        };
+
+        _webConns.Add(webConn);
+        Wires.Add(wire);
+
+        wire.PeerHasAll = true;
+        wire.PeerChoking = false;
+        wire.AmInterested = true;
+
+        OnWire?.Invoke(wire, seedUrl);
         if (HasMetadata) OnWireWithMetadata(wire);
     }
 
@@ -1180,6 +1270,8 @@ public class TorrentMetadata
     public byte[][] PieceHashes { get; set; } = Array.Empty<byte[]>();
     public TorrentFileInfo[] Files { get; set; } = Array.Empty<TorrentFileInfo>();
     public string[]? UrlList { get; set; }
+    /// <summary>BEP 17 Hoffman-style HTTP seed URLs (httpseeds key in .torrent).</summary>
+    public string[]? HttpSeeds { get; set; }
     public string[]? AnnounceUrls { get; set; }
     /// <summary>Raw bencoded info dictionary bytes (for computing info hash without re-encoding).</summary>
     public byte[]? InfoDictBytes { get; set; }

@@ -15,12 +15,14 @@ public class TorrentReadStream : Stream
 {
     private readonly TorrentFileInfo _file;
     private long _position;
+    private readonly long _streamStart;
     private readonly long _streamEnd; // -1 = full file
 
     public TorrentReadStream(TorrentFileInfo file, long startPosition = 0)
     {
         _file = file;
         _position = startPosition;
+        _streamStart = startPosition;
         _streamEnd = -1;
     }
 
@@ -29,13 +31,14 @@ public class TorrentReadStream : Stream
     {
         _file = file;
         _position = start;
+        _streamStart = start;
         _streamEnd = end;
     }
 
     public override bool CanRead => true;
     public override bool CanSeek => true;
     public override bool CanWrite => false;
-    public override long Length => _streamEnd >= 0 ? _streamEnd + 1 : _file.Length;
+    public override long Length => _streamEnd >= 0 ? _streamEnd - _streamStart + 1 : _file.Length;
 
     public override long Position
     {

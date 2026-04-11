@@ -47,6 +47,8 @@ public class Selections : IEnumerable<SelectionItem>
         if (!newItem.IsStreamSelection)
             Concatenate(newItem);
         _items.Add(newItem);
+        // Sort by priority descending so high-priority selections are tried first
+        _items.Sort((a, b) => b.Priority - a.Priority);
     }
 
     public void Concatenate(SelectionItem newItem)

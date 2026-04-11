@@ -755,7 +755,7 @@ public partial class Torrent : IAsyncDisposable
 
     public void Critical(int start, int end)
     {
-        for (int i = start; i <= end; i++) _critical[i] = true;
+        for (int i = start; i <= end; i++) _critical.TryAdd(i, true);
     }
 
     // ========================
@@ -818,6 +818,9 @@ public partial class Torrent : IAsyncDisposable
                     ct.ThrowIfCancellationRequested();
                     await Task.Delay(100, ct);
                 }
+
+                // Clear critical flag now that piece has arrived
+                _critical.TryRemove(pieceIdx, out _);
 
                 if (Destroyed) throw new OperationCanceledException("Torrent destroyed while waiting for piece");
             }

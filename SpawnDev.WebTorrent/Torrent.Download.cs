@@ -31,7 +31,7 @@ public partial class Torrent
 
     private RarityMap? _rarityMap;
     private Selections _selections = new();
-    private Dictionary<int, bool> _critical = new();
+    private System.Collections.Concurrent.ConcurrentDictionary<int, bool> _critical = new();
     private Dictionary<int, Wire?[]> _reservations = new();
     private int _rechokeNumSlots = 10;  // JS default: opts.uploads || 10
     private Wire? _rechokeOptimisticWire;

@@ -175,8 +175,12 @@ public class TorrentHttpServer : IAsyncDisposable
             var parts = rangeStr.Split('-');
             if (parts.Length == 2)
             {
-                if (long.TryParse(parts[0], out var s)) start = s;
-                if (!string.IsNullOrEmpty(parts[1]) && long.TryParse(parts[1], out var e)) end = e;
+                if (!string.IsNullOrEmpty(parts[0]) && long.TryParse(parts[0], out var s))
+                    start = s;
+                else if (string.IsNullOrEmpty(parts[0]) && !string.IsNullOrEmpty(parts[1]) && long.TryParse(parts[1], out var suffix))
+                    start = Math.Max(0, file.Length - suffix); // suffix range: bytes=-500 means last 500 bytes
+                if (!string.IsNullOrEmpty(parts[1]) && !string.IsNullOrEmpty(parts[0]) && long.TryParse(parts[1], out var e))
+                    end = e;
                 isRange = true;
             }
         }

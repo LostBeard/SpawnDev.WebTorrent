@@ -187,7 +187,7 @@ public class StreamRequest
             if (rangeEnd >= totalSize) rangeEnd = totalSize - 1;
         }
 
-        var length = (int)(rangeEnd - rangeStart + 1);
+        var length = rangeEnd - rangeStart + 1;
 
         var responseHeaders = new Dictionary<string, string>
         {
@@ -208,7 +208,7 @@ public class StreamRequest
         };
 
         // Wire up pull handler FIRST, then Start, then PostMessage (order matters)
-        var streamState = new StreamState(Port, torrent, fileIndex, rangeStart, length);
+        var streamState = new StreamState(Port, torrent, fileIndex, rangeStart, (int)Math.Min(length, int.MaxValue));
         Port.OnMessage += streamState.HandlePull;
         Port.Start();
         Port.PostMessage(response);

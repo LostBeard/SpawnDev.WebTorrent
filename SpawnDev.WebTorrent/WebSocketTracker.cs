@@ -67,12 +67,13 @@ public class WebSocketTracker : IAsyncDisposable
     private readonly byte[] _peerId;       // 20 bytes
     private readonly string _peerIdBinary;    // latin1 binary string
 
-    // Per-info_hash event handlers - routes responses to the correct torrent
+    // Per-info_hash event handlers and peer factories - routes responses to the correct torrent
     private readonly Dictionary<string, Action<SimplePeer>> _peerHandlers = new();
     private readonly Dictionary<string, Action<TrackerUpdate>> _updateHandlers = new();
     private readonly Dictionary<string, Action<string>> _warningHandlers = new();
+    private readonly Dictionary<string, Func<bool, SimplePeer>> _peerFactories = new();
 
-    // Factory for creating SimplePeer instances
+    // Default factory for creating SimplePeer instances (fallback)
     private readonly Func<bool, SimplePeer> _createPeerFunc;
 
     // ========================
@@ -106,10 +107,11 @@ public class WebSocketTracker : IAsyncDisposable
     }
 
     /// <summary>Subscribe to events for a specific info_hash on this shared tracker connection.</summary>
-    public void Subscribe(byte[] infoHash, Action<SimplePeer> onPeer, Action<TrackerUpdate>? onUpdate = null, Action<string>? onWarning = null)
+    public void Subscribe(byte[] infoHash, Action<SimplePeer> onPeer, Func<bool, SimplePeer>? peerFactory = null, Action<TrackerUpdate>? onUpdate = null, Action<string>? onWarning = null)
     {
         var key = ToBinaryString(infoHash);
         _peerHandlers[key] = onPeer;
+        if (peerFactory != null) _peerFactories[key] = peerFactory;
         if (onUpdate != null) _updateHandlers[key] = onUpdate;
         if (onWarning != null) _warningHandlers[key] = onWarning;
     }
@@ -358,7 +360,9 @@ public class WebSocketTracker : IAsyncDisposable
         // Incoming offer from another peer - create answering peer
         if (data.TryGetProperty("offer", out var offerProp) && data.TryGetProperty("peer_id", out var offerPeerId))
         {
-            var peer = _createPeerFunc(false); // responder
+            // Use per-info_hash peer factory if available, otherwise default
+            var factory = _peerFactories.TryGetValue(responseInfoHash, out var f) ? f : _createPeerFunc;
+            var peer = factory(false); // responder
             await peer.InitAsync(); // Initialize RTCPeerConnection before signaling
             var offerId = data.TryGetProperty("offer_id", out var oidProp) ? oidProp.GetString() ?? "" : "";
             var remotePeerId = offerPeerId.GetString() ?? "";

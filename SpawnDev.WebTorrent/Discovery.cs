@@ -56,6 +56,7 @@ public class Discovery : IAsyncDisposable
                 // Subscribe this torrent's handlers to the shared connection
                 tracker.Subscribe(infoHash,
                     onPeer: (peer) => OnWebRtcPeer?.Invoke(peer),
+                    peerFactory: createPeerFunc,
                     onUpdate: (update) => OnTrackerUpdate?.Invoke(update),
                     onWarning: (msg) => OnWarning?.Invoke(msg));
                 tracker.OnAnnounce += () =>

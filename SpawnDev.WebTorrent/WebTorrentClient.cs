@@ -15,6 +15,18 @@ public class WebTorrentClient : IAsyncDisposable
     public const int DefaultMaxConns = 55;
 
     /// <summary>
+    /// Default WSS trackers merged into every torrent for peer discovery.
+    /// Configurable via WebTorrentClientOptions.DefaultTrackers. Set to empty array to disable.
+    /// </summary>
+    public string[] DefaultTrackers { get; set; } = new[]
+    {
+        "wss://tracker.openwebtorrent.com",
+        "wss://tracker.btorrent.xyz",
+        "wss://tracker.fastcast.nz",
+        "wss://hub.spawndev.com:44365/announce",
+    };
+
+    /// <summary>
     /// Version prefix for peer ID. WebTorrent uses Azureus-style:
     /// -WW0102- followed by random bytes.
     /// </summary>
@@ -179,6 +191,7 @@ public class WebTorrentClient : IAsyncDisposable
         EnableLsd = opts.EnableLsd;
         EnableUtPex = opts.EnableUtPex;
         if (opts.IceServers != null) IceServers = opts.IceServers;
+        if (opts.DefaultTrackers != null) DefaultTrackers = opts.DefaultTrackers;
         if (opts.DownloadLimit >= 0) DownloadRateLimiter.Rate = opts.DownloadLimit;
         if (opts.UploadLimit >= 0) UploadRateLimiter.Rate = opts.UploadLimit;
         if (opts.Blocklist != null) foreach (var ip in opts.Blocklist) Blocklist.Add(ip);
@@ -255,6 +268,7 @@ public class WebTorrentClient : IAsyncDisposable
         });
 
         // Start the torrent — parse magnet and begin discovery
+        // Default trackers are merged inside InitFromMagnetAsync before StartDiscovery
         _ = torrent.InitFromMagnetAsync(magnetOrInfoHash, this, opts);
 
         // Check for duplicate after InfoHash is set
@@ -337,6 +351,12 @@ public class WebTorrentClient : IAsyncDisposable
         opts ??= new AddTorrentOptions();
 
         var metadata = TorrentParser.Parse(torrentBytes);
+        // Merge default trackers for maximum peer discovery
+        if (metadata.AnnounceUrls != null)
+            metadata.AnnounceUrls = metadata.AnnounceUrls.Union(DefaultTrackers).ToArray();
+        else
+            metadata.AnnounceUrls = DefaultTrackers.ToArray();
+
         var torrent = new Torrent();
         torrent.InitFromMetadata(metadata, this, opts);
 
@@ -378,11 +398,29 @@ public class WebTorrentClient : IAsyncDisposable
                     // Skip if already loaded
                     if (Torrents.Any(t => t.InfoHash == metadata.InfoHash)) continue;
 
+                    // Read state BEFORE initializing so Paused is set before discovery starts
+                    var restoreOpts = new AddTorrentOptions();
+                    try
+                    {
+                        var stateFile = $"{stateDir}/{metadata.InfoHash}.state.json";
+                        if (await AsyncFileSystem.FileExists(stateFile))
+                        {
+                            var stateBytes = await AsyncFileSystem.ReadBytes(stateFile);
+                            if (stateBytes != null)
+                            {
+                                var state = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(stateBytes);
+                                if (state != null && state.TryGetValue("paused", out var pausedEl) && pausedEl.GetBoolean())
+                                    restoreOpts.Paused = true;
+                            }
+                        }
+                    }
+                    catch { }
+
                     var torrent = new Torrent();
-                    torrent.InitFromMetadata(metadata, this, new AddTorrentOptions());
+                    torrent.InitFromMetadata(metadata, this, restoreOpts);
 
                     // Check which pieces are already stored
-                    if (torrent._store is Storage.AsyncFSChunkStore opfsStore)
+                    if (torrent._store is Storage.AsyncFSChunkStore)
                     {
                         for (int i = 0; i < torrent.PieceCount; i++)
                         {
@@ -399,7 +437,7 @@ public class WebTorrentClient : IAsyncDisposable
 
                     Torrents.Add(torrent);
                     OnAdd?.Invoke(torrent);
-                    if (VerboseLogging) Console.WriteLine($"[WebTorrentClient] Restored: {torrent.Name} ({torrent.CompletedPieces}/{torrent.PieceCount} pieces)");
+                    if (VerboseLogging) Console.WriteLine($"[WebTorrentClient] Restored: {torrent.Name} ({torrent.CompletedPieces}/{torrent.PieceCount} pieces, paused={torrent.Paused})");
                 }
                 catch (Exception ex)
                 {
@@ -538,8 +576,25 @@ public class WebTorrentClient : IAsyncDisposable
     /// <summary>Remove a torrent from the client.</summary>
     public async Task RemoveAsync(Torrent torrent)
     {
-        if (!Torrents.Remove(torrent)) return;
-        await torrent.DisposeAsync();
+        Torrents.Remove(torrent);
+        var infoHash = torrent.InfoHash;
+
+        // Delete persisted files FIRST (before dispose which might throw on WebSocket teardown)
+        if (AsyncFileSystem != null && !string.IsNullOrEmpty(infoHash))
+        {
+            try
+            {
+                var stateFile = $"webtorrent/_state/{infoHash}.state.json";
+                if (await AsyncFileSystem.FileExists(stateFile))
+                    await AsyncFileSystem.Remove(stateFile);
+                var metaFile = $"webtorrent/_state/{infoHash}.torrent";
+                if (await AsyncFileSystem.FileExists(metaFile))
+                    await AsyncFileSystem.Remove(metaFile);
+            }
+            catch { }
+        }
+
+        try { if (!torrent.Destroyed) await torrent.DisposeAsync(); } catch { }
         OnRemove?.Invoke(torrent);
     }
 
@@ -635,6 +690,8 @@ public class WebTorrentClientOptions
     /// <summary>Upload speed limit in bytes/sec. -1 = unlimited.</summary>
     public long UploadLimit { get; set; } = -1;
     public string[]? IceServers { get; set; }
+    /// <summary>Default WSS trackers merged into every torrent for peer discovery. Set to empty array to disable.</summary>
+    public string[]? DefaultTrackers { get; set; }
     public HttpClient? HttpClient { get; set; }
     /// <summary>Async file system for persistent storage (OPFS in browser, native FS on desktop).</summary>
     public SpawnDev.AsyncFileSystem.IAsyncFS? AsyncFileSystem { get; set; }

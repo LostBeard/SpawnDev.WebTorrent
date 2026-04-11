@@ -8,6 +8,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
+using Microsoft.Extensions.DependencyInjection;
 using System.Windows.Threading;
 
 namespace SpawnDev.WebTorrent.WpfDemo;
@@ -20,12 +21,14 @@ public partial class MainWindow : Window
     private TorrentViewModel? _selectedVm;
     private string _currentTab = "general";
 
+    // Official WebTorrent free torrents (https://github.com/webtorrent/webtorrent/blob/master/docs/free-torrents.md)
+    // Plus hub.spawndev.com tracker for our ecosystem
     private static readonly Dictionary<string, string> CCMagnets = new()
     {
-        ["BigBuckBunny"] = "magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&dn=Big+Buck+Bunny&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&tr=wss%3A%2F%2Ftracker.files.fm%3A7073%2Fannounce&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Fbig-buck-bunny.torrent",
-        ["Sintel"] = "magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Sintel&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&tr=wss%3A%2F%2Ftracker.files.fm%3A7073%2Fannounce&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Fsintel.torrent",
-        ["CosmosLaundromat"] = "magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056&dn=Cosmos+Laundromat&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&tr=wss%3A%2F%2Ftracker.files.fm%3A7073%2Fannounce&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Fcosmos-laundromat.torrent",
-        ["TearsOfSteel"] = "magnet:?xt=urn:btih:209c8226b299b308beaf2b9cd3fb49212dbd13ec&dn=Tears+of+Steel&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&tr=wss%3A%2F%2Ftracker.files.fm%3A7073%2Fannounce&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Ftears-of-steel.torrent",
+        ["BigBuckBunny"] = "magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&dn=Big+Buck+Bunny&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftracker.empire-js.us%3A1337&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=wss%3A%2F%2Ftracker.btorrent.xyz&tr=wss%3A%2F%2Ftracker.fastcast.nz&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Fbig-buck-bunny.torrent",
+        ["Sintel"] = "magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Sintel&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftracker.empire-js.us%3A1337&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=wss%3A%2F%2Ftracker.btorrent.xyz&tr=wss%3A%2F%2Ftracker.fastcast.nz&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Fsintel.torrent",
+        ["CosmosLaundromat"] = "magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056&dn=Cosmos+Laundromat&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftracker.empire-js.us%3A1337&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=wss%3A%2F%2Ftracker.btorrent.xyz&tr=wss%3A%2F%2Ftracker.fastcast.nz&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Fcosmos-laundromat.torrent",
+        ["TearsOfSteel"] = "magnet:?xt=urn:btih:209c8226b299b308beaf2b9cd3fb49212dbd13ec&dn=Tears+of+Steel&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftracker.empire-js.us%3A1337&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=wss%3A%2F%2Ftracker.btorrent.xyz&tr=wss%3A%2F%2Ftracker.fastcast.nz&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Ftears-of-steel.torrent",
     };
 
     private TorrentHttpServer? _httpServer;
@@ -33,7 +36,12 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        _client = new WebTorrentClient();
+
+        // Resolve WebTorrentClient from DI (configured in App.xaml.cs with AsyncFileSystem + SipSorcery)
+        _client = App.Services.GetRequiredService<WebTorrentClient>();
+
+        // Restore persisted torrents into the UI
+        _ = RestoreAndLogAsync();
 
         // Start HTTP server for media streaming
         try
@@ -50,8 +58,8 @@ public partial class MainWindow : Window
         _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _refreshTimer.Tick += (_, _) =>
         {
-            // Speed sampling is handled by Torrent's internal timer
-            RefreshUI();
+            try { RefreshUI(); }
+            catch (Exception ex) { Log($"Refresh error: {ex.Message}"); }
         };
         _refreshTimer.Start();
 
@@ -107,7 +115,7 @@ public partial class MainWindow : Window
         if (torrent.Files != null)
         {
             foreach (var f in torrent.Files)
-                vm.Files.Add(new FileViewModel { Path = f.Path, SizeText = FormatBytes(f.Length), Ext = System.IO.Path.GetExtension(f.Path) });
+                vm.Files.Add(new FileViewModel { Path = f.Path ?? f.Name ?? "", SizeText = FormatBytes(f.Length), Ext = System.IO.Path.GetExtension(f.Path ?? "").TrimStart('.'), FileIndex = Array.IndexOf(torrent.Files!, f) });
         }
 
         _torrents.Add(vm);
@@ -117,6 +125,43 @@ public partial class MainWindow : Window
         // Discovery (trackers + WebRTC) is started automatically by InitFromMetadata.
 
         RegisterTorrentEvents(vm);
+    }
+
+    private async Task RestoreAndLogAsync()
+    {
+        try
+        {
+            await _client.RestoreFromStorageAsync();
+            if (_client.Torrents.Count > 0)
+            {
+                Dispatcher.Invoke(() =>
+                {
+                    foreach (var torrent in _client.Torrents)
+                    {
+                        var hash = torrent.InfoHash ?? "";
+                        if (_torrents.Any(t => t.HashFull == hash)) continue;
+                        var vm = new TorrentViewModel
+                        {
+                            Torrent = torrent,
+                            Name = torrent.Name ?? hash,
+                            HashFull = hash,
+                            HashShort = hash.Length >= 8 ? hash[..8] + "..." : hash,
+                            SizeText = FormatBytes(torrent.Length),
+                        };
+                        if (torrent.Files != null)
+                            for (int fi = 0; fi < torrent.Files.Length; fi++)
+                            {
+                                var f = torrent.Files[fi];
+                                vm.Files.Add(new FileViewModel { Path = f.Name ?? f.Path ?? "", SizeText = FormatBytes(f.Length), Ext = System.IO.Path.GetExtension(f.Name ?? "").TrimStart('.'), FileIndex = fi });
+                            }
+                        _torrents.Add(vm);
+                        RegisterTorrentEvents(vm);
+                        Log($"Restored: {vm.Name} ({torrent.CompletedPieces}/{torrent.PieceCount} pieces)");
+                    }
+                });
+            }
+        }
+        catch (Exception ex) { Dispatcher.Invoke(() => Log($"Restore failed: {ex.Message}")); }
     }
 
     /// <summary>Register OnDone event for a torrent view model.</summary>
@@ -217,7 +262,7 @@ public partial class MainWindow : Window
                 if (torrent.Files != null)
                 {
                     foreach (var f in torrent.Files)
-                        vm.Files.Add(new FileViewModel { Path = f.Path, SizeText = FormatBytes(f.Length), Ext = System.IO.Path.GetExtension(f.Path) });
+                        vm.Files.Add(new FileViewModel { Path = f.Path ?? f.Name ?? "", SizeText = FormatBytes(f.Length), Ext = System.IO.Path.GetExtension(f.Path ?? "").TrimStart('.'), FileIndex = Array.IndexOf(torrent.Files!, f) });
                 }
 
                 Log($"[{vm.Name}] {FormatBytes(torrent.Length)}, {torrent.PieceCount} pieces");
@@ -285,7 +330,7 @@ public partial class MainWindow : Window
             vm.PeerCount = t.PeerCount;
             vm.DownSpeedText = t.DownloadSpeed > 0 ? FormatSpeed(t.DownloadSpeed) : "";
             vm.UpSpeedText = t.UploadSpeed > 0 ? FormatSpeed(t.UploadSpeed) : "";
-            vm.StatusText = t.Done ? "Seeding" : t.CompletedPieces > 0 ? "Downloading" : t.HasMetadata ? "Waiting" : "Metadata";
+            vm.StatusText = t.Paused ? "Paused" : t.Done ? "Seeding" : t.CompletedPieces > 0 ? "Downloading" : t.HasMetadata ? "Waiting" : "Metadata";
             // ETA: estimate from download speed
             if (t.Done)
                 vm.EtaText = "";
@@ -297,15 +342,51 @@ public partial class MainWindow : Window
             }
             else
                 vm.EtaText = "---";
+
+            // Populate tracker entries (once, when metadata arrives)
+            if (vm.TrackerEntries.Count == 0 && t.AnnounceUrls.Length > 0)
+            {
+                foreach (var url in t.AnnounceUrls)
+                    vm.TrackerEntries.Add(new TrackerViewModel { Url = url, Status = "---" });
+            }
+
+            // Update tracker peer counts from announce responses
+            foreach (var entry in vm.TrackerEntries)
+            {
+                if (t.TrackerStats.TryGetValue(entry.Url, out var stats))
+                    entry.Status = $"{stats.Complete} seeds / {stats.Incomplete} peers";
+            }
+
+            // Update file progress
+            if (t.Files != null)
+            {
+                for (int i = 0; i < t.Files.Length && i < vm.Files.Count; i++)
+                {
+                    var f = t.Files[i];
+                    vm.Files[i].ProgressText = $"{f.Progress * 100:F1}%";
+                }
+            }
+
             vm.Notify();
         }
 
-        if (_selectedVm != null && _currentTab == "general")
-            UpdatePieceMap();
+        // Refresh filter view when active so torrents move between filter groups automatically
+        if (_activeFilter != "all")
+            System.Windows.Data.CollectionViewSource.GetDefaultView(_torrents).Refresh();
+
+        // Update the detail panel every refresh cycle (General, Peers, Content, Trackers)
+        if (_selectedVm != null)
+        {
+            UpdateDetailPanel();
+            if (_currentTab == "peers")
+                UpdatePeersPanel();
+        }
     }
 
     private void UpdateDetailPanel()
     {
+        try
+        {
         if (_selectedVm == null) return;
         var vm = _selectedVm;
         var t = vm.Torrent;
@@ -325,6 +406,8 @@ public partial class MainWindow : Window
 
         UpdateTabVisuals();
         UpdatePieceMap();
+        }
+        catch { }
     }
 
     private void UpdateTabVisuals()
@@ -346,39 +429,71 @@ public partial class MainWindow : Window
         PanelTrackers.Visibility = _currentTab == "trackers" ? Visibility.Visible : Visibility.Collapsed;
         PanelLog.Visibility = _currentTab == "log" ? Visibility.Visible : Visibility.Collapsed;
 
-        if (_currentTab == "peers" && _selectedVm != null)
-        {
-            var t = _selectedVm.Torrent;
-            PanelPeers.Text = $"{t.PeerCount} connected peer(s)\nWeb seeds: {t.WebSeedCount}\n\nPeers connect via WebSocket tracker signaling and WebRTC data channels.\nDesktop peers use SIPSorcery, browser peers use SpawnDev.BlazorJS.";
-        }
     }
+
+    private void UpdatePeersPanel()
+    {
+        if (_selectedVm == null) return;
+        var t = _selectedVm.Torrent;
+        var peers = t.Wires.ToArray().Select(w =>
+        {
+            var dl = w.DownloadSpeed();
+            var ul = w.UploadSpeed();
+            // Web seeds use URL domain as peer ID since they have no real peer ID
+            var peerId = w.Type == "webSeed" && w.RemoteAddress != null
+                ? (Uri.TryCreate(w.RemoteAddress, UriKind.Absolute, out var uri) ? uri.Host : w.RemoteAddress)
+                : w.PeerId;
+            return new PeerViewModel
+            {
+                PeerId = peerId?.Length > 20 ? peerId[..20] + "..." : peerId ?? "---",
+                Address = w.RemoteAddress ?? "---",
+                Type = w.Type == "webSeed" ? "WebSeed" : "WebRTC",
+                DownSpeed = dl > 0 ? FormatSpeed(dl) : "",
+                UpSpeed = ul > 0 ? FormatSpeed(ul) : "",
+                Progress = w.PeerHasAll ? "100%" : "---",
+            };
+        }).ToList();
+        PanelPeers.ItemsSource = peers;
+    }
+
+    private static readonly SolidColorBrush PieceEmpty = new(Color.FromRgb(30, 41, 59));
+    private static readonly SolidColorBrush PiecePartial = new(Color.FromRgb(59, 130, 246));
+    private static readonly SolidColorBrush PieceDone = new(Color.FromRgb(16, 185, 129));
+    private int _pieceMapCount;
 
     private void UpdatePieceMap()
     {
-        PieceMapPanel.Children.Clear();
-        var bf = _selectedVm?.Torrent.Bitfield;
-        if (bf == null || bf.Length == 0) return;
-
-        int total = bf.Length;
-        int cols = Math.Min(total, 120);
-        int step = Math.Max(1, total / cols);
-
-        for (int i = 0; i < cols; i++)
+        try
         {
-            int start = i * step;
-            int end = Math.Min((i + 1) * step, total);
-            bool any = false;
-            for (int j = start; j < end; j++) if (bf[j]) { any = true; break; }
+            var bf = _selectedVm?.Torrent.Bitfield;
+            if (bf == null || bf.Length == 0) { PieceMapPanel.Children.Clear(); _pieceMapCount = 0; return; }
 
-            var rect = new Rectangle
+            int total = bf.Length;
+            int cols = Math.Min(total, 2000);
+            int step = Math.Max(1, total / cols);
+
+            // Rebuild rectangles only when piece count changes
+            if (_pieceMapCount != cols)
             {
-                Width = 5, Height = 5,
-                Fill = any ? new SolidColorBrush(Color.FromRgb(16, 185, 129)) : new SolidColorBrush(Color.FromRgb(30, 41, 59)),
-                Margin = new Thickness(0.5),
-                RadiusX = 1, RadiusY = 1,
-            };
-            PieceMapPanel.Children.Add(rect);
+                PieceMapPanel.Children.Clear();
+                for (int i = 0; i < cols; i++)
+                    PieceMapPanel.Children.Add(new Rectangle { Width = 3, Height = 3, Fill = PieceEmpty, Margin = new Thickness(0.25) });
+                _pieceMapCount = cols;
+            }
+
+            // Update colors only
+            for (int i = 0; i < cols && i < PieceMapPanel.Children.Count; i++)
+            {
+                int start = i * step;
+                int end = Math.Min((i + 1) * step, total);
+                int done = 0, count = 0;
+                for (int j = start; j < end; j++) { count++; if (bf[j]) done++; }
+
+                var brush = done == 0 ? PieceEmpty : done == count ? PieceDone : PiecePartial;
+                ((Rectangle)PieceMapPanel.Children[i]).Fill = brush;
+            }
         }
+        catch { }
     }
 
     private void Log(string msg)
@@ -417,12 +532,103 @@ public partial class MainWindow : Window
     }
 
     // ── Pause/Resume/Filter ──
+    private string _activeFilter = "all";
     private void PauseAll_Click(object sender, RoutedEventArgs e) { foreach (var t in _torrents) t.Torrent.Pause(); }
     private void ResumeAll_Click(object sender, RoutedEventArgs e) { foreach (var t in _torrents) t.Torrent.Resume(); }
-    private void FilterAll_Click(object sender, RoutedEventArgs e) { TorrentListView.ItemsSource = _torrents; }
-    private void FilterDownloading_Click(object sender, RoutedEventArgs e) { TorrentListView.ItemsSource = _torrents.Where(t => !t.Torrent.Done && t.Torrent.HasMetadata).ToList(); }
-    private void FilterSeeding_Click(object sender, RoutedEventArgs e) { TorrentListView.ItemsSource = _torrents.Where(t => t.Torrent.Done).ToList(); }
-    private void FilterPaused_Click(object sender, RoutedEventArgs e) { TorrentListView.ItemsSource = _torrents.Where(t => t.Torrent.Paused).ToList(); }
+    private void FilterAll_Click(object sender, RoutedEventArgs e) { _activeFilter = "all"; ApplyFilter(); }
+    private void FilterDownloading_Click(object sender, RoutedEventArgs e) { _activeFilter = "downloading"; ApplyFilter(); }
+    private void FilterSeeding_Click(object sender, RoutedEventArgs e) { _activeFilter = "seeding"; ApplyFilter(); }
+    private void FilterPaused_Click(object sender, RoutedEventArgs e) { _activeFilter = "paused"; ApplyFilter(); }
+
+    private void ApplyFilter()
+    {
+        var view = System.Windows.Data.CollectionViewSource.GetDefaultView(_torrents);
+        view.Filter = _activeFilter switch
+        {
+            "downloading" => o => o is TorrentViewModel vm && !vm.Torrent.Done && vm.Torrent.HasMetadata && !vm.Torrent.Paused,
+            "seeding" => o => o is TorrentViewModel vm && vm.Torrent.Done,
+            "paused" => o => o is TorrentViewModel vm && vm.Torrent.Paused,
+            _ => null,
+        };
+    }
+
+    // ── Remove / Context Menu ──
+
+    private void TorrentList_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Delete && TorrentListView.SelectedItem is TorrentViewModel vm)
+            RemoveTorrent(vm, deleteData: false);
+    }
+
+    private void CtxPauseResume_Click(object sender, RoutedEventArgs e)
+    {
+        if (TorrentListView.SelectedItem is TorrentViewModel vm)
+        {
+            if (vm.Torrent.Paused) vm.Torrent.Resume(); else vm.Torrent.Pause();
+        }
+    }
+
+    private void CtxCopyMagnet_Click(object sender, RoutedEventArgs e)
+    {
+        if (TorrentListView.SelectedItem is TorrentViewModel vm && !string.IsNullOrEmpty(vm.Torrent.ComputedMagnetUri))
+        {
+            Clipboard.SetText(vm.Torrent.ComputedMagnetUri);
+            Log("Magnet URI copied to clipboard");
+        }
+    }
+
+    private void CtxRemoveKeep_Click(object sender, RoutedEventArgs e)
+    {
+        if (TorrentListView.SelectedItem is TorrentViewModel vm)
+            RemoveTorrent(vm, deleteData: false);
+    }
+
+    private void CtxRemoveDelete_Click(object sender, RoutedEventArgs e)
+    {
+        if (TorrentListView.SelectedItem is TorrentViewModel vm)
+        {
+            var result = MessageBox.Show($"Remove '{vm.Name}' and delete all downloaded data?",
+                "Remove Torrent", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (result == MessageBoxResult.Yes)
+                RemoveTorrent(vm, deleteData: true);
+        }
+    }
+
+    private void RemoveTorrent(TorrentViewModel vm, bool deleteData)
+    {
+        Log($"Removing: {vm.Name}");
+        // Remove from UI immediately
+        _torrents.Remove(vm);
+        if (_selectedVm == vm) _selectedVm = null;
+        // Library cleanup in background
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                if (deleteData)
+                    await _client.RemoveWithDataAsync(vm.Torrent);
+                else
+                    await _client.RemoveAsync(vm.Torrent);
+            }
+            catch { }
+        });
+        Log($"Removed: {vm.Name}");
+    }
+
+    // ── File Selection ──
+
+    private void FileSelect_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedVm == null || sender is not System.Windows.Controls.CheckBox cb || cb.Tag is not FileViewModel fvm) return;
+        var torrent = _selectedVm.Torrent;
+        if (torrent.Files == null || fvm.FileIndex >= torrent.Files.Length) return;
+
+        var file = torrent.Files[fvm.FileIndex];
+        if (fvm.IsSelected)
+            file.Select();
+        else
+            file.Deselect();
+    }
 
     // ── Drag & Drop ──
 
@@ -562,15 +768,23 @@ public class TorrentViewModel : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ProgressPercent)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PeerCount)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(StatusText)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DownSpeedText)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(UpSpeedText)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(EtaText)));
     }
 }
 
-public class FileViewModel
+public class FileViewModel : INotifyPropertyChanged
 {
+    private string _progressText = "0%";
+    private bool _isSelected = true;
     public string Path { get; set; } = "";
     public string SizeText { get; set; } = "";
     public string Ext { get; set; } = "";
-    public string ProgressText { get; set; } = "0%";
+    public int FileIndex { get; set; }
+    public string ProgressText { get => _progressText; set { _progressText = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ProgressText))); } }
+    public bool IsSelected { get => _isSelected; set { _isSelected = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsSelected))); } }
+    public event PropertyChangedEventHandler? PropertyChanged;
 }
 
 public class TrackerViewModel : INotifyPropertyChanged
@@ -579,4 +793,14 @@ public class TrackerViewModel : INotifyPropertyChanged
     public string Url { get; set; } = "";
     public string Status { get => _status; set { _status = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Status))); } }
     public event PropertyChangedEventHandler? PropertyChanged;
+}
+
+public class PeerViewModel
+{
+    public string PeerId { get; set; } = "";
+    public string Address { get; set; } = "";
+    public string Type { get; set; } = "";
+    public string DownSpeed { get; set; } = "";
+    public string UpSpeed { get; set; } = "";
+    public string Progress { get; set; } = "";
 }

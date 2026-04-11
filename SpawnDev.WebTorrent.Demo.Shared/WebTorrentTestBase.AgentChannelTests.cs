@@ -8,13 +8,23 @@ namespace SpawnDev.WebTorrent.Demo.Shared;
 public abstract partial class WebTorrentTestBase
 {
     [TestMethod]
-    public async Task AgentChannel_CreateNamed_UsesSaltCorrectly()
+    public async Task AgentChannel_CreateNamed_ProducesDistinctChannels()
     {
         var channel = new AgentChannel();
-        var named = channel.Channel("model-updates");
-        // AgentNamedChannel should use the channel name as salt for BEP 44
-        // Verify the named channel was created
-        if (named == null) throw new Exception("Named channel is null");
+        var named1 = channel.Channel("model-updates");
+        var named2 = channel.Channel("compute-tasks");
+
+        if (named1 == null) throw new Exception("Named channel 1 is null");
+        if (named2 == null) throw new Exception("Named channel 2 is null");
+
+        // Different channel names should produce different instances
+        if (ReferenceEquals(named1, named2))
+            throw new Exception("Different channel names should produce different instances");
+
+        // Each call creates a fresh channel scoped to that name
+        var named3 = channel.Channel("model-updates");
+        if (named3 == null) throw new Exception("Named channel 3 is null");
+
         await channel.DisposeAsync();
     }
 
@@ -42,23 +52,50 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
-    public async Task AgentChannel_VerifySignature_AcceptsValid()
+    public async Task AgentChannel_NoOpSigner_VerifyAlwaysTrue()
     {
-        // Ed25519Signer requires IPortableCrypto (browser SubtleCrypto or PlatformCrypto)
-        // This test only works in browser or with DI-provided crypto
-        if (!OperatingSystem.IsBrowser())
-            throw new UnsupportedTestException("Ed25519 signing requires browser crypto");
+        // NoOpSigner.VerifyAsync always returns true - useful for test/resolution-only scenarios
+        var pubKey = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(pubKey);
+        var signer = new NoOpSigner(pubKey);
 
-        // In browser, this would be resolved via DI
-        throw new UnsupportedTestException("Requires DI-provided IPortableCrypto");
+        if (signer.Algorithm != "NoOp") throw new Exception($"Algorithm should be NoOp, got {signer.Algorithm}");
+        if (!signer.PublicKey.SequenceEqual(pubKey)) throw new Exception("PublicKey mismatch");
+
+        // Verify should accept any signature
+        var verified = await signer.VerifyAsync(pubKey, new byte[] { 1, 2, 3 }, new byte[] { 0xAA, 0xBB });
+        if (!verified) throw new Exception("NoOpSigner.VerifyAsync should always return true");
+
+        // Verify with different data should still return true
+        var verified2 = await signer.VerifyAsync(new byte[32], new byte[0], new byte[0]);
+        if (!verified2) throw new Exception("NoOpSigner.VerifyAsync should return true for any input");
+
+        // SignAsync should throw NotSupportedException (NoOp can verify but not sign)
+        bool threw = false;
+        try { await signer.SignAsync(new byte[] { 1 }); }
+        catch (NotSupportedException) { threw = true; }
+        if (!threw) throw new Exception("NoOpSigner.SignAsync should throw NotSupportedException");
     }
 
     [TestMethod]
-    public async Task AgentChannel_VerifySignature_RejectsInvalid()
+    public async Task AgentChannel_RelayMessage_AllFieldsPreserved()
     {
-        if (!OperatingSystem.IsBrowser())
-            throw new UnsupportedTestException("Ed25519 signing requires browser crypto");
+        // Test that all fields survive JSON round-trip, including edge cases
+        var msg = new AgentRelayMessage
+        {
+            PublicKey = new string('a', 64), // 32 bytes as hex
+            Sequence = long.MaxValue,
+            Data = Convert.ToBase64String(new byte[1000]), // large payload
+            Salt = "", // empty salt
+            Signature = Convert.ToBase64String(new byte[] { 0 }),
+        };
 
-        throw new UnsupportedTestException("Requires DI-provided IPortableCrypto");
+        var json = JsonSerializer.Serialize(msg);
+        var deserialized = JsonSerializer.Deserialize<AgentRelayMessage>(json);
+
+        if (deserialized == null) throw new Exception("Deserialization failed");
+        if (deserialized.Sequence != long.MaxValue) throw new Exception("Max sequence not preserved");
+        if (deserialized.Salt != "") throw new Exception("Empty salt not preserved");
+        if (deserialized.Data != msg.Data) throw new Exception("Large data not preserved");
     }
 }

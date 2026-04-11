@@ -135,7 +135,17 @@
             <ListView x:Name="TorrentListView" Grid.Column="1" Grid.Row="0"
                       Background="Transparent" BorderThickness="0"
                       SelectionChanged="TorrentList_SelectionChanged"
+                      KeyDown="TorrentList_KeyDown"
                       Foreground="{StaticResource TextSecondary}" FontSize="12">
+                <ListView.ContextMenu>
+                    <ContextMenu Background="#1e293b" BorderBrush="#334155">
+                        <MenuItem Header="Pause/Resume" Click="CtxPauseResume_Click" Foreground="#e2e8f0"/>
+                        <MenuItem Header="Copy Magnet URI" Click="CtxCopyMagnet_Click" Foreground="#e2e8f0"/>
+                        <Separator/>
+                        <MenuItem Header="Remove (keep data)" Click="CtxRemoveKeep_Click" Foreground="#e2e8f0"/>
+                        <MenuItem Header="Remove (delete data)" Click="CtxRemoveDelete_Click" Foreground="#fca5a5"/>
+                    </ContextMenu>
+                </ListView.ContextMenu>
                 <ListView.ItemContainerStyle>
                     <Style TargetType="ListViewItem">
                         <Setter Property="Foreground" Value="#94a3b8"/>
@@ -225,14 +235,33 @@
                               Foreground="#94a3b8" FontSize="12" MouseDoubleClick="PanelFiles_DoubleClick">
                         <ListView.View>
                             <GridView>
-                                <GridViewColumn Header="File" Width="300" DisplayMemberBinding="{Binding Path}"/>
+                                <GridViewColumn Header="" Width="30">
+                                    <GridViewColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <CheckBox IsChecked="{Binding IsSelected}" Click="FileSelect_Click" Tag="{Binding}"/>
+                                        </DataTemplate>
+                                    </GridViewColumn.CellTemplate>
+                                </GridViewColumn>
+                                <GridViewColumn Header="File" Width="280" DisplayMemberBinding="{Binding Path}"/>
                                 <GridViewColumn Header="Size" Width="80" DisplayMemberBinding="{Binding SizeText}"/>
                                 <GridViewColumn Header="Type" Width="50" DisplayMemberBinding="{Binding Ext}"/>
                                 <GridViewColumn Header="Progress" Width="80" DisplayMemberBinding="{Binding ProgressText}"/>
                             </GridView>
                         </ListView.View>
                     </ListView>
-                    <TextBlock x:Name="PanelPeers" Visibility="Collapsed" Foreground="#64748b" FontSize="12" Margin="8" TextWrapping="Wrap"/>
+                    <ListView x:Name="PanelPeers" Visibility="Collapsed" Background="Transparent" BorderThickness="0"
+                              Foreground="#94a3b8" FontSize="12">
+                        <ListView.View>
+                            <GridView>
+                                <GridViewColumn Header="Peer ID" Width="180" DisplayMemberBinding="{Binding PeerId}"/>
+                                <GridViewColumn Header="Address" Width="150" DisplayMemberBinding="{Binding Address}"/>
+                                <GridViewColumn Header="Type" Width="70" DisplayMemberBinding="{Binding Type}"/>
+                                <GridViewColumn Header="DL" Width="80" DisplayMemberBinding="{Binding DownSpeed}"/>
+                                <GridViewColumn Header="UL" Width="80" DisplayMemberBinding="{Binding UpSpeed}"/>
+                                <GridViewColumn Header="Progress" Width="70" DisplayMemberBinding="{Binding Progress}"/>
+                            </GridView>
+                        </ListView.View>
+                    </ListView>
                     <ListView x:Name="PanelTrackers" Visibility="Collapsed" Background="Transparent" BorderThickness="0"
                               Foreground="#94a3b8" FontSize="12">
                         <ListView.View>
@@ -259,7 +288,7 @@
                 <Run Text="  UL: "/><Run x:Name="StatusUL" Text="0 B/s"/>
                 <Run Text="  "/>
                 <Run x:Name="StatusPeerId" Text="-SD0110-" Foreground="#334155" FontFamily="Consolas"/>
-                <Run Text="  v1.1.0"/>
+                <Run Text="  v3.0.0-rc.2"/>
             </TextBlock>
         </Border>
     </Grid>

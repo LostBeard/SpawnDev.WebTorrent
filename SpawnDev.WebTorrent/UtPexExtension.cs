@@ -38,6 +38,9 @@ public class UtPexExtension : IWireExtension
     // Dedup tracking — don't re-advertise what the remote already told us
     private readonly HashSet<string> _remoteAddedPeers = new();
 
+    /// <summary>BEP 27: When true, suppresses all PEX send/receive for private torrents.</summary>
+    public bool IsPrivate { get; set; }
+
     public bool IsSupported => _isSupported;
 
     /// <summary>Set the wire this extension operates on (called after construction).</summary>
@@ -54,6 +57,9 @@ public class UtPexExtension : IWireExtension
 
     public void OnMessage(byte[] buf)
     {
+        // BEP 27: Private torrents MUST NOT use PEX
+        if (IsPrivate) return;
+
         try
         {
             // Rate limit: disconnect if messages arrive faster than 60s
@@ -132,7 +138,8 @@ public class UtPexExtension : IWireExtension
     /// <summary>Send an outbound PEX message with added and dropped peers.</summary>
     public async Task SendPexAsync(List<PexPeerInfo> added, List<string> dropped)
     {
-        if (_wire == null || !_isSupported) return;
+        // BEP 27: Private torrents MUST NOT use PEX
+        if (_wire == null || !_isSupported || IsPrivate) return;
 
         // Cap at PexMaxPeers
         if (added.Count > PexMaxPeers) added = added.Take(PexMaxPeers).ToList();

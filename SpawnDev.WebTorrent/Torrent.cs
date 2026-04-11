@@ -76,6 +76,9 @@ public partial class Torrent : IAsyncDisposable
     /// <summary>Number of connected web seeds.</summary>
     public int WebSeedCount => _webConns.Count;
 
+    /// <summary>Per-tracker swarm stats (seeders/leechers) from announce responses.</summary>
+    public Dictionary<string, TrackerUpdate> TrackerStats { get; } = new();
+
     /// <summary>Upload/download ratio.</summary>
     public double Ratio => Downloaded > 0 ? (double)UploadedTotal / Downloaded : 0;
 
@@ -230,6 +233,10 @@ public partial class Torrent : IAsyncDisposable
         if (string.IsNullOrEmpty(InfoHash))
             throw new Exception("Malformed magnet: no info hash");
 
+        // Merge client's default trackers for maximum peer discovery
+        if (_client?.DefaultTrackers?.Length > 0)
+            AnnounceUrls = AnnounceUrls.Union(_client.DefaultTrackers).ToArray();
+
         OnInfoHash?.Invoke();
         StartRechoke();
         StartDiscovery();
@@ -302,18 +309,35 @@ public partial class Torrent : IAsyncDisposable
         Name = query["dn"];
 
         // BEP 53: so= parameter for selecting specific file indices
+        // Supports both individual indices and ranges: so=0,2,4 or so=0-4,6,8-10
         var so = query["so"];
         if (!string.IsNullOrEmpty(so))
         {
-            try
+            var indices = new List<int>();
+            foreach (var part in so.Split(','))
             {
-                SelectedFileIndices = so.Split(',')
-                    .Select(s => s.Trim())
-                    .Where(s => !string.IsNullOrEmpty(s))
-                    .Select(int.Parse)
-                    .ToArray();
+                try
+                {
+                    var trimmed = part.Trim();
+                    if (string.IsNullOrEmpty(trimmed)) continue;
+                    var dashIdx = trimmed.IndexOf('-');
+                    if (dashIdx > 0 && dashIdx < trimmed.Length - 1)
+                    {
+                        // Range: "0-4" means files 0,1,2,3,4
+                        int start = int.Parse(trimmed[..dashIdx]);
+                        int end = int.Parse(trimmed[(dashIdx + 1)..]);
+                        for (int i = start; i <= end; i++)
+                            indices.Add(i);
+                    }
+                    else
+                    {
+                        indices.Add(int.Parse(trimmed));
+                    }
+                }
+                catch { /* malformed segment - skip it, keep valid ones */ }
             }
-            catch { /* malformed so= — ignore */ }
+            if (indices.Count > 0)
+                SelectedFileIndices = indices.Distinct().Order().ToArray();
         }
     }
 
@@ -402,9 +426,35 @@ public partial class Torrent : IAsyncDisposable
         if (_client?.EnableWebSeeds == true)
             foreach (var url in UrlList) AddWebSeed(url);
 
-        // Select all pieces for download — unless paused or deselect mode
+        // Select pieces for download - unless paused or deselect mode
         if (Pieces.Length > 0 && !Paused && !_deselect)
-            _selections.Insert(new SelectionItem { From = 0, To = Pieces.Length - 1, Priority = 0 });
+        {
+            // BEP 53: If SelectedFileIndices is set, only select pieces for those files
+            if (SelectedFileIndices != null && Files != null && SelectedFileIndices.Length > 0)
+            {
+                foreach (var fileIdx in SelectedFileIndices)
+                {
+                    if (fileIdx >= 0 && fileIdx < Files.Length)
+                        _selections.Insert(new SelectionItem { From = Files[fileIdx].StartPiece, To = Files[fileIdx].EndPiece, Priority = 0 });
+                }
+            }
+            else
+            {
+                _selections.Insert(new SelectionItem { From = 0, To = Pieces.Length - 1, Priority = 0 });
+            }
+        }
+
+        // BEP 27: Propagate IsPrivate to PEX extensions on wires that connected
+        // before metadata arrived (magnet link flow: peers connect during ut_metadata fetch,
+        // IsPrivate isn't known until info dict is parsed)
+        if (IsPrivate)
+        {
+            foreach (var wire in Wires.ToArray())
+            {
+                var pex = wire.GetExtension<UtPexExtension>();
+                if (pex != null) pex.IsPrivate = true;
+            }
+        }
 
         foreach (var wire in Wires.ToArray())
             OnWireWithMetadata(wire);
@@ -431,8 +481,27 @@ public partial class Torrent : IAsyncDisposable
             if (!await fs.DirectoryExists(dir))
                 await fs.CreateDirectory(dir);
             await fs.Write($"{dir}/{InfoHash}.torrent", TorrentFileBytes);
+            await PersistStateAsync();
         }
         catch { /* Best-effort persistence */ }
+    }
+
+    /// <summary>Persist torrent state (paused, selected files) to companion JSON file.</summary>
+    internal async Task PersistStateAsync()
+    {
+        if (_client?.AsyncFileSystem == null || string.IsNullOrEmpty(InfoHash)) return;
+        try
+        {
+            var fs = _client.AsyncFileSystem;
+            var dir = "webtorrent/_state";
+            if (!await fs.DirectoryExists(dir))
+                await fs.CreateDirectory(dir);
+            var state = new Dictionary<string, object>();
+            if (Paused) state["paused"] = true;
+            var json = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(state);
+            await fs.Write($"{dir}/{InfoHash}.state.json", json);
+        }
+        catch { }
     }
 
     // ========================
@@ -445,6 +514,7 @@ public partial class Torrent : IAsyncDisposable
 
         var infoHashBytes = Convert.FromHexString(InfoHash!);
 
+        // Tracker-based discovery (always allowed, even for private torrents per BEP 27)
         _discovery = new Discovery(
             infoHashBytes, _client.PeerIdBuffer, AnnounceUrls,
             (initiator) => _client.CreatePeer(initiator),
@@ -454,12 +524,21 @@ public partial class Torrent : IAsyncDisposable
         _discovery.OnWebRtcPeer += AddPeer;
         _discovery.OnTcpPeer += ConnectTcpPeer;
         _discovery.OnWarning += (msg) => OnWarning?.Invoke(msg);
+        _discovery.OnTrackerUpdate += (update) => TrackerStats[update.AnnounceUrl] = update;
 
         _ = _discovery.AnnounceAsync(new AnnounceOptions
         {
             Event = "started",
             Left = Math.Max(Length - Downloaded, 0),
         });
+
+        // BEP 27: Private torrents MUST NOT use DHT, PEX, or LSD.
+        // PEX is handled per-wire in UtPexExtension.IsPrivate.
+        // DHT and LSD guards go here when per-torrent DHT/LSD is wired up.
+        if (IsPrivate) return;
+
+        // Future: DHT get_peers / announce_peer for this torrent
+        // Future: LSD multicast announce for this torrent
     }
 
     // ========================
@@ -501,6 +580,17 @@ public partial class Torrent : IAsyncDisposable
             if (peer.WireInstance != null)
             {
                 _client?.ApplyExtensions(peer.WireInstance);
+
+                // Set remote address from transport for peer display
+                peer.WireInstance.RemoteAddress = simplePeer.RemoteAddress;
+
+                // BEP 27: Propagate private flag to PEX extension
+                if (IsPrivate)
+                {
+                    var pex = peer.WireInstance.GetExtension<UtPexExtension>();
+                    if (pex != null) pex.IsPrivate = true;
+                }
+
                 Wires.Add(peer.WireInstance);
 
                 // Bubble wire download/upload events → peer → torrent → client
@@ -568,7 +658,24 @@ public partial class Torrent : IAsyncDisposable
             Bitfield[i] = i < _hashes.Length && hash.SequenceEqual(_hashes[i]);
         }
 
-        Done = Bitfield.All(b => b);
+        // BEP 53: When partial selection is active, "done" means all selected pieces verified
+        if (SelectedFileIndices != null && Files != null && SelectedFileIndices.Length > 0)
+        {
+            Done = true;
+            foreach (var fileIdx in SelectedFileIndices)
+            {
+                if (fileIdx < 0 || fileIdx >= Files.Length) continue;
+                for (int p = Files[fileIdx].StartPiece; p <= Files[fileIdx].EndPiece && p < Bitfield.Length; p++)
+                {
+                    if (!Bitfield[p]) { Done = false; break; }
+                }
+                if (!Done) break;
+            }
+        }
+        else
+        {
+            Done = Bitfield.All(b => b);
+        }
     }
 
     public void AddWebSeed(string url)
@@ -577,10 +684,62 @@ public partial class Torrent : IAsyncDisposable
         if (_webConns.Any(wc => wc.Url == url)) return;
 
         var webConn = new WebConn(url, this, _http);
+        var wire = webConn.WireInstance;
+        wire.RemoteAddress = url;
+
+        // Web seed SendRaw: intercept outbound request messages (id=6) and route them
+        // directly to the WebConn's HTTP handler, bypassing wire protocol parsing entirely.
+        wire.SendRaw = async (data) =>
+        {
+            try
+            {
+                // Request message: 4-byte length + 1-byte id(6) + 4-byte index + 4-byte offset + 4-byte length = 17 bytes
+                if (data.Length >= 17 && data[4] == 6)
+                {
+                    int pieceIndex = (data[5] << 24) | (data[6] << 16) | (data[7] << 8) | data[8];
+                    int offset = (data[9] << 24) | (data[10] << 16) | (data[11] << 8) | data[12];
+                    int length = (data[13] << 24) | (data[14] << 16) | (data[15] << 8) | data[16];
+
+                    // Fire-and-forget HTTP request - don't block the send pipeline
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            var pendingReq = wire.Requests.ToArray().FirstOrDefault(r => r.Piece == pieceIndex && r.Offset == offset);
+                            if (pendingReq == null) return;
+
+                            await webConn.HandleRequestAsync(pieceIndex, offset, length, (err, buf) =>
+                            {
+                                try
+                                {
+                                    if (buf != null)
+                                    {
+                                        Interlocked.Add(ref wire._downloadedSinceLastCheck, buf.Length);
+                                        wire.Downloaded += buf.Length;
+                                    }
+                                    wire.Requests.Remove(pendingReq);
+                                    pendingReq.Callback(err, buf);
+                                }
+                                catch { }
+                            });
+                        }
+                        catch { }
+                    });
+                }
+            }
+            catch { }
+        };
+
         _webConns.Add(webConn);
-        Wires.Add(webConn.WireInstance);
-        OnWire?.Invoke(webConn.WireInstance, url);
-        if (HasMetadata) OnWireWithMetadata(webConn.WireInstance);
+        Wires.Add(wire);
+
+        // Set web seed wire state directly - bypass wire protocol handshake
+        wire.PeerHasAll = true;
+        wire.PeerChoking = false;
+        wire.AmInterested = true;
+
+        OnWire?.Invoke(wire, url);
+        if (HasMetadata) OnWireWithMetadata(wire);
     }
 
     // ========================
@@ -710,12 +869,14 @@ public partial class Torrent : IAsyncDisposable
             foreach (var req in wire.Requests.ToArray())
                 wire.Cancel(req.Piece, req.Offset, req.Length);
         }
+        _ = PersistStateAsync();
     }
 
     public void Resume()
     {
         Paused = false;
         UpdateWires();
+        _ = PersistStateAsync();
     }
 
     // ========================

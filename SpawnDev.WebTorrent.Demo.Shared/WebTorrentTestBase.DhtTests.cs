@@ -101,22 +101,23 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
-    public async Task Dht_CompactNodeInfo_ParsesCorrectly()
+    public async Task Dht_CompactPeer_EncodeDecodeRoundTrip()
     {
-        // Build compact node info: 26 bytes = 20 nodeId + 4 IP + 2 port
-        var compact = new byte[26];
-        var nodeId = new byte[20]; nodeId[0] = 0x42;
-        nodeId.CopyTo(compact, 0);
-        compact[20] = 10; compact[21] = 0; compact[22] = 0; compact[23] = 1; // 10.0.0.1
-        compact[24] = (byte)(6881 >> 8); compact[25] = (byte)(6881 & 0xFF);
+        // Use the production UtPexExtension compact encoder/decoder (same 6-byte format as DHT)
+        var addresses = new[] { "10.0.0.1:6881", "192.168.1.100:51413", "255.255.255.255:65535", "0.0.0.0:0" };
+        var buffer = new byte[addresses.Length * 6];
 
-        // Parse like DhtDiscovery does
-        var nid = compact[0..20];
-        var ip = $"{compact[20]}.{compact[21]}.{compact[22]}.{compact[23]}";
-        var port = (compact[24] << 8) | compact[25];
+        for (int i = 0; i < addresses.Length; i++)
+        {
+            bool ok = UtPexExtension.EncodeCompactIPv4(addresses[i], buffer, i * 6);
+            if (!ok) throw new Exception($"EncodeCompactIPv4 failed for {addresses[i]}");
+        }
 
-        if (nid[0] != 0x42) throw new Exception($"Node ID wrong: {nid[0]:X2}");
-        if (ip != "10.0.0.1") throw new Exception($"IP wrong: {ip}");
-        if (port != 6881) throw new Exception($"Port wrong: {port}");
+        for (int i = 0; i < addresses.Length; i++)
+        {
+            var decoded = UtPexExtension.DecodeCompactIPv4(buffer, i * 6);
+            if (decoded != addresses[i])
+                throw new Exception($"Round-trip failed: expected {addresses[i]}, got {decoded}");
+        }
     }
 }

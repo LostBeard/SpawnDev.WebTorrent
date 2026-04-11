@@ -43,6 +43,9 @@ public class Wire : IAsyncDisposable
     /// <summary>Connection type: webrtc, tcpIncoming, tcpOutgoing, webSeed.</summary>
     public string? Type { get; set; }
 
+    /// <summary>Remote peer address (IP:port for TCP, ICE candidate address for WebRTC, URL for web seeds).</summary>
+    public string? RemoteAddress { get; set; }
+
     /// <summary>Are WE choking the peer?</summary>
     public bool AmChoking { get; set; } = true;
 
@@ -67,11 +70,11 @@ public class Wire : IAsyncDisposable
     /// <summary>Peer's extension support flags.</summary>
     public WireExtensions PeerExtensions { get; set; } = new();
 
-    /// <summary>Outgoing requests (blocks we want from the peer).</summary>
-    public List<WireRequest> Requests { get; } = new();
+    /// <summary>Outgoing requests (blocks we want from the peer). Thread-safe for web seed concurrency.</summary>
+    public SynchronizedList<WireRequest> Requests { get; } = new();
 
     /// <summary>Incoming requests (blocks the peer wants from us).</summary>
-    public List<WireRequest> PeerRequests { get; } = new();
+    public SynchronizedList<WireRequest> PeerRequests { get; } = new();
 
     /// <summary>Our extension ID → name mapping.</summary>
     public Dictionary<int, string> ExtendedMapping { get; } = new();
@@ -103,31 +106,45 @@ public class Wire : IAsyncDisposable
     /// <summary>Is the wire destroyed/finished?</summary>
     public bool Destroyed { get; private set; }
 
-    // Speed tracking
-    private long _downloadedSinceLastCheck;
-    private long _uploadedSinceLastCheck;
+    // Speed tracking - exponential moving average for smooth display
+    internal long _downloadedSinceLastCheck;
+    internal long _uploadedSinceLastCheck;
     private DateTime _lastSpeedCheck = DateTime.UtcNow;
+    private double _smoothedDownSpeed;
+    private double _smoothedUpSpeed;
+    private const double SpeedAlpha = 0.3; // EMA smoothing factor (0.3 = 30% new, 70% old)
 
-    /// <summary>Current download speed in bytes/sec.</summary>
+    /// <summary>Current download speed in bytes/sec (smoothed EMA).</summary>
     public double DownloadSpeed()
     {
         var elapsed = (DateTime.UtcNow - _lastSpeedCheck).TotalSeconds;
-        if (elapsed < 0.1) return 0;
-        var speed = _downloadedSinceLastCheck / elapsed;
+        if (elapsed < 0.5) return _smoothedDownSpeed;
+        var instantSpeed = _downloadedSinceLastCheck / elapsed;
+        _smoothedDownSpeed = _smoothedDownSpeed == 0
+            ? instantSpeed
+            : _smoothedDownSpeed * (1 - SpeedAlpha) + instantSpeed * SpeedAlpha;
+        UpdateUploadSpeed(elapsed);
         _downloadedSinceLastCheck = 0;
-        _lastSpeedCheck = DateTime.UtcNow;
-        return speed;
-    }
-
-    /// <summary>Current upload speed in bytes/sec.</summary>
-    public double UploadSpeed()
-    {
-        var elapsed = (DateTime.UtcNow - _lastSpeedCheck).TotalSeconds;
-        if (elapsed < 0.1) return 0;
-        var speed = _uploadedSinceLastCheck / elapsed;
         _uploadedSinceLastCheck = 0;
         _lastSpeedCheck = DateTime.UtcNow;
-        return speed;
+        return _smoothedDownSpeed;
+    }
+
+    /// <summary>Current upload speed in bytes/sec (smoothed EMA).</summary>
+    public double UploadSpeed()
+    {
+        // DownloadSpeed() already resets the counters and updates the timestamp,
+        // so UploadSpeed just returns the smoothed value
+        return _smoothedUpSpeed;
+    }
+
+    // Called internally by DownloadSpeed to update both at once
+    private void UpdateUploadSpeed(double elapsed)
+    {
+        var instantSpeed = _uploadedSinceLastCheck / elapsed;
+        _smoothedUpSpeed = _smoothedUpSpeed == 0
+            ? instantSpeed
+            : _smoothedUpSpeed * (1 - SpeedAlpha) + instantSpeed * SpeedAlpha;
     }
 
     // ========================
@@ -807,18 +824,11 @@ public class Wire : IAsyncDisposable
         _timeoutTimer = new Timer(_ => _handleTimeout(), null, _timeoutMs, Timeout.Infinite);
     }
 
-    private WireRequest? _pull(List<WireRequest> requests, int piece, int offset, int length)
+    private WireRequest? _pull(SynchronizedList<WireRequest> requests, int piece, int offset, int length)
     {
-        for (int i = 0; i < requests.Count; i++)
-        {
-            var req = requests[i];
-            if (req.Piece == piece && req.Offset == offset && req.Length == length)
-            {
-                requests.RemoveAt(i);
-                return req;
-            }
-        }
-        return null;
+        var match = requests.FirstOrDefault(r => r.Piece == piece && r.Offset == offset && r.Length == length);
+        if (match != null) requests.Remove(match);
+        return match;
     }
 
     private void _ensurePeerPieces(int minLength)

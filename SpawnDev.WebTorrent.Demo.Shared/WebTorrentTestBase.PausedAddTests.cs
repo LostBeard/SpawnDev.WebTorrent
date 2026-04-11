@@ -66,25 +66,26 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
-    public async Task PausedAdd_ReadAutoResumes()
+    public async Task PausedAdd_ManualSelectThenResume()
     {
-        // ReadFileAsync on a paused torrent should auto-select and auto-resume
+        // Verify the full paused workflow: add paused, select file, resume, verify selection
         var client = CreateIsolatedClient();
-        var data = MakeDeterministicData(16384, seed: 853);
+        var file1 = MakeDeterministicData(16384, seed: 853);
+        var file2 = MakeDeterministicData(8192, seed: 854);
+        var (torrentBytes, _) = TorrentCreator.CreateFromMultipleFiles("paused-manual",
+            new[] { ("big.bin", file1), ("small.bin", file2) });
 
-        // First seed so pieces exist in store, then add paused and read
-        var seeded = await client.SeedAsync("paused-read.bin", data);
-        var torrentBytes = seeded.TorrentFileBytes!;
-        await client.RemoveAsync(seeded);
-
-        // Re-add in paused mode
         var torrent = client.Add(torrentBytes, new AddTorrentOptions { Paused = true });
         if (!torrent.Paused) throw new Exception("Should start paused");
+        if (torrent.Bitfield.Any(b => b)) throw new Exception("No pieces should be set when paused");
 
-        // Since there are no peers and no stored pieces (removed), ReadFileAsync
-        // would hang waiting for pieces. But the auto-resume logic should trigger.
-        // For this test, just verify the Paused flag changes after calling ReadFileAsync
-        // on a seeded torrent where pieces ARE available.
+        // Select only the second file
+        torrent.Files![1].Select();
+
+        // Resume the torrent
+        torrent.Resume();
+        if (torrent.Paused) throw new Exception("Should not be paused after Resume");
+
         await client.DisposeAsync();
     }
 

@@ -66,17 +66,27 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
-    public async Task Storage_Restore_PiecesReloaded()
+    public async Task Storage_MemoryStore_MultiPiece_IndependentStorage()
     {
-        if (!OperatingSystem.IsBrowser())
-            throw new UnsupportedTestException("OPFS restore only available in browser");
-        // Browser-only: seed, dispose client, create new client with same OPFS, verify bitfield
-        var data = MakeDeterministicData(16384, seed: 46);
-        var torrent = await Client.SeedAsync("restore.bin", data);
-        var infoHash = torrent.InfoHash;
-        // In browser, RestoreFromStorageAsync is called on startup — if the torrent
-        // was properly persisted, it would be found. Just verify the mechanism exists.
-        if (string.IsNullOrEmpty(infoHash)) throw new Exception("InfoHash is null");
-        await Client.RemoveAsync(torrent);
+        // Verify pieces are stored independently - writing piece 1 doesn't corrupt piece 0
+        var store = new MemoryChunkStore(16384);
+        var data0 = MakeDeterministicData(16384, seed: 46);
+        var data1 = MakeDeterministicData(16384, seed: 47);
+        await store.PutAsync(0, data0);
+        await store.PutAsync(1, data1);
+
+        var read0 = await store.GetAsync(0);
+        var read1 = await store.GetAsync(1);
+        if (read0 == null || read1 == null) throw new Exception("GetAsync returned null");
+        if (!read0.SequenceEqual(data0)) throw new Exception("Piece 0 data corrupted after writing piece 1");
+        if (!read1.SequenceEqual(data1)) throw new Exception("Piece 1 data wrong");
+
+        // Overwrite piece 0 with new data
+        var data0v2 = MakeDeterministicData(16384, seed: 48);
+        await store.PutAsync(0, data0v2);
+        read0 = await store.GetAsync(0);
+        read1 = await store.GetAsync(1);
+        if (!read0!.SequenceEqual(data0v2)) throw new Exception("Piece 0 overwrite failed");
+        if (!read1!.SequenceEqual(data1)) throw new Exception("Piece 1 corrupted by piece 0 overwrite");
     }
 }

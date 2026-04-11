@@ -16,8 +16,31 @@ public class WebSocketTracker : IAsyncDisposable
     public const int ReconnectMaximum = 3_600_000;     // 1 hour
     public const int ReconnectVariance = 300_000;       // 5 min
     public const int OfferTimeout = 50_000;             // 50s
-    public const int DefaultAnnounceInterval = 30_000;  // 30s
-    public const int MaxOffers = 5;
+    public const int DefaultAnnounceInterval = 120_000;  // 120s - matches typical tracker default
+    public const int MaxOffers = 10;  // JS: MAX_ANNOUNCE_PEERS = 10
+
+    // ========================
+    // SHARED SOCKET POOL (matches JS socketPool pattern)
+    // One WebSocket per tracker URL, shared across all torrents
+    // ========================
+    private static readonly Dictionary<string, WebSocketTracker> _socketPool = new();
+    private static readonly object _poolLock = new();
+
+    /// <summary>
+    /// Get or create a shared WebSocketTracker for the given URL.
+    /// Matches the JS bittorrent-tracker socketPool pattern - one connection per tracker URL.
+    /// </summary>
+    public static WebSocketTracker GetOrCreate(string announceUrl, byte[] peerId, Func<bool, SimplePeer> createPeerFunc)
+    {
+        lock (_poolLock)
+        {
+            if (_socketPool.TryGetValue(announceUrl, out var existing) && !existing.Destroyed)
+                return existing;
+            var tracker = new WebSocketTracker(announceUrl, peerId, createPeerFunc);
+            _socketPool[announceUrl] = tracker;
+            return tracker;
+        }
+    }
 
     // ========================
     // STATE
@@ -30,21 +53,24 @@ public class WebSocketTracker : IAsyncDisposable
 
     private ClientWebSocket? _ws;
     private bool _connected;
-    private AnnounceOptions? _pendingAnnounce;
+    private readonly List<(byte[] infoHash, AnnounceOptions opts, byte[]? peerId)> _pendingAnnounces = new();
     private bool _expectingResponse;
     private string? _trackerId;
     private Timer? _reconnectTimer;
     private Timer? _announceTimer;
     private CancellationTokenSource? _readCts;
 
-    // Peer tracking: offerId (hex) → SimplePeer
-    private readonly Dictionary<string, (SimplePeer peer, Timer? timeout)> _pendingOffers = new();
+    // Peer tracking: offerId (hex) → (SimplePeer, timeout, infoHashBinary)
+    private readonly Dictionary<string, (SimplePeer peer, Timer? timeout, string infoHashBinary)> _pendingOffers = new();
 
     // Binary strings for tracker protocol (match JS hex2bin encoding)
-    private readonly byte[] _infoHash;     // 20 bytes
     private readonly byte[] _peerId;       // 20 bytes
-    private readonly string _infoHashBinary;  // latin1 binary string
     private readonly string _peerIdBinary;    // latin1 binary string
+
+    // Per-info_hash event handlers - routes responses to the correct torrent
+    private readonly Dictionary<string, Action<SimplePeer>> _peerHandlers = new();
+    private readonly Dictionary<string, Action<TrackerUpdate>> _updateHandlers = new();
+    private readonly Dictionary<string, Action<string>> _warningHandlers = new();
 
     // Factory for creating SimplePeer instances
     private readonly Func<bool, SimplePeer> _createPeerFunc;
@@ -69,40 +95,58 @@ public class WebSocketTracker : IAsyncDisposable
     // CONSTRUCTOR
     // ========================
 
-    public WebSocketTracker(string announceUrl, byte[] infoHash, byte[] peerId, Func<bool, SimplePeer> createPeerFunc)
+    private WebSocketTracker(string announceUrl, byte[] peerId, Func<bool, SimplePeer> createPeerFunc)
     {
         AnnounceUrl = announceUrl;
-        _infoHash = infoHash;
         _peerId = peerId;
-        _infoHashBinary = ToBinaryString(infoHash);
         _peerIdBinary = ToBinaryString(peerId);
         _createPeerFunc = createPeerFunc;
 
         _ = OpenSocketAsync();
     }
 
+    /// <summary>Subscribe to events for a specific info_hash on this shared tracker connection.</summary>
+    public void Subscribe(byte[] infoHash, Action<SimplePeer> onPeer, Action<TrackerUpdate>? onUpdate = null, Action<string>? onWarning = null)
+    {
+        var key = ToBinaryString(infoHash);
+        _peerHandlers[key] = onPeer;
+        if (onUpdate != null) _updateHandlers[key] = onUpdate;
+        if (onWarning != null) _warningHandlers[key] = onWarning;
+    }
+
+    /// <summary>Unsubscribe a torrent from this shared tracker connection.</summary>
+    public void Unsubscribe(byte[] infoHash)
+    {
+        var key = ToBinaryString(infoHash);
+        _peerHandlers.Remove(key);
+        _updateHandlers.Remove(key);
+        _warningHandlers.Remove(key);
+    }
+
     // ========================
     // ANNOUNCE
     // ========================
 
-    /// <summary>Send announce to tracker with WebRTC offers.</summary>
-    public async Task AnnounceAsync(AnnounceOptions opts)
+    /// <summary>Send announce to tracker with WebRTC offers for a specific info_hash.</summary>
+    public async Task AnnounceAsync(byte[] infoHash, AnnounceOptions opts, byte[]? peerId = null)
     {
-        if (Destroyed || Reconnecting) { Console.WriteLine($"[WSTracker] AnnounceAsync skipped: destroyed={Destroyed} reconnecting={Reconnecting}"); return; }
+        if (Destroyed || Reconnecting) { if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[WSTracker] AnnounceAsync skipped: destroyed={Destroyed} reconnecting={Reconnecting}"); return; }
+        var infoHashBinary = ToBinaryString(infoHash);
         if (!_connected)
         {
-            // Not connected yet — queue announce for when socket connects (matches JS behavior)
-            Console.WriteLine($"[WSTracker] AnnounceAsync queued (not yet connected to {AnnounceUrl})");
-            _pendingAnnounce = opts;
+            // Not connected yet - queue for when socket connects (supports multiple torrents)
+            if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[WSTracker] AnnounceAsync queued (not yet connected to {AnnounceUrl})");
+            _pendingAnnounces.Add((infoHash, opts, peerId));
             return;
         }
-        Console.WriteLine($"[WSTracker] AnnounceAsync to {AnnounceUrl}, event={opts.Event ?? "none"}");
+        if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[WSTracker] AnnounceAsync to {AnnounceUrl}, infoHash={Convert.ToHexString(infoHash)[..8]}..., event={opts.Event ?? "none"}");
 
+        var peerIdBin = peerId != null ? ToBinaryString(peerId) : _peerIdBinary;
         var msg = new Dictionary<string, object?>
         {
             ["action"] = "announce",
-            ["info_hash"] = _infoHashBinary,
-            ["peer_id"] = _peerIdBinary,
+            ["info_hash"] = infoHashBinary,
+            ["peer_id"] = peerIdBin,
             ["uploaded"] = opts.Uploaded,
             ["downloaded"] = opts.Downloaded,
             ["left"] = opts.Left,
@@ -122,7 +166,9 @@ public class WebSocketTracker : IAsyncDisposable
         {
             // Generate WebRTC offers (capped at 5, matching JS numwant cap)
             int numwant = Math.Min(opts.Numwant, MaxOffers);
-            var offers = await GenerateOffersAsync(numwant);
+            if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[WSTracker] Generating {numwant} offers for {AnnounceUrl}...");
+            var offers = await GenerateOffersAsync(numwant, infoHashBinary);
+            if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[WSTracker] Generated {offers.Count} offers, sending to {AnnounceUrl}");
             msg["numwant"] = numwant;
             msg["offers"] = offers;
             await SendAsync(msg);
@@ -152,13 +198,14 @@ public class WebSocketTracker : IAsyncDisposable
                 OnAnnounce?.Invoke();
             }
 
-            // Process any queued announce (matches JS: socket.once('connect', () => announce(opts)))
-            if (_pendingAnnounce != null)
+            // Process all queued announces (supports multiple torrents on shared socket)
+            if (_pendingAnnounces.Count > 0)
             {
-                var pending = _pendingAnnounce;
-                _pendingAnnounce = null;
-                Console.WriteLine($"[WSTracker] Processing queued announce to {AnnounceUrl}");
-                _ = AnnounceAsync(pending);
+                var pending = _pendingAnnounces.ToArray();
+                _pendingAnnounces.Clear();
+                if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[WSTracker] Processing {pending.Length} queued announces to {AnnounceUrl}");
+                foreach (var (hash, opts2, pid) in pending)
+                    _ = AnnounceAsync(hash, opts2, pid);
             }
 
             // Start read loop
@@ -215,6 +262,12 @@ public class WebSocketTracker : IAsyncDisposable
     {
         if (Destroyed) return;
 
+        if (WebTorrentClient.VerboseLogging)
+        {
+            var preview = json.Length > 200 ? json[..200] + "..." : json;
+            Console.WriteLine($"[WSTracker] RECV from {AnnounceUrl}: {preview}");
+        }
+
         JsonDocument doc;
         try { doc = JsonDocument.Parse(json); }
         catch
@@ -230,7 +283,7 @@ public class WebSocketTracker : IAsyncDisposable
             OnAnnounceResponse(root);
         else if (action == "scrape")
         {
-            // Scrape response — emit for consumer
+            // Scrape response - emit for consumer
         }
         else
         {
@@ -238,18 +291,19 @@ public class WebSocketTracker : IAsyncDisposable
             if (root.TryGetProperty("offer", out _) || root.TryGetProperty("answer", out _))
                 OnAnnounceResponse(root);
             else
-                OnWarning?.Invoke($"Invalid tracker action: {action}");
+            {
+                if (WebTorrentClient.VerboseLogging)
+                    Console.WriteLine($"[WSTracker] Unknown action from {AnnounceUrl}: {action}");
+            }
         }
     }
 
-    private void OnAnnounceResponse(JsonElement data)
+    private async void OnAnnounceResponse(JsonElement data)
     {
-        // Verify info_hash matches ours
+        // Get info_hash from response to route to correct torrent
+        string responseInfoHash = "";
         if (data.TryGetProperty("info_hash", out var ihProp))
-        {
-            var responseInfoHash = ihProp.GetString() ?? "";
-            if (responseInfoHash != _infoHashBinary) return; // not for us
-        }
+            responseInfoHash = ihProp.GetString() ?? "";
 
         // Ignore messages from ourselves
         if (data.TryGetProperty("peer_id", out var pidProp))
@@ -261,13 +315,21 @@ public class WebSocketTracker : IAsyncDisposable
         // Failure reason
         if (data.TryGetProperty("failure reason", out var failProp))
         {
-            OnWarning?.Invoke(failProp.GetString() ?? "tracker failure");
+            if (_warningHandlers.TryGetValue(responseInfoHash, out var warnHandler))
+                warnHandler(failProp.GetString() ?? "tracker failure");
+            else
+                OnWarning?.Invoke(failProp.GetString() ?? "tracker failure");
             return;
         }
 
         // Warning message
         if (data.TryGetProperty("warning message", out var warnProp))
-            OnWarning?.Invoke(warnProp.GetString() ?? "");
+        {
+            if (_warningHandlers.TryGetValue(responseInfoHash, out var warnHandler))
+                warnHandler(warnProp.GetString() ?? "");
+            else
+                OnWarning?.Invoke(warnProp.GetString() ?? "");
+        }
 
         // Interval
         if (data.TryGetProperty("interval", out var intProp) && intProp.TryGetInt32(out var interval))
@@ -279,7 +341,7 @@ public class WebSocketTracker : IAsyncDisposable
         if (data.TryGetProperty("tracker id", out var tidProp))
             _trackerId = tidProp.GetString();
 
-        // Swarm stats
+        // Swarm stats - route to correct torrent by info_hash
         if (data.TryGetProperty("complete", out _))
         {
             var update = new TrackerUpdate
@@ -288,24 +350,27 @@ public class WebSocketTracker : IAsyncDisposable
                 Complete = data.TryGetProperty("complete", out var cp) ? cp.GetInt32() : 0,
                 Incomplete = data.TryGetProperty("incomplete", out var ip) ? ip.GetInt32() : 0,
             };
+            if (_updateHandlers.TryGetValue(responseInfoHash, out var updateHandler))
+                updateHandler(update);
             OnUpdate?.Invoke(update);
         }
 
-        // Incoming offer from another peer — create answering peer
+        // Incoming offer from another peer - create answering peer
         if (data.TryGetProperty("offer", out var offerProp) && data.TryGetProperty("peer_id", out var offerPeerId))
         {
             var peer = _createPeerFunc(false); // responder
+            await peer.InitAsync(); // Initialize RTCPeerConnection before signaling
             var offerId = data.TryGetProperty("offer_id", out var oidProp) ? oidProp.GetString() ?? "" : "";
             var remotePeerId = offerPeerId.GetString() ?? "";
 
             peer.OnSignal += (signal) =>
             {
                 if (signal.Type != "answer") return;
-                // Send answer back through tracker — action MUST be "announce" (matches JS exactly)
+                // Send answer back through tracker - use the info_hash from the incoming offer
                 var answerMsg = new Dictionary<string, object?>
                 {
                     ["action"] = "announce",
-                    ["info_hash"] = _infoHashBinary,
+                    ["info_hash"] = responseInfoHash,
                     ["peer_id"] = _peerIdBinary,
                     ["to_peer_id"] = remotePeerId,
                     ["answer"] = new { type = signal.Type, sdp = signal.Sdp },
@@ -315,7 +380,11 @@ public class WebSocketTracker : IAsyncDisposable
                 _ = SendAsync(answerMsg);
             };
 
-            OnPeer?.Invoke(peer);
+            // Route peer to the correct torrent by info_hash
+            if (_peerHandlers.TryGetValue(responseInfoHash, out var peerHandler))
+                peerHandler(peer);
+            else
+                OnPeer?.Invoke(peer);
 
             // Signal the offer to the peer (triggers answer generation)
             _ = peer.Signal(new SignalData { Type = "offer", Sdp = offerProp.TryGetProperty("sdp", out var sdpProp) ? sdpProp.GetString() : null });
@@ -331,10 +400,15 @@ public class WebSocketTracker : IAsyncDisposable
             if (_pendingOffers.TryGetValue(offerIdHex, out var entry))
             {
                 var peer = entry.peer;
+                var offerInfoHash = entry.infoHashBinary;
                 entry.timeout?.Dispose();
                 _pendingOffers.Remove(offerIdHex);
 
-                OnPeer?.Invoke(peer);
+                // Route peer to the correct torrent by the info_hash stored with the offer
+                if (_peerHandlers.TryGetValue(offerInfoHash, out var peerHandler))
+                    peerHandler(peer);
+                else
+                    OnPeer?.Invoke(peer);
 
                 var answerSdp = answerProp.TryGetProperty("sdp", out var aSdpProp) ? aSdpProp.GetString() : null;
                 _ = peer.Signal(new SignalData { Type = "answer", Sdp = answerSdp });
@@ -355,6 +429,8 @@ public class WebSocketTracker : IAsyncDisposable
 
     private void StartReconnectTimer()
     {
+        // JS increments retries BEFORE calculating delay (exponential backoff)
+        Retries++;
         var random = new Random();
         int ms = random.Next(ReconnectVariance) +
                  Math.Min((int)Math.Pow(2, Retries) * ReconnectMinimum, ReconnectMaximum);
@@ -363,7 +439,6 @@ public class WebSocketTracker : IAsyncDisposable
         _reconnectTimer?.Dispose();
         _reconnectTimer = new Timer(_ =>
         {
-            Retries++;
             _ = OpenSocketAsync();
         }, null, ms, Timeout.Infinite);
     }
@@ -372,7 +447,7 @@ public class WebSocketTracker : IAsyncDisposable
     // OFFER GENERATION (matches JS _generateOffers exactly)
     // ========================
 
-    private async Task<List<object>> GenerateOffersAsync(int numwant)
+    private async Task<List<object>> GenerateOffersAsync(int numwant, string infoHashBinary)
     {
         var offers = new List<object>();
 
@@ -408,7 +483,7 @@ public class WebSocketTracker : IAsyncDisposable
                         _ = entry.peer.DisposeAsync();
                 }, null, OfferTimeout, Timeout.Infinite);
 
-                _pendingOffers[offerIdHex] = (peer, offerTimer);
+                _pendingOffers[offerIdHex] = (peer, offerTimer, infoHashBinary);
 
                 // offer_id transmitted as binary string (matches JS hex2bin(offerId))
                 offers.Add(new
@@ -440,6 +515,9 @@ public class WebSocketTracker : IAsyncDisposable
         {
             PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
             DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+            // CRITICAL: Do NOT escape chars 0x80-0xFF as \uXXXX - JS JSON.stringify doesn't
+            // escape them, and the tracker expects matching wire format for info_hash/peer_id
+            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         });
         var bytes = Encoding.UTF8.GetBytes(json);
         await _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
@@ -514,7 +592,7 @@ public class AnnounceOptions
     public long Downloaded { get; set; }
     public long Left { get; set; }
     public string? Event { get; set; }
-    public int Numwant { get; set; } = 5;
+    public int Numwant { get; set; } = 10;  // JS: MAX_ANNOUNCE_PEERS = 10
 }
 
 public class TrackerUpdate

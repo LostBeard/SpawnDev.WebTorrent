@@ -75,7 +75,7 @@ public class WebConn : IAsyncDisposable
     // HTTP RANGE REQUEST (matches JS httpRequest exactly)
     // ========================
 
-    private async Task HandleRequestAsync(int pieceIndex, int offset, int length, Action<Exception?, byte[]?> respond)
+    internal async Task HandleRequestAsync(int pieceIndex, int offset, int length, Action<Exception?, byte[]?> respond)
     {
         try
         {
@@ -87,8 +87,14 @@ public class WebConn : IAsyncDisposable
 
             if (_torrent.Files == null || _torrent.Files.Length <= 1)
             {
-                // Single-file torrent: range request directly to URL
-                data = await FetchRangeAsync(Url, rangeStart, rangeEnd);
+                // Single-file torrent: if URL ends with /, append the file name (BEP 19 directory style)
+                var fileUrl = Url;
+                if (fileUrl.EndsWith('/'))
+                {
+                    var name = _torrent.Name ?? _torrent.Files?[0]?.Name ?? _torrent.Files?[0]?.Path ?? "";
+                    fileUrl = fileUrl + Uri.EscapeDataString(name);
+                }
+                data = await FetchRangeAsync(fileUrl, rangeStart, rangeEnd);
             }
             else
             {
@@ -101,7 +107,10 @@ public class WebConn : IAsyncDisposable
 
                     if (fileStart > rangeEnd || fileEnd < rangeStart) continue;
 
-                    var fileUrl = Url.TrimEnd('/') + "/" + file.Path;
+                    // Convert OS path separators to URL slashes and encode each segment
+                    var pathSegments = (file.Path ?? file.Name ?? "").Replace('\\', '/').Split('/');
+                    var encodedPath = string.Join("/", pathSegments.Select(Uri.EscapeDataString));
+                    var fileUrl = Url.TrimEnd('/') + "/" + encodedPath;
                     long start = Math.Max(rangeStart - fileStart, 0);
                     long end = Math.Min(fileEnd - fileStart, rangeEnd - fileStart);
 

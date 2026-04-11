@@ -101,16 +101,18 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
-    public async Task Seed_SpeedTracking_Initializes()
+    public async Task Seed_SpeedTracking_ZeroWithoutPeers()
     {
         var client = CreateIsolatedClient();
         var data = MakeDeterministicData(16384, seed: 18);
         var torrent = await client.SeedAsync("speed.bin", data);
-        // These should be accessible without exception
-        var dl = torrent.DownloadSpeed;
-        var ul = torrent.UploadSpeed;
-        var ratio = torrent.Ratio;
-        if (double.IsNaN(dl) || double.IsNaN(ul)) throw new Exception("Speed is NaN");
+        // Without any peer transfer, speeds should be exactly 0
+        if (torrent.DownloadSpeed != 0) throw new Exception($"DownloadSpeed should be 0 without peers, got {torrent.DownloadSpeed}");
+        if (torrent.UploadSpeed != 0) throw new Exception($"UploadSpeed should be 0 without peers, got {torrent.UploadSpeed}");
+        if (torrent.Ratio != 0) throw new Exception($"Ratio should be 0 without uploads, got {torrent.Ratio}");
+        // Downloaded should equal total length since we seeded
+        if (torrent.Downloaded != torrent.Length)
+            throw new Exception($"Downloaded should equal Length ({torrent.Length}), got {torrent.Downloaded}");
         await client.DisposeAsync();
     }
 }

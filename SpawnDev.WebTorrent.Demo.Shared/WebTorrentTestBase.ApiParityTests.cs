@@ -165,13 +165,22 @@ public abstract partial class WebTorrentTestBase
     // ── Torrent RemovePeer ──
 
     [TestMethod]
-    public async Task Torrent_RemovePeer_ByWire()
+    public async Task Torrent_RemovePeer_ByPeerId()
     {
         var client = CreateIsolatedClient();
         var torrent = await client.SeedAsync("rmpeer.bin", MakeDeterministicData(16384, seed: 958));
-        // No peers connected, but verify RemovePeer doesn't throw on empty list
-        var wireCount = torrent.Wires.Count;
-        // Just verify the method exists and doesn't crash
+
+        // Verify initial state: no wires/peers
+        if (torrent.Wires.Count != 0)
+            throw new Exception($"Expected 0 wires, got {torrent.Wires.Count}");
+        if (torrent.NumPeers != 0)
+            throw new Exception($"Expected 0 peers, got {torrent.NumPeers}");
+
+        // RemovePeer on non-existent peer should not throw
+        torrent.RemovePeer("nonexistent-peer-id");
+        if (torrent.NumPeers != 0)
+            throw new Exception("NumPeers should still be 0 after removing non-existent peer");
+
         await client.DisposeAsync();
     }
 
@@ -199,24 +208,27 @@ public abstract partial class WebTorrentTestBase
     // ── Torrent Events Exist ──
 
     [TestMethod]
-    public async Task Torrent_Events_Subscribable()
+    public async Task Torrent_RescanFiles_PreservesState()
     {
+        // Verify RescanFilesAsync re-verifies all piece hashes and preserves Done state
         var client = CreateIsolatedClient();
-        var torrent = await client.SeedAsync("events.bin", MakeDeterministicData(16384, seed: 960));
+        var data = MakeDeterministicData(32768, seed: 960); // 2 pieces
 
-        // Verify all events can be subscribed without exception
-        bool infoHashFired = false, downloadFired = false, uploadFired = false;
-        torrent.OnInfoHash += () => infoHashFired = true;
-        torrent.OnDownload += (bytes) => downloadFired = true;
-        torrent.OnUpload += (bytes) => uploadFired = true;
-        torrent.OnIdle += () => { };
-        torrent.OnNoPeers += (type) => { };
-        torrent.OnDone += () => { };
-        torrent.OnWarning += (msg) => { };
-        torrent.OnPieceVerified += (idx) => { };
-        torrent.OnWire += (wire, addr) => { };
-        torrent.OnMetadata += () => { };
-        torrent.OnReady += () => { };
+        var torrent = await client.SeedAsync("rescan.bin", data);
+
+        if (!torrent.Done) throw new Exception("Torrent should be Done after seeding");
+        if (torrent.CompletedPieces != torrent.PieceCount)
+            throw new Exception($"CompletedPieces ({torrent.CompletedPieces}) != PieceCount ({torrent.PieceCount})");
+
+        // Rescan verifies every piece hash against the store
+        await torrent.RescanFilesAsync();
+
+        if (!torrent.Done) throw new Exception("Torrent should still be Done after rescan");
+        if (torrent.Bitfield.Any(b => !b)) throw new Exception("All pieces should still be verified after rescan");
+
+        // Verify data is still readable after rescan
+        var readBack = await torrent.ReadFileAsync(0);
+        if (!readBack.SequenceEqual(data)) throw new Exception("Data should still be readable after rescan");
 
         await client.DisposeAsync();
     }

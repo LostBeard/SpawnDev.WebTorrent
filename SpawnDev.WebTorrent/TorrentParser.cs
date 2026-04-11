@@ -130,6 +130,7 @@ public static class TorrentParser
             metadata.Files = parsedFiles.ToArray();
         }
 
+        metadata.OriginalTorrentBytes = torrentBytes;
         return metadata;
     }
 
@@ -146,6 +147,9 @@ public static class TorrentParser
         infoDictBytes.CopyTo(torrentBytes, prefix.Length);
         suffix.CopyTo(torrentBytes, prefix.Length + infoDictBytes.Length);
 
-        return Parse(torrentBytes);
+        var metadata = Parse(torrentBytes);
+        if (metadata != null)
+            metadata.OriginalTorrentBytes = torrentBytes;
+        return metadata;
     }
 }

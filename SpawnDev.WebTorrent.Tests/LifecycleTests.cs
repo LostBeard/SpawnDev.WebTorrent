@@ -134,13 +134,23 @@ public class LifecycleTests
     }
 
     [Test]
-    public void ServiceWorkerStreamHandler_Constructs()
+    public async Task ServiceWorkerStreamHandler_RegistersWithClient()
     {
-        // Verifies the type exists and can be instantiated without browser context
-        // (it will throw on Init when not in browser, but construction should work)
-        var type = typeof(ServiceWorkerStreamHandler);
-        Assert.That(type, Is.Not.Null);
-        Assert.That(type.GetInterfaces().Any(i => i.Name.Contains("IAsyncBackgroundService")),
-            Is.True, "Should implement IAsyncBackgroundService");
+        // Verify that ServiceWorkerStreamHandler registers its OnRequest handler with WebTorrentClient
+        var handler = new ServiceWorkerStreamHandler();
+        var client = new WebTorrentClient();
+
+        // Before registration, StreamHandler should be null
+        Assert.That(client.StreamHandler, Is.Null);
+
+        // Register the handler
+        client.RegisterStreamHandler(handler);
+
+        // After registration, StreamHandler should be set
+        Assert.That(client.StreamHandler, Is.SameAs(handler),
+            "RegisterStreamHandler should set the client's StreamHandler");
+
+        handler.Dispose();
+        await client.DisposeAsync();
     }
 }

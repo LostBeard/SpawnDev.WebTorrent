@@ -156,7 +156,7 @@ public partial class Torrent
                 Bitfield[index] = true;
 
                 // Announce to all peers
-                foreach (var w in Wires)
+                foreach (var w in Wires.ToArray())
                     _ = w.Have(index);
 
                 OnPieceVerified?.Invoke(index);
@@ -335,7 +335,7 @@ public partial class Torrent
         if (!Ready || Paused || Destroyed) return;
 
         // Sort wires: increasing quality (pop = best)
-        var wireStack = Wires
+        var wireStack = Wires.ToArray()
             .Select(wire => (wire, random: _random.NextDouble()))
             .OrderBy(x =>
             {
@@ -472,7 +472,26 @@ public partial class Torrent
     private void CheckDone()
     {
         if (Done) return;
-        bool allDone = Bitfield.All(b => b);
+
+        bool allDone;
+        if (_selections.Length > 0)
+        {
+            // BEP 53 / partial selection: "done" means all selected pieces are downloaded
+            allDone = true;
+            foreach (var sel in _selections.ToArray())
+            {
+                for (int i = sel.From; i <= sel.To && i < Bitfield.Length; i++)
+                {
+                    if (!Bitfield[i]) { allDone = false; break; }
+                }
+                if (!allDone) break;
+            }
+        }
+        else
+        {
+            allDone = Bitfield.All(b => b);
+        }
+
         if (allDone)
         {
             Done = true;

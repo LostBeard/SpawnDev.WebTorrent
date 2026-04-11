@@ -65,22 +65,27 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
-    public async Task MutableItem_RejectsOldSequence()
+    public async Task MutableItem_SignData_SequenceAndValueEncodedCorrectly()
     {
-        // DhtMutableItems.IsNewerSequence checks against value cache
-        // Without a real signer, we test the static target/signdata methods
-        var pubKey = new byte[32];
-        System.Security.Cryptography.RandomNumberGenerator.Fill(pubKey);
+        // Verify sign data encoding handles various sequence values and value lengths
+        var smallValue = new byte[] { 0x01 };
+        var largeValue = new byte[200]; // near the BEP 44 1000-byte limit
+        System.Security.Cryptography.RandomNumberGenerator.Fill(largeValue);
 
-        // ComputeTarget should be deterministic for same input
-        var t1 = DhtMutableItems.ComputeTarget(pubKey, null);
-        var t2 = DhtMutableItems.ComputeTarget(pubKey, null);
-        if (!t1.SequenceEqual(t2))
-            throw new Exception("ComputeTarget should be deterministic");
+        // Sequence 0
+        var sd0 = DhtMutableItems.BuildSignData(smallValue, null, 0);
+        var str0 = System.Text.Encoding.ASCII.GetString(sd0, 0, sd0.Length - smallValue.Length);
+        if (!str0.Contains("3:seqi0e")) throw new Exception($"Seq 0 not encoded correctly: {str0}");
 
-        // With different salt, target should differ
-        var t3 = DhtMutableItems.ComputeTarget(pubKey, new byte[] { 1 });
-        if (t1.SequenceEqual(t3))
-            throw new Exception("Different salt should produce different target");
+        // Large sequence
+        var sdMax = DhtMutableItems.BuildSignData(smallValue, null, 999999);
+        var strMax = System.Text.Encoding.ASCII.GetString(sdMax, 0, sdMax.Length - smallValue.Length);
+        if (!strMax.Contains("3:seqi999999e")) throw new Exception($"Large seq not encoded: {strMax}");
+
+        // Large value - length prefix should match
+        var sdLarge = DhtMutableItems.BuildSignData(largeValue, null, 1);
+        var strLarge = System.Text.Encoding.ASCII.GetString(sdLarge, 0, sdLarge.Length - largeValue.Length);
+        if (!strLarge.Contains($"1:v{largeValue.Length}:"))
+            throw new Exception($"Large value length not encoded correctly: {strLarge}");
     }
 }

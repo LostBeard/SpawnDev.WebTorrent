@@ -60,17 +60,21 @@ public class UdpTrackerClient : IAsyncDisposable
 
         try
         {
+            if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[UDPTracker] Connecting to {_host}:{_port}...");
             _udp = new UdpClient();
             _udp.Connect(_host, _port);
 
             await ConnectAsync(ct);
+            if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[UDPTracker] Connected to {_host}:{_port}, announcing...");
             await AnnounceAsync(infoHash, port, 0, 0, 0, AnnounceEvent.Started, ct);
+            if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[UDPTracker] Announced to {_host}:{_port}");
 
             _reAnnounceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             _ = ReannounceLoopAsync(_reAnnounceCts.Token);
         }
         catch (Exception ex)
         {
+            if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[UDPTracker] FAILED {_host}:{_port}: {ex.Message}");
             OnWarning?.Invoke($"UDP tracker error ({_host}:{_port}): {ex.Message}");
         }
     }

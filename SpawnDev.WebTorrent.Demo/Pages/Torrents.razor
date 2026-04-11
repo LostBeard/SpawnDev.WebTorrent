@@ -233,20 +233,24 @@
                                 </div>
                             </div>
 
-                            @* ---- Piece Bar ---- *@
+                            @* ---- Piece Grid (1:1 mapping up to 2000 pieces) ---- *@
                             @if (sel.Bitfield.Length > 0)
                             {
                                 <div class="qb-piece-label">Pieces (@sel.CompletedPieces / @sel.PieceCount)</div>
                                 <div class="qb-piece-bar">
                                     @{
-                                        int maxDisplay = Math.Min(sel.Bitfield.Length, 500);
-                                        double step = sel.Bitfield.Length / (double)maxDisplay;
+                                        int total = sel.Bitfield.Length;
+                                        int cols = Math.Min(total, 2000);
+                                        int pieceStep = Math.Max(1, total / cols);
                                     }
-                                    @for (int i = 0; i < maxDisplay; i++)
+                                    @for (int i = 0; i < cols; i++)
                                     {
-                                        int idx = (int)(i * step);
-                                        bool have = idx < sel.Bitfield.Length && sel.Bitfield[idx];
-                                        <span class="qb-piece @(have ? "qb-piece-have" : "")"></span>
+                                        int start = i * pieceStep;
+                                        int end = Math.Min((i + 1) * pieceStep, total);
+                                        int done = 0; int count = 0;
+                                        for (int j = start; j < end; j++) { count++; if (sel.Bitfield[j]) done++; }
+                                        var cls = done == 0 ? "" : done == count ? "qb-piece-have" : "qb-piece-partial";
+                                        <span class="qb-piece @cls"></span>
                                     }
                                 </div>
                             }
@@ -290,23 +294,32 @@
                                     <thead>
                                         <tr>
                                             <th>Peer ID</th>
+                                            <th>Address</th>
                                             <th style="width:60px;">Type</th>
-                                            <th style="width:50px;">Choke</th>
-                                            <th style="width:50px;">Int.</th>
-                                            <th style="width:50px;">Reqs</th>
+                                            <th style="width:70px;">DL</th>
+                                            <th style="width:70px;">UL</th>
+                                            <th style="width:60px;">Progress</th>
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        @foreach (var wire in sel.Wires)
+                                        @foreach (var wire in sel.Wires.ToArray())
                                         {
+                                            var dl = wire.DownloadSpeed();
+                                            var ul = wire.UploadSpeed();
+                                            var peerId = wire.Type == "webSeed" && wire.RemoteAddress != null
+                                                ? (Uri.TryCreate(wire.RemoteAddress, UriKind.Absolute, out var uri) ? uri.Host : wire.RemoteAddress)
+                                                : wire.PeerId;
                                             <tr>
-                                                <td class="qb-mono" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;">
-                                                    @(wire.PeerId ?? wire.Type ?? "unknown")
+                                                <td class="qb-mono" style="max-width:160px;overflow:hidden;text-overflow:ellipsis;">
+                                                    @(peerId?.Length > 20 ? peerId[..20] + "..." : peerId ?? "---")
+                                                </td>
+                                                <td class="qb-mono" style="max-width:140px;overflow:hidden;text-overflow:ellipsis;">
+                                                    @(wire.RemoteAddress ?? "---")
                                                 </td>
                                                 <td>@(wire.Type == "webSeed" ? "WebSeed" : "WebRTC")</td>
-                                                <td>@(wire.PeerChoking ? "Y" : "N") / @(wire.AmChoking ? "Y" : "N")</td>
-                                                <td>@(wire.PeerInterested ? "Y" : "N") / @(wire.AmInterested ? "Y" : "N")</td>
-                                                <td class="qb-mono">@wire.Requests.Count</td>
+                                                <td class="qb-mono">@(dl > 0 ? FormatSpeed(dl) : "")</td>
+                                                <td class="qb-mono">@(ul > 0 ? FormatSpeed(ul) : "")</td>
+                                                <td class="qb-mono">@(wire.PeerHasAll ? "100%" : "---")</td>
                                             </tr>
                                         }
                                     </tbody>
@@ -469,41 +482,39 @@
                 <span>&#9881; Settings</span>
                 <button class="qb-icon-btn" @onclick="() => _showSettings = false">&#10005;</button>
             </div>
-            <div class="qb-modal-body">
-                <h4>Client Info</h4>
+            <div class="qb-modal-body" style="max-height:500px;overflow-y:auto;">
+                <h4>Transfer</h4>
+                <div class="qb-setting">
+                    <label>Download Limit (KB/s)</label>
+                    <input class="qb-input qb-input-sm" type="number" min="0" @bind="_settingsDlLimit" style="width:80px;" />
+                </div>
+                <div class="qb-setting">
+                    <label>Upload Limit (KB/s)</label>
+                    <input class="qb-input qb-input-sm" type="number" min="0" @bind="_settingsUlLimit" style="width:80px;" />
+                </div>
+                <div class="qb-muted" style="font-size:10px;margin-left:140px;">0 = unlimited</div>
+
+                <h4>Connections</h4>
+                <div class="qb-setting">
+                    <label>Max Connections</label>
+                    <input class="qb-input qb-input-sm" type="number" min="1" @bind="Client.MaxConns" style="width:60px;" />
+                </div>
+                <div class="qb-setting"><label>Trackers</label><label class="qb-toggle"><input type="checkbox" @bind="Client.EnableTrackers" /> @(Client.EnableTrackers ? "On" : "Off")</label></div>
+                <div class="qb-setting"><label>Peer Exchange (BEP 11)</label><label class="qb-toggle"><input type="checkbox" @bind="Client.EnableUtPex" /> @(Client.EnableUtPex ? "On" : "Off")</label></div>
+                <div class="qb-setting"><label>Web Seeds (BEP 19)</label><label class="qb-toggle"><input type="checkbox" @bind="Client.EnableWebSeeds" /> @(Client.EnableWebSeeds ? "On" : "Off")</label></div>
+
+                <h4>Default Trackers</h4>
+                <textarea class="qb-input" style="width:100%;height:80px;font-family:Consolas;font-size:11px;" @bind="_settingsTrackers"></textarea>
+                <div class="qb-muted" style="font-size:10px;">One per line. Applied to new torrents.</div>
+
+                <h4>Client</h4>
                 <div class="qb-setting"><label>Peer ID</label><span class="qb-mono" style="font-size:10px;word-break:break-all;">@Client.PeerId</span></div>
-                <div class="qb-setting"><label>Peer ID (ASCII)</label><span class="qb-mono">@_peerIdStr</span></div>
                 <div class="qb-setting"><label>Version</label><span>@_version</span></div>
-                <div class="qb-setting"><label>Platform</label><span>Blazor WebAssembly</span></div>
-                <div class="qb-setting"><label>Max Connections</label><span class="qb-mono">@Client.MaxConns</span></div>
+                <div class="qb-setting"><label>Platform</label><span>Blazor WebAssembly / Browser WebRTC</span></div>
+                <div class="qb-setting"><label>BEPs</label><span style="font-size:11px;">3, 5, 6, 9, 10, 11, 14, 15, 17, 19, 20, 23, 27, 44, 46, 48, 53</span></div>
 
-                <h4>BEP Support</h4>
-                <div class="qb-setting"><label>BEP 3</label><span>BitTorrent Protocol</span></div>
-                <div class="qb-setting"><label>BEP 6</label><span>Fast Extension</span></div>
-                <div class="qb-setting"><label>BEP 9</label><span>ut_metadata (Magnet Links)</span></div>
-                <div class="qb-setting"><label>BEP 10</label><span>Extension Protocol</span></div>
-                <div class="qb-setting"><label>BEP 17</label><span>HTTP Seeding (Hoffman)</span></div>
-                <div class="qb-setting"><label>BEP 19</label><span>WebSeed (GetRight)</span></div>
-                <div class="qb-setting"><label>BEP 23</label><span>Compact Tracker Responses</span></div>
-                <div class="qb-setting"><label>BEP 53</label><span>SHA-256 Piece Hashes</span></div>
-
-                <h4>Web Seeds</h4>
-                <div class="qb-setting">
-                    <label>Enable Web Seeds</label>
-                    <label class="qb-toggle">
-                        <input type="checkbox" @bind="Client.EnableWebSeeds" />
-                        @(Client.EnableWebSeeds ? "On" : "Off")
-                    </label>
-                </div>
-
-                <h4>Speed Limits (not yet implemented)</h4>
-                <div class="qb-setting">
-                    <label>Download Limit</label>
-                    <input class="qb-input qb-input-sm" type="text" value="Unlimited" disabled />
-                </div>
-                <div class="qb-setting">
-                    <label>Upload Limit</label>
-                    <input class="qb-input qb-input-sm" type="text" value="Unlimited" disabled />
+                <div style="text-align:right;margin-top:12px;">
+                    <button class="qb-btn" @onclick="ApplySettings">Apply</button>
                 </div>
             </div>
         </div>
@@ -571,7 +582,7 @@
     private double _globalDownSpeed;
     private double _globalUpSpeed;
     private string _peerIdStr = "";
-    private string _version = "2.1.0";
+    private string _version = "3.0.0-rc.2";
     private Timer? _refreshTimer;
 
     // Context menu
@@ -592,6 +603,11 @@
     private string _mediaBlobUrl = "";
     private string _mediaType = "";
 
+    // Settings state
+    private long _settingsDlLimit;
+    private long _settingsUlLimit;
+    private string _settingsTrackers = "";
+
     // Toast
     private bool _toastVisible;
     private bool _toastFading;
@@ -610,12 +626,13 @@
         ["paused"] = "Paused",
     };
 
+    // Official WebTorrent free torrents + hub.spawndev.com tracker
     private static readonly Dictionary<string, string> QuickMagnets = new()
     {
-        ["Big Buck Bunny"] = "magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&dn=Big+Buck+Bunny&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&tr=wss%3A%2F%2Ftracker.files.fm%3A7073%2Fannounce&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Fbig-buck-bunny.torrent",
-        ["Sintel"] = "magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Sintel&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&tr=wss%3A%2F%2Ftracker.files.fm%3A7073%2Fannounce&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Fsintel.torrent",
-        ["Cosmos Laundromat"] = "magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056&dn=Cosmos+Laundromat&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&tr=wss%3A%2F%2Ftracker.files.fm%3A7073%2Fannounce&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Fcosmos-laundromat.torrent",
-        ["Tears of Steel"] = "magnet:?xt=urn:btih:209c8226b299b308beaf2b9cd3fb49212dbd13ec&dn=Tears+of+Steel&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&tr=wss%3A%2F%2Ftracker.files.fm%3A7073%2Fannounce&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Ftears-of-steel.torrent",
+        ["Big Buck Bunny"] = "magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&dn=Big+Buck+Bunny&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftracker.empire-js.us%3A1337&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=wss%3A%2F%2Ftracker.btorrent.xyz&tr=wss%3A%2F%2Ftracker.fastcast.nz&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Fbig-buck-bunny.torrent",
+        ["Sintel"] = "magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Sintel&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftracker.empire-js.us%3A1337&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=wss%3A%2F%2Ftracker.btorrent.xyz&tr=wss%3A%2F%2Ftracker.fastcast.nz&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Fsintel.torrent",
+        ["Cosmos Laundromat"] = "magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056&dn=Cosmos+Laundromat&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftracker.empire-js.us%3A1337&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=wss%3A%2F%2Ftracker.btorrent.xyz&tr=wss%3A%2F%2Ftracker.fastcast.nz&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Fcosmos-laundromat.torrent",
+        ["Tears of Steel"] = "magnet:?xt=urn:btih:209c8226b299b308beaf2b9cd3fb49212dbd13ec&dn=Tears+of+Steel&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftracker.empire-js.us%3A1337&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=wss%3A%2F%2Ftracker.btorrent.xyz&tr=wss%3A%2F%2Ftracker.fastcast.nz&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Ftears-of-steel.torrent",
     };
 
     // ========================
@@ -644,6 +661,13 @@
         {
             _peerIdStr = Client.PeerId[..Math.Min(16, Client.PeerId.Length)];
         }
+
+        // Initialize settings state
+        var dlRate = Client.DownloadRateLimiter.Rate;
+        var ulRate = Client.UploadRateLimiter.Rate;
+        _settingsDlLimit = dlRate <= 0 ? 0 : dlRate / 1024;
+        _settingsUlLimit = ulRate <= 0 ? 0 : ulRate / 1024;
+        _settingsTrackers = string.Join("\n", Client.DefaultTrackers);
 
         // Wire up existing torrents
         foreach (var t in Client.Torrents)
@@ -825,6 +849,16 @@
     private void SelectTorrent(Torrent torrent)
     {
         _selected = torrent;
+    }
+
+    private void ApplySettings()
+    {
+        Client.ThrottleDownload(_settingsDlLimit <= 0 ? -1 : _settingsDlLimit * 1024);
+        Client.ThrottleUpload(_settingsUlLimit <= 0 ? -1 : _settingsUlLimit * 1024);
+        var trackerLines = _settingsTrackers.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        Client.DefaultTrackers = trackerLines.Where(t => t.StartsWith("wss://") || t.StartsWith("ws://")).ToArray();
+        _showSettings = false;
+        AddLog("Settings applied", "");
     }
 
     private void PauseAll()
@@ -1264,7 +1298,7 @@
 .qb-toggle input { accent-color: #10b981; }
 .qb-piece-label { color: #475569; font-size: 10px; margin-top: 8px; }
 .qb-piece-bar { display: flex; flex-wrap: wrap; gap: 1px; margin-top: 2px; }
-.qb-piece { width: 4px; height: 10px; background: #1e293b; } .qb-piece-have { background: #10b981; }
+.qb-piece { width: 3px; height: 3px; background: #1e293b; } .qb-piece-have { background: #10b981; } .qb-piece-partial { background: #3b82f6; }
 .qb-sub-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .qb-sub-table th { color: #475569; padding: 3px 6px; text-align: left; font-size: 10px; text-transform: uppercase; border-bottom: 1px solid #1e293b; }
 .qb-sub-table td { padding: 3px 6px; color: #94a3b8; border-bottom: 1px solid rgba(255,255,255,.02); }

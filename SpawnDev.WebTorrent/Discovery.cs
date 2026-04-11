@@ -28,6 +28,7 @@ public class Discovery : IAsyncDisposable
     public event Action<string>? OnTcpPeer;  // "ip:port"
     public event Action? OnTrackerAnnounce;
     public event Action<string>? OnWarning;
+    public event Action<TrackerUpdate>? OnTrackerUpdate;
 
     // ========================
     // CONSTRUCTOR
@@ -50,13 +51,17 @@ public class Discovery : IAsyncDisposable
 
             if (url.StartsWith("wss://") || url.StartsWith("ws://"))
             {
-                var tracker = new WebSocketTracker(url, infoHash, peerId, createPeerFunc);
-                tracker.OnPeer += (peer) => OnWebRtcPeer?.Invoke(peer);
-                tracker.OnWarning += (msg) => OnWarning?.Invoke(msg);
+                // Use shared tracker pool - one WebSocket per URL across all torrents
+                var tracker = WebSocketTracker.GetOrCreate(url, peerId, createPeerFunc);
+                // Subscribe this torrent's handlers to the shared connection
+                tracker.Subscribe(infoHash,
+                    onPeer: (peer) => OnWebRtcPeer?.Invoke(peer),
+                    onUpdate: (update) => OnTrackerUpdate?.Invoke(update),
+                    onWarning: (msg) => OnWarning?.Invoke(msg));
                 tracker.OnAnnounce += () =>
                 {
                     // Re-announce triggered by tracker interval
-                    _ = tracker.AnnounceAsync(new AnnounceOptions());
+                    _ = tracker.AnnounceAsync(infoHash, new AnnounceOptions(), peerId);
                     OnTrackerAnnounce?.Invoke();
                 };
                 _wsTrackers.Add(tracker);
@@ -96,7 +101,7 @@ public class Discovery : IAsyncDisposable
 
         var tasks = new List<Task>();
         foreach (var t in _wsTrackers)
-            tasks.Add(t.AnnounceAsync(opts));
+            tasks.Add(t.AnnounceAsync(InfoHash, opts, PeerId));
         foreach (var t in _httpTrackers)
             tasks.Add(t.AnnounceAsync(opts));
         // UDP trackers use their own announce format — start them if not already running

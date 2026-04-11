@@ -42,24 +42,48 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
-    public async Task RateLimiter_ClientUpload_Exists()
+    public async Task RateLimiter_ClientThrottle_AffectsRate()
     {
         var client = CreateIsolatedClient();
-        if (client.UploadRateLimiter == null)
-            throw new Exception("UploadRateLimiter should not be null");
+        // Default should be unlimited
         if (client.UploadRateLimiter.Rate != -1)
-            throw new Exception($"Default rate should be -1 (unlimited), got {client.UploadRateLimiter.Rate}");
+            throw new Exception($"Default UL rate should be -1, got {client.UploadRateLimiter.Rate}");
+        if (client.DownloadRateLimiter.Rate != -1)
+            throw new Exception($"Default DL rate should be -1, got {client.DownloadRateLimiter.Rate}");
+
+        // Throttle and verify the rate changes
+        client.ThrottleDownload(50000);
+        client.ThrottleUpload(25000);
+        if (client.DownloadRateLimiter.Rate != 50000)
+            throw new Exception($"DL rate should be 50000 after throttle, got {client.DownloadRateLimiter.Rate}");
+        if (client.UploadRateLimiter.Rate != 25000)
+            throw new Exception($"UL rate should be 25000 after throttle, got {client.UploadRateLimiter.Rate}");
+
+        // Reset to unlimited
+        client.ThrottleDownload(-1);
+        client.ThrottleUpload(-1);
+        if (client.DownloadRateLimiter.Rate != -1)
+            throw new Exception("DL rate should be -1 after reset");
+        if (client.UploadRateLimiter.Rate != -1)
+            throw new Exception("UL rate should be -1 after reset");
+
         await client.DisposeAsync();
     }
 
     [TestMethod]
-    public async Task RateLimiter_ClientDownload_Exists()
+    public async Task RateLimiter_Paused_BlocksThenResumes()
     {
-        var client = CreateIsolatedClient();
-        if (client.DownloadRateLimiter == null)
-            throw new Exception("DownloadRateLimiter should not be null");
-        if (client.DownloadRateLimiter.Rate != -1)
-            throw new Exception($"Default rate should be -1 (unlimited), got {client.DownloadRateLimiter.Rate}");
-        await client.DisposeAsync();
+        // Verify that rate=0 blocks and changing to unlimited releases
+        var limiter = new RateLimiter(0); // paused
+        using var cts = new CancellationTokenSource(300);
+        bool blocked = false;
+        try { await limiter.WaitAsync(1, cts.Token); }
+        catch (OperationCanceledException) { blocked = true; }
+        if (!blocked) throw new Exception("Rate=0 should block");
+
+        // Now set to unlimited and verify it passes
+        limiter.Rate = -1;
+        var task = limiter.WaitAsync(1024);
+        if (!task.IsCompleted) throw new Exception("Rate=-1 should pass immediately after unpausing");
     }
 }

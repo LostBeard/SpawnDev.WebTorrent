@@ -153,18 +153,23 @@ public abstract partial class WebTorrentTestBase
     // ── Publisher/Consumer Lifecycle (Local Simulation) ──
 
     [TestMethod]
-    public async Task Bep46_PublisherConsumer_SequenceIncreases()
+    public async Task Bep46_MutableItems_InitialState()
     {
-        // Simulate: publisher creates items, publishes v1 and v2, sequence increments
+        // Verify DhtMutableItems initializes correctly with signer
+        var pubKey = new byte[32];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(pubKey);
         var dht = new DhtDiscovery();
-        var signer = new NoOpSigner(new byte[32]);
+        var signer = new NoOpSigner(pubKey);
         var items = dht.CreateMutableItems(signer);
 
         if (items.Sequence != 0)
             throw new Exception($"Initial sequence should be 0, got {items.Sequence}");
 
-        // Simulate two publishes — can't actually send to DHT without UDP, but sequence should increment
-        // We test the logic path, not network
+        // Target should be deterministic based on signer's public key
+        var expectedTarget = DhtMutableItems.ComputeTarget(pubKey, null);
+        var target = DhtMutableItems.ComputeTarget(signer.PublicKey, null);
+        if (!target.SequenceEqual(expectedTarget))
+            throw new Exception("MutableItems target should match ComputeTarget(signer.PublicKey)");
 
         await dht.DisposeAsync();
     }
@@ -192,23 +197,25 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
-    public async Task Bep46_ClientMutableUpdate_EventFires()
+    public async Task Bep46_TorrentLevel_MutableUpdate_ChainedEvents()
     {
-        // Test that WebTorrentClient.OnMutableUpdate fires when a torrent updates
+        // Test that multiple event subscribers all receive the update
         var client = CreateIsolatedClient();
         var data = MakeDeterministicData(16384, seed: 461);
-        var torrent = await client.SeedAsync("mutable-client.bin", data);
+        var torrent = await client.SeedAsync("mutable-chain.bin", data);
         torrent.BtpkPublicKey = new byte[32];
 
-        (Torrent? t, string? hash) update = (null, null);
-        client.OnMutableUpdate += (t, h) => update = (t, h);
+        string? hash1 = null, hash2 = null;
+        torrent.OnMutableUpdate += (h) => hash1 = h;
+        torrent.OnMutableUpdate += (h) => hash2 = h;
 
-        // Simulate — client-level event won't fire from NotifyMutableUpdate alone
-        // (it's wired in AddBtpkAsync), but we can test the torrent-level event
-        torrent.NotifyMutableUpdate("1234567890abcdef1234567890abcdef12345678");
+        var newInfoHash = "aabbccddee0011223344aabbccddee0011223344";
+        torrent.NotifyMutableUpdate(newInfoHash);
 
-        // Torrent-level should have fired
-        // Client-level requires the AddBtpkAsync subscription path
+        if (hash1 != newInfoHash)
+            throw new Exception($"First subscriber should receive update, got: {hash1}");
+        if (hash2 != newInfoHash)
+            throw new Exception($"Second subscriber should receive update, got: {hash2}");
 
         await client.DisposeAsync();
     }

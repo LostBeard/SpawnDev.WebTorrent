@@ -83,15 +83,24 @@ public abstract partial class WebTorrentTestBase
     // ── BEP 14: Local Service Discovery ──
 
     [TestMethod]
-    public async Task Bep14_LSD_MessageFormat()
+    public async Task Bep14_LSD_ConstructsAndDisposes()
     {
-        // Verify BT-SEARCH message format per BEP 14
+        if (OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("LSD requires UDP multicast (desktop only)");
+
+        // Verify LSD constructs and disposes without throwing
+        // Also verify event registration works (OnPeer is how LSD reports discovered peers)
         var infoHash = new byte[20];
         infoHash[0] = 0xAB; infoHash[19] = 0xCD;
         var lsd = new LocalServiceDiscovery(infoHash, 6881);
 
-        // Can't actually send multicast in a test, but verify the type exists and constructs
-        if (lsd == null) throw new Exception("LSD should construct");
+        string? discoveredPeer = null;
+        lsd.OnPeer += (addr) => discoveredPeer = addr;
+
+        // Dispose should be safe even without calling StartAsync
+        await lsd.DisposeAsync();
+
+        // Double dispose should be safe
         await lsd.DisposeAsync();
     }
 
@@ -126,13 +135,24 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
-    public async Task Bep48_ScrapeResult_Type()
+    public async Task Bep48_ScrapeUrl_MultipleTrackers_DerivedCorrectly()
     {
-        // Verify ScrapeResult type exists and has correct properties
-        var result = new ScrapeResult { Complete = 10, Incomplete = 5, Downloaded = 100 };
-        if (result.Complete != 10) throw new Exception("Complete wrong");
-        if (result.Incomplete != 5) throw new Exception("Incomplete wrong");
-        if (result.Downloaded != 100) throw new Exception("Downloaded wrong");
+        // Verify scrape URL derivation works for various tracker URL patterns
+        var patterns = new (string announce, string? expectedScrape)[]
+        {
+            ("http://tracker.example.com/announce", "http://tracker.example.com/scrape"),
+            ("http://tracker.example.com/x/announce", "http://tracker.example.com/x/scrape"),
+            ("http://tracker.example.com:8080/announce?passkey=abc", "http://tracker.example.com:8080/scrape?passkey=abc"),
+            ("http://tracker.example.com/no-announce-here", null),
+        };
+
+        foreach (var (announce, expected) in patterns)
+        {
+            var tracker = new HttpTracker(announce, new byte[20], new byte[20], new HttpClient());
+            if (tracker.ScrapeUrl != expected)
+                throw new Exception($"Announce: {announce}, Expected scrape: {expected}, Got: {tracker.ScrapeUrl}");
+            await tracker.DisposeAsync();
+        }
     }
 
     // ── BEP 53: Magnet URI Select Specific Files ──
@@ -140,22 +160,33 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Bep53_MagnetSelectFiles_SoParam()
     {
-        // BEP 53: magnet:?...&so=0,2,4 selects file indices 0, 2, 4
+        // BEP 53: so=0,2,4 selects file indices 0, 2, 4
         var magnetUri = "magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Test&so=0,2,4";
         var client = CreateIsolatedClient();
         var torrent = client.Add(magnetUri);
 
-        // The torrent should parse the so= parameter
-        // Check if SelectedFileIndices is available
-        if (torrent.SelectedFileIndices != null && torrent.SelectedFileIndices.Length > 0)
+        if (torrent.SelectedFileIndices == null)
+            throw new Exception("SelectedFileIndices should be parsed from so= parameter");
+        if (torrent.SelectedFileIndices.Length != 3)
+            throw new Exception($"Expected 3 selected files, got {torrent.SelectedFileIndices.Length}");
+        if (torrent.SelectedFileIndices[0] != 0 || torrent.SelectedFileIndices[1] != 2 || torrent.SelectedFileIndices[2] != 4)
+            throw new Exception("Selected file indices don't match so=0,2,4");
+
+        // Also test range parsing (BEP 53 spec supports ranges like 0-4,6)
+        // Use a different infohash to avoid deduplication with the first torrent
+        var magnetRange = "magnet:?xt=urn:btih:1111111111111111111111111111111111111111&dn=Range&so=0-2,5,7-8";
+        var torrent2 = client.Add(magnetRange);
+        if (torrent2.SelectedFileIndices == null)
+            throw new Exception("SelectedFileIndices should parse ranges");
+        // 0-2 = [0,1,2], 5 = [5], 7-8 = [7,8] => [0,1,2,5,7,8]
+        var expected = new[] { 0, 1, 2, 5, 7, 8 };
+        if (torrent2.SelectedFileIndices.Length != expected.Length)
+            throw new Exception($"Range parse: expected {expected.Length} indices, got {torrent2.SelectedFileIndices.Length}");
+        for (int i = 0; i < expected.Length; i++)
         {
-            if (torrent.SelectedFileIndices.Length != 3)
-                throw new Exception($"Expected 3 selected files, got {torrent.SelectedFileIndices.Length}");
-            if (torrent.SelectedFileIndices[0] != 0 || torrent.SelectedFileIndices[1] != 2 || torrent.SelectedFileIndices[2] != 4)
-                throw new Exception("Selected file indices don't match so=0,2,4");
+            if (torrent2.SelectedFileIndices[i] != expected[i])
+                throw new Exception($"Range parse index {i}: expected {expected[i]}, got {torrent2.SelectedFileIndices[i]}");
         }
-        // If SelectedFileIndices is null, the feature may not be parsed yet — not a failure,
-        // just means the magnet parser doesn't handle so= yet
 
         await client.DisposeAsync();
     }

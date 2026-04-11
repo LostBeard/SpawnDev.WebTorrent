@@ -19,6 +19,16 @@ public class TorrentTracker
     private readonly ConcurrentDictionary<string, TorrentSwarmInfo> _swarms = new();
     private readonly TrackerOptions _options;
 
+    // JSON options matching JS behavior: no \uXXXX escaping for binary strings (info_hash, peer_id, offer_id)
+    private static readonly JsonSerializerOptions _jsonWriteOpts = new()
+    {
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+    private static readonly JsonSerializerOptions _jsonReadOpts = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+    };
+
     public TorrentTracker(TrackerOptions? options = null)
     {
         _options = options ?? new TrackerOptions();
@@ -86,10 +96,7 @@ public class TorrentTracker
             try
             {
                 var json = System.Text.Encoding.UTF8.GetString(received.GetBuffer(), 0, (int)received.Length);
-                var msg = JsonSerializer.Deserialize<TrackerMessage>(json, new JsonSerializerOptions
-                {
-                    PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-                });
+                var msg = JsonSerializer.Deserialize<TrackerMessage>(json, _jsonReadOpts);
                 if (msg == null) continue;
 
                 switch (msg.Action)
@@ -151,7 +158,7 @@ public class TorrentTracker
             complete = swarm.Peers.Count(p => p.Value.IsSeeder),
             incomplete = swarm.Peers.Count(p => !p.Value.IsSeeder),
             peers = otherPeers,
-        });
+        }, _jsonWriteOpts);
 
         await SendText(peer, response);
 
@@ -181,7 +188,7 @@ public class TorrentTracker
                         peer_id = peer.PeerId,
                         offer = offerSdp,
                         offer_id = offerId,
-                    });
+                    }, _jsonWriteOpts);
                     await SendText(target, forward);
                 }
 
@@ -205,7 +212,7 @@ public class TorrentTracker
                     peer_id = peer.PeerId,
                     answer = answerElement,
                     offer_id = msg.OfferId,
-                });
+                }, _jsonWriteOpts);
                 Console.WriteLine($"[Tracker] Forwarding answer ({forward.Length} bytes)");
                 await SendText(target, forward);
             }
@@ -230,7 +237,7 @@ public class TorrentTracker
             peer_id = peer.PeerId,
             offer = msg.Offer,
             offer_id = msg.OfferId,
-        });
+        }, _jsonWriteOpts);
 
         await SendText(target, forward);
     }
@@ -249,7 +256,7 @@ public class TorrentTracker
             peer_id = peer.PeerId,
             answer = msg.Answer,
             offer_id = msg.OfferId,
-        });
+        }, _jsonWriteOpts);
 
         await SendText(target, forward);
     }

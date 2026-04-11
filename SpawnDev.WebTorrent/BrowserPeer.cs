@@ -154,6 +154,7 @@ public class BrowserPeer : SimplePeer
         // W3C: onopen
         dc.OnOpen += (RTCDataChannelEvent e) =>
         {
+            _ = ExtractRemoteAddressAsync();
             EmitConnect();
             _openTcs.TrySetResult();
         };
@@ -161,6 +162,7 @@ public class BrowserPeer : SimplePeer
         // Already open? (can happen with SipSorcery pattern)
         if (dc.ReadyState == "open")
         {
+            _ = ExtractRemoteAddressAsync();
             EmitConnect();
             _openTcs.TrySetResult();
         }
@@ -205,6 +207,46 @@ public class BrowserPeer : SimplePeer
         }
         if (bytes != null && bytes.Length > 0)
             EmitData(bytes);
+    }
+
+    /// <summary>Extract remote peer IP from WebRTC stats (W3C getStats API).</summary>
+    private async Task ExtractRemoteAddressAsync()
+    {
+        try
+        {
+            if (_pc == null) return;
+            using var stats = await _pc.GetStats();
+            var entries = stats.Values();
+
+            // Find the nominated succeeded candidate pair
+            string? remoteCandidateId = null;
+            foreach (var entry in entries)
+            {
+                using var typed = entry.Typed();
+                if (typed is RTCIceCandidatePairStats pair && pair.Nominated == true && pair.State == "succeeded")
+                {
+                    remoteCandidateId = pair.RemoteCandidateId;
+                    break;
+                }
+            }
+
+            if (remoteCandidateId == null) return;
+
+            // Look up the remote candidate to get its address
+            foreach (var entry in entries)
+            {
+                if (entry.Id == remoteCandidateId)
+                {
+                    using var typed = entry.Typed();
+                    if (typed is RTCIceCandidateStats candidate)
+                    {
+                        RemoteAddress = candidate.Address;
+                        break;
+                    }
+                }
+            }
+        }
+        catch { }
     }
 
     public override async Task Send(byte[] data)

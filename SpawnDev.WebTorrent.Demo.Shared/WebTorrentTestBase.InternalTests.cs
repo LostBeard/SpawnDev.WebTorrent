@@ -221,11 +221,24 @@ public abstract partial class WebTorrentTestBase
     // ── ServiceWorkerStreamHandler ──
 
     [TestMethod]
-    public async Task ServiceWorkerStreamHandler_ImplementsInterface()
+    public async Task ServiceWorkerStreamHandler_RegistersWithClient()
     {
-        var interfaces = typeof(ServiceWorkerStreamHandler).GetInterfaces();
-        if (!interfaces.Any(i => i.Name.Contains("IAsyncBackgroundService")))
-            throw new Exception("Should implement IAsyncBackgroundService");
+        var handler = new ServiceWorkerStreamHandler();
+        var client = CreateIsolatedClient();
+
+        // Before registration, StreamHandler should be null
+        if (client.StreamHandler != null)
+            throw new Exception("StreamHandler should be null before registration");
+
+        // Register the handler
+        client.RegisterStreamHandler(handler);
+
+        // After registration, StreamHandler should be set
+        if (client.StreamHandler != handler)
+            throw new Exception("StreamHandler should reference the registered handler");
+
+        handler.Dispose();
+        await client.DisposeAsync();
     }
 
     // ── TorrentHttpServer ──

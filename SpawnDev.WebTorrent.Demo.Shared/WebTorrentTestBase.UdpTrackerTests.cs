@@ -43,7 +43,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task UdpTracker_ParseResponse_ExtractsPeers()
     {
-        // Build a fake announce response with 2 peers
+        // Build a fake announce response with 2 peers and parse using production code
         var response = new byte[32]; // 20 header + 12 peer data
         UdpTrackerClient.WriteInt32BE(response, 0, 1); // action = announce
         UdpTrackerClient.WriteInt32BE(response, 4, 54321); // transaction_id
@@ -57,17 +57,17 @@ public abstract partial class WebTorrentTestBase
         response[26] = 192; response[27] = 168; response[28] = 1; response[29] = 5;
         response[30] = (byte)(6881 >> 8); response[31] = (byte)(6881 & 0xFF);
 
-        // Parse — verify we can extract the compact peers manually
-        var peers = new List<string>();
-        for (int i = 20; i + 6 <= response.Length; i += 6)
-        {
-            var ip = $"{response[i]}.{response[i + 1]}.{response[i + 2]}.{response[i + 3]}";
-            var port = (response[i + 4] << 8) | response[i + 5];
-            peers.Add($"{ip}:{port}");
-        }
+        // Parse using the PRODUCTION compact peer decoder (UtPexExtension.DecodeCompactIPv4)
+        var peer0 = UtPexExtension.DecodeCompactIPv4(response, 20);
+        var peer1 = UtPexExtension.DecodeCompactIPv4(response, 26);
 
-        if (peers.Count != 2) throw new Exception($"Expected 2 peers, got {peers.Count}");
-        if (peers[0] != "10.0.0.1:51413") throw new Exception($"Peer 0 wrong: {peers[0]}");
-        if (peers[1] != "192.168.1.5:6881") throw new Exception($"Peer 1 wrong: {peers[1]}");
+        if (peer0 != "10.0.0.1:51413") throw new Exception($"Peer 0 wrong: {peer0}");
+        if (peer1 != "192.168.1.5:6881") throw new Exception($"Peer 1 wrong: {peer1}");
+
+        // Verify header fields via production read methods
+        var action = UdpTrackerClient.ReadInt32BE(response, 0);
+        if (action != 1) throw new Exception($"Action should be 1 (announce), got {action}");
+        var interval = UdpTrackerClient.ReadInt32BE(response, 8);
+        if (interval != 1800) throw new Exception($"Interval should be 1800, got {interval}");
     }
 }

@@ -188,6 +188,7 @@ public class SipSorceryPeer : SimplePeer
 
         dc.onopen += () =>
         {
+            ExtractRemoteAddress();
             EmitConnect();
             _openTcs.TrySetResult();
         };
@@ -195,6 +196,7 @@ public class SipSorceryPeer : SimplePeer
         // SipSorcery can fire ondatachannel with state already open
         if (dc.readyState == RTCDataChannelState.open)
         {
+            ExtractRemoteAddress();
             EmitConnect();
             _openTcs.TrySetResult();
         }
@@ -210,6 +212,21 @@ public class SipSorceryPeer : SimplePeer
             if (data.Length > 0)
                 EmitData(data);
         };
+    }
+
+    private void ExtractRemoteAddress()
+    {
+        try
+        {
+            var iceChannel = _pc?.GetRtpChannel() as SIPSorcery.Net.RtpIceChannel;
+            var remoteEP = iceChannel?.NominatedEntry?.RemoteCandidate?.DestinationEndPoint;
+            if (remoteEP != null)
+            {
+                RemoteAddress = remoteEP.Address.ToString();
+                RemotePort = remoteEP.Port;
+            }
+        }
+        catch { }
     }
 
     public override async Task Send(byte[] data)

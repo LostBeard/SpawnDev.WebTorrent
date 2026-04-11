@@ -183,7 +183,7 @@ public static class TorrentCreator
             var fileName = System.IO.Path.GetFileName(files[i].path);
             torrentFiles[i] = new TorrentFileInfo
             {
-                Path = files[i].path,
+                Path = System.IO.Path.Combine(torrentName, files[i].path),
                 Name = fileName,
                 Length = files[i].data.Length,
                 Offset = offset,

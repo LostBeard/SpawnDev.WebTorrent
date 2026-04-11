@@ -354,25 +354,27 @@ public class Wire : IAsyncDisposable
         await _push(msg);
     }
 
-    /// <summary>BEP6: Send suggest.</summary>
-    public Task Suggest(int index) => _message(0x0D, new[] { index }, null);
+    /// <summary>BEP6: Send suggest. No-op if peer doesn't support Fast Extension.</summary>
+    public Task Suggest(int index) => HasFast ? _message(0x0D, new[] { index }, null) : Task.CompletedTask;
 
-    /// <summary>BEP6: Send have-all.</summary>
-    public Task HaveAll_Send() => _push(MessageHaveAll);
+    /// <summary>BEP6: Send have-all. No-op if peer doesn't support Fast Extension.</summary>
+    public Task HaveAll_Send() => HasFast ? _push(MessageHaveAll) : Task.CompletedTask;
 
-    /// <summary>BEP6: Send have-none.</summary>
-    public Task HaveNone_Send() => _push(MessageHaveNone);
+    /// <summary>BEP6: Send have-none. No-op if peer doesn't support Fast Extension.</summary>
+    public Task HaveNone_Send() => HasFast ? _push(MessageHaveNone) : Task.CompletedTask;
 
-    /// <summary>BEP6: Send reject.</summary>
+    /// <summary>BEP6: Send reject. No-op if peer doesn't support Fast Extension.</summary>
     public async Task Reject(int index, int offset, int length)
     {
+        if (!HasFast) return;
         _pull(PeerRequests, index, offset, length);
         await _message(0x10, new[] { index, offset, length }, null);
     }
 
-    /// <summary>BEP6: Send allowed-fast.</summary>
+    /// <summary>BEP6: Send allowed-fast. No-op if peer doesn't support Fast Extension.</summary>
     public Task AllowedFast_Send(int index)
     {
+        if (!HasFast) return Task.CompletedTask;
         if (!AllowedFastSet.Contains(index)) AllowedFastSet.Add(index);
         return _message(0x11, new[] { index }, null);
     }

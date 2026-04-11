@@ -66,7 +66,8 @@ public class UdpTrackerClient : IAsyncDisposable
 
             await ConnectAsync(ct);
             if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[UDPTracker] Connected to {_host}:{_port}, announcing...");
-            await AnnounceAsync(infoHash, port, 0, 0, 0, AnnounceEvent.Started, ct);
+            // left=-1 means unknown size (magnet). Trackers treat this as a leecher, not a seeder.
+            await AnnounceAsync(infoHash, port, 0, 0, -1, AnnounceEvent.Started, ct);
             if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[UDPTracker] Announced to {_host}:{_port}");
 
             _reAnnounceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -87,7 +88,7 @@ public class UdpTrackerClient : IAsyncDisposable
             {
                 await Task.Delay(TimeSpan.FromSeconds(_announceIntervalSecs), ct);
                 if (_currentInfoHash != null && _udp != null)
-                    await AnnounceAsync(_currentInfoHash, _currentPort, 0, 0, 0, AnnounceEvent.None, ct);
+                    await AnnounceAsync(_currentInfoHash, _currentPort, 0, 0, -1, AnnounceEvent.None, ct);
             }
         }
         catch (OperationCanceledException) { }

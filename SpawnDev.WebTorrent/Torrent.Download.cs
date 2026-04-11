@@ -430,6 +430,20 @@ public partial class Torrent
         // When peer unchokes us, start requesting
         wire.OnUnchoke += () => UpdateWire(wire);
 
+        // BEP 11: Wire PEX discovered peers into TCP connection pipeline
+        var pex = wire.GetExtension<UtPexExtension>();
+        if (pex != null)
+        {
+            pex.OnPeersReceived += (peers) =>
+            {
+                foreach (var p in peers)
+                {
+                    if (!OperatingSystem.IsBrowser())
+                        ConnectTcpPeer(p.Address);
+                }
+            };
+        }
+
         // Handle incoming piece requests (seeding) — serve from store
         wire.OnRequest += (index, offset, length, respond) =>
         {

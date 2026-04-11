@@ -90,7 +90,7 @@ public class WebTorrentClient : IAsyncDisposable
     public string[] IceServers { get; set; } = SimplePeer.DefaultIceServers;
 
     // HTTP client for web seeds
-    private readonly HttpClient _http;
+    internal readonly HttpClient _http;
 
     /// <summary>Async file system for persistent storage.</summary>
     public SpawnDev.AsyncFileSystem.IAsyncFS? AsyncFileSystem { get; set; }

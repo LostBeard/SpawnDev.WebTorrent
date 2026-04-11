@@ -574,6 +574,7 @@ public class Wire : IAsyncDisposable
         if (!HasFast) { Destroy(); return; }
         var req = _pull(Requests, index, offset, length);
         req?.Callback(new Exception("request was rejected"), null);
+        _resetTimeout(Requests.Count > 0);
         OnReject?.Invoke(index, offset, length);
     }
 
@@ -637,6 +638,8 @@ public class Wire : IAsyncDisposable
             Requests.RemoveAt(0);
             req.Callback(new Exception("request has timed out"), null);
         }
+        // Re-arm timer if there are more pending requests
+        _resetTimeout(Requests.Count > 0);
         OnTimeout?.Invoke();
     }
 

@@ -40,7 +40,7 @@ public partial class Torrent : IAsyncDisposable
     public TorrentFileInfo[]? Files { get; set; }
 
     // Peers
-    private readonly Dictionary<string, Peer> _peers = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Peer> _peers = new();
     public int NumPeers => Wires.Count;
 
     // Stats
@@ -219,7 +219,7 @@ public partial class Torrent : IAsyncDisposable
     public async Task InitFromMagnetAsync(string magnetUri, WebTorrentClient client, AddTorrentOptions opts)
     {
         _client = client;
-        _http = new HttpClient();
+        _http = client._http;
         PeerIdHex = client.PeerId;
         MagnetUri = magnetUri;
         Strategy = opts.Strategy;
@@ -246,7 +246,7 @@ public partial class Torrent : IAsyncDisposable
     public void InitFromMetadata(TorrentMetadata metadata, WebTorrentClient client, AddTorrentOptions opts)
     {
         _client = client;
-        _http = new HttpClient();
+        _http = client._http;
         PeerIdHex = client.PeerId;
         Strategy = opts.Strategy;
         if (opts.Paused) Paused = true;
@@ -518,7 +518,7 @@ public partial class Torrent : IAsyncDisposable
         _discovery = new Discovery(
             infoHashBytes, _client.PeerIdBuffer, AnnounceUrls,
             (initiator) => _client.CreatePeer(initiator),
-            _http ?? new HttpClient()
+            _http!
         );
 
         _discovery.OnWebRtcPeer += AddPeer;
@@ -571,8 +571,7 @@ public partial class Torrent : IAsyncDisposable
 
         var peer = Peer.CreateWebRTCPeer(simplePeer);
         peer.Swarm = this;
-        if (_peers.ContainsKey(peer.Id)) return;
-        _peers[peer.Id] = peer;
+        if (!_peers.TryAdd(peer.Id, peer)) return;
 
         simplePeer.OnConnect += () =>
         {
@@ -613,24 +612,21 @@ public partial class Torrent : IAsyncDisposable
                 peer.WireInstance.OnClose += () =>
                 {
                     Wires.Remove(peer.WireInstance);
-                    _peers.Remove(peer.Id);
+                    _peers.TryRemove(peer.Id, out _);
                 };
             }
         };
 
-        simplePeer.OnError += (err) => { peer.Destroy(err); _peers.Remove(peer.Id); };
-        simplePeer.OnClose += () => _peers.Remove(peer.Id);
+        simplePeer.OnError += (err) => { peer.Destroy(err); _peers.TryRemove(peer.Id, out _); };
+        simplePeer.OnClose += () => _peers.TryRemove(peer.Id, out _);
         peer.StartConnectTimeout();
     }
 
     /// <summary>Remove a peer from the swarm by peer ID.</summary>
     public void RemovePeer(string peerId)
     {
-        if (_peers.TryGetValue(peerId, out var peer))
-        {
+        if (_peers.TryRemove(peerId, out var peer))
             peer.Destroy();
-            _peers.Remove(peerId);
-        }
     }
 
     /// <summary>Remove a peer by Wire reference.</summary>

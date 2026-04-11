@@ -137,8 +137,9 @@ public class Discovery : IAsyncDisposable
         if (Destroyed) return;
         Destroyed = true;
 
+        // Unsubscribe from shared trackers instead of disposing them (shared pool)
         foreach (var t in _wsTrackers)
-            await t.DisposeAsync();
+            t.Unsubscribe(InfoHash);
         foreach (var t in _httpTrackers)
             await t.DisposeAsync();
         foreach (var t in _udpTrackers)

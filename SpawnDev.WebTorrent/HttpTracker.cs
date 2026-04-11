@@ -53,7 +53,7 @@ public class HttpTracker : IAsyncDisposable
         sb.Append("&port=0");
         sb.Append("&uploaded=").Append(opts.Uploaded);
         sb.Append("&downloaded=").Append(opts.Downloaded);
-        sb.Append("&left=").Append(opts.Left > 0 ? opts.Left : 16384);
+        sb.Append("&left=").Append(opts.Left);
         sb.Append("&compact=1");
         sb.Append("&numwant=50");
 

@@ -35,7 +35,7 @@ public class TorrentReadStream : Stream
     public override bool CanRead => true;
     public override bool CanSeek => true;
     public override bool CanWrite => false;
-    public override long Length => _streamEnd >= 0 ? _streamEnd - _position + 1 : _file.Length;
+    public override long Length => _streamEnd >= 0 ? _streamEnd + 1 : _file.Length;
 
     public override long Position
     {
@@ -53,9 +53,10 @@ public class TorrentReadStream : Stream
 
     public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
     {
-        if (_position >= _file.Length) return 0;
+        var endPos = _streamEnd >= 0 ? Math.Min(_streamEnd + 1, _file.Length) : _file.Length;
+        if (_position >= endPos) return 0;
 
-        var toRead = (int)Math.Min(count, _file.Length - _position);
+        var toRead = (int)Math.Min(count, endPos - _position);
         var data = await _file.ReadAsync(_position, toRead, cancellationToken);
         Array.Copy(data, 0, buffer, offset, data.Length);
         _position += data.Length;
@@ -64,9 +65,10 @@ public class TorrentReadStream : Stream
 
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
     {
-        if (_position >= _file.Length) return 0;
+        var endPos = _streamEnd >= 0 ? Math.Min(_streamEnd + 1, _file.Length) : _file.Length;
+        if (_position >= endPos) return 0;
 
-        var toRead = (int)Math.Min(buffer.Length, _file.Length - _position);
+        var toRead = (int)Math.Min(buffer.Length, endPos - _position);
         var data = await _file.ReadAsync(_position, toRead, cancellationToken);
         data.CopyTo(buffer);
         _position += data.Length;

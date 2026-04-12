@@ -156,35 +156,30 @@ public class WebSocketTracker : IAsyncDisposable
         if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[WSTracker] AnnounceAsync to {AnnounceUrl}, infoHash={Convert.ToHexString(infoHash)[..8]}..., event={opts.Event ?? "none"}");
 
         var peerIdBin = peerId != null ? ToBinaryString(peerId) : _peerIdBinary;
-        var msg = new Dictionary<string, object?>
+        var msg = new TrackerAnnounceMessage
         {
-            ["action"] = "announce",
-            ["info_hash"] = infoHashBinary,
-            ["peer_id"] = peerIdBin,
-            ["uploaded"] = opts.Uploaded,
-            ["downloaded"] = opts.Downloaded,
-            ["left"] = opts.Left,
+            InfoHash = infoHashBinary,
+            PeerId = peerIdBin,
+            Uploaded = opts.Uploaded,
+            Downloaded = opts.Downloaded,
+            Left = opts.Left >= 0 ? opts.Left : null,
+            Event = !string.IsNullOrEmpty(opts.Event) ? opts.Event : null,
+            TrackerId = _trackerId,
         };
-
-        if (!string.IsNullOrEmpty(opts.Event))
-            msg["event"] = opts.Event;
-        if (_trackerId != null)
-            msg["trackerid"] = _trackerId;
 
         if (opts.Event == "stopped" || opts.Event == "completed")
         {
-            // Don't include offers with stopped/completed
+            msg.NumWant = 0;
             await SendAsync(msg);
         }
         else
         {
-            // Generate WebRTC offers (capped at 5, matching JS numwant cap)
             int numwant = Math.Min(opts.Numwant, MaxOffers);
+            msg.NumWant = numwant;
             if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[WSTracker] Generating {numwant} offers for {AnnounceUrl}...");
             var offers = await GenerateOffersAsync(numwant, infoHashBinary);
             if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[WSTracker] Generated {offers.Count} offers, sending to {AnnounceUrl}");
-            msg["numwant"] = numwant;
-            msg["offers"] = offers;
+            msg.Offers = offers.Count > 0 ? offers.ToArray() : null;
             await SendAsync(msg);
         }
     }
@@ -382,17 +377,15 @@ public class WebSocketTracker : IAsyncDisposable
             peer.OnSignal += (signal) =>
             {
                 if (signal.Type != "answer") return;
-                // Send answer back through tracker - use the info_hash from the incoming offer
-                var answerMsg = new Dictionary<string, object?>
+                var answerMsg = new TrackerAnswerMessage
                 {
-                    ["action"] = "announce",
-                    ["info_hash"] = responseInfoHash,
-                    ["peer_id"] = _peerIdBinary,
-                    ["to_peer_id"] = remotePeerId,
-                    ["answer"] = new { type = signal.Type, sdp = signal.Sdp },
-                    ["offer_id"] = offerId,
+                    InfoHash = responseInfoHash,
+                    PeerId = _peerIdBinary,
+                    ToPeerId = remotePeerId,
+                    Answer = new { type = signal.Type, sdp = signal.Sdp },
+                    OfferId = offerId,
+                    TrackerId = _trackerId,
                 };
-                if (_trackerId != null) answerMsg["trackerid"] = _trackerId;
                 _ = SendAsync(answerMsg);
             };
 

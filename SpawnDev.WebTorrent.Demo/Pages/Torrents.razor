@@ -670,7 +670,7 @@
             _peerIdStr = Client.PeerId[..Math.Min(16, Client.PeerId.Length)];
         }
 
-        // Initialize settings state
+        // Initialize settings display from current state (localStorage restore happens in OnAfterRenderAsync)
         var dlRate = Client.DownloadRateLimiter.Rate;
         var ulRate = Client.UploadRateLimiter.Rate;
         _settingsDlLimit = dlRate <= 0 ? 0 : dlRate / 1024;
@@ -692,6 +692,36 @@
             _globalUpSpeed = Client.Torrents.Sum(t => t.UploadSpeed);
             await InvokeAsync(StateHasChanged);
         }, null, 1000, 1000);
+
+        // Restore settings from localStorage (deferred - JS interop not available in OnInitialized)
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(100); // wait for Blazor JS interop to be ready
+            try
+            {
+                var json = await JS.CallAsync<string?>("localStorage.getItem", "webtorrent-settings");
+                if (!string.IsNullOrEmpty(json))
+                {
+                    var settings = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(json);
+                    if (settings != null)
+                    {
+                        if (settings.TryGetValue("dlLimit", out var dl)) { _settingsDlLimit = dl.GetInt64(); Client.ThrottleDownload(_settingsDlLimit <= 0 ? -1 : _settingsDlLimit * 1024); }
+                        if (settings.TryGetValue("ulLimit", out var ul)) { _settingsUlLimit = ul.GetInt64(); Client.ThrottleUpload(_settingsUlLimit <= 0 ? -1 : _settingsUlLimit * 1024); }
+                        if (settings.TryGetValue("maxConns", out var mc)) Client.MaxConns = mc.GetInt32();
+                        if (settings.TryGetValue("enableTrackers", out var et)) Client.EnableTrackers = et.GetBoolean();
+                        if (settings.TryGetValue("enableUtPex", out var ep)) Client.EnableUtPex = ep.GetBoolean();
+                        if (settings.TryGetValue("enableWebSeeds", out var ew)) Client.EnableWebSeeds = ew.GetBoolean();
+                        if (settings.TryGetValue("defaultTrackers", out var dt))
+                        {
+                            _settingsTrackers = dt.GetString() ?? "";
+                            var lines = _settingsTrackers.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                            Client.DefaultTrackers = lines.Where(t => t.StartsWith("wss://") || t.StartsWith("ws://")).ToArray();
+                        }
+                    }
+                }
+            }
+            catch { }
+        });
     }
 
     public async ValueTask DisposeAsync()
@@ -859,12 +889,31 @@
         _selected = torrent;
     }
 
-    private void ApplySettings()
+    private async Task ApplySettings()
     {
         Client.ThrottleDownload(_settingsDlLimit <= 0 ? -1 : _settingsDlLimit * 1024);
         Client.ThrottleUpload(_settingsUlLimit <= 0 ? -1 : _settingsUlLimit * 1024);
         var trackerLines = _settingsTrackers.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         Client.DefaultTrackers = trackerLines.Where(t => t.StartsWith("wss://") || t.StartsWith("ws://")).ToArray();
+
+        // Persist settings to localStorage
+        try
+        {
+            var settings = new Dictionary<string, object>
+            {
+                ["dlLimit"] = _settingsDlLimit,
+                ["ulLimit"] = _settingsUlLimit,
+                ["maxConns"] = Client.MaxConns,
+                ["enableTrackers"] = Client.EnableTrackers,
+                ["enableUtPex"] = Client.EnableUtPex,
+                ["enableWebSeeds"] = Client.EnableWebSeeds,
+                ["defaultTrackers"] = _settingsTrackers,
+            };
+            var json = System.Text.Json.JsonSerializer.Serialize(settings);
+            await JS.CallVoidAsync("localStorage.setItem", "webtorrent-settings", json);
+        }
+        catch { }
+
         _showSettings = false;
         AddLog("Settings applied", "");
     }

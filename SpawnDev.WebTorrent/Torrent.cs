@@ -615,6 +615,22 @@ public partial class Torrent : IAsyncDisposable
                     _client?.EmitUpload(bytes);
                 };
 
+                // Validate handshake: detect self-connections and duplicates
+                peer.WireInstance.OnHandshake += (infoHash, peerId, exts) =>
+                {
+                    // Self-connection detection
+                    if (peerId == _client?.PeerId)
+                    {
+                        peer.Destroy(); return;
+                    }
+                    // Duplicate peer detection (same remote peerId already connected)
+                    var existing = Wires.ToArray().FirstOrDefault(w => w != peer.WireInstance && w.PeerId == peerId);
+                    if (existing != null)
+                    {
+                        peer.Destroy(); return;
+                    }
+                };
+
                 OnWire?.Invoke(peer.WireInstance, peer.Id);
                 if (HasMetadata) OnWireWithMetadata(peer.WireInstance);
 

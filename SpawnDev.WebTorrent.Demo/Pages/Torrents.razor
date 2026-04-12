@@ -164,7 +164,12 @@
                                 <div class="qb-info-row"><span class="qb-label">Ratio</span><span class="qb-mono">@sel.Ratio.ToString("F3")</span></div>
                                 <div class="qb-info-row"><span class="qb-label">Peers</span><span class="qb-mono">@sel.PeerCount (+ @sel.WebSeedCount web seeds)</span></div>
                                 <div class="qb-info-row"><span class="qb-label">Pieces</span><span class="qb-mono">@sel.CompletedPieces / @sel.PieceCount (@(sel.HasMetadata ? FormatSize(sel.PieceLength) : "---") each)</span></div>
-                                <div class="qb-info-row"><span class="qb-label">Strategy</span><span class="qb-mono">@sel.Strategy</span></div>
+                                <div class="qb-info-row"><span class="qb-label">Strategy</span>
+                                    <select class="qb-pri-select" value="@sel.Strategy" @onchange="(e) => SetStrategy(sel, e)">
+                                        <option value="rarest">Rarest First</option>
+                                        <option value="sequential">Sequential</option>
+                                    </select>
+                                </div>
                                 <div class="qb-info-row"><span class="qb-label">Status</span><span>@GetStatusText(sel)</span></div>
                                 <div class="qb-info-row"><span class="qb-label">Private</span><span>@(sel.IsPrivate ? "Yes" : "No")</span></div>
                                 @if (!string.IsNullOrEmpty(sel.Comment))
@@ -268,14 +273,17 @@
                                         <tr>
                                             <th>URL</th>
                                             <th style="width:80px;">Type</th>
+                                            <th style="width:120px;">Peers</th>
                                         </tr>
                                     </thead>
                                     <tbody>
                                         @foreach (var url in sel.AnnounceUrls)
                                         {
+                                            var stats = sel.TrackerStats.TryGetValue(url, out var s) ? s : null;
                                             <tr>
                                                 <td class="qb-mono" style="word-break:break-all;">@url</td>
                                                 <td>@GetTrackerType(url)</td>
+                                                <td class="qb-mono">@(stats != null ? $"{stats.Complete}s / {stats.Incomplete}p" : "---")</td>
                                             </tr>
                                         }
                                     </tbody>
@@ -861,6 +869,11 @@
         AddLog("Settings applied", "");
     }
 
+    private void SetStrategy(Torrent torrent, ChangeEventArgs e)
+    {
+        torrent.Strategy = e.Value?.ToString() ?? "rarest";
+    }
+
     private void PauseAll()
     {
         foreach (var t in Client.Torrents) t.Pause();
@@ -1079,9 +1092,10 @@
 
     private void OnDrop(DragEventArgs e)
     {
-        // Try to extract magnet URI from dropped text
-        var text = e.DataTransfer?.Items?.FirstOrDefault()?.Type;
-        // DataTransfer text extraction requires JS interop in Blazor; use the magnet input as fallback
+        // Blazor DragEventArgs exposes DataTransfer.Types but not the actual data.
+        // The ondrop:preventDefault allows the drop but we can't access the text content
+        // without a JS-level event listener. Drop zone is visual feedback only for now.
+        // Magnet URIs should be pasted into the input field or added via .torrent file.
     }
 
     // ========================

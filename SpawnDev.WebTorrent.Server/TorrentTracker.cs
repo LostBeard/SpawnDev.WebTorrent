@@ -341,7 +341,13 @@ public class WebSeedServer
     /// <summary>Handle an HTTP request for a file in a torrent.</summary>
     public async Task HandleRequest(HttpContext context, string infoHash, string filePath)
     {
-        var localPath = Path.Combine(_storageRoot, infoHash, filePath);
+        var localPath = Path.GetFullPath(Path.Combine(_storageRoot, infoHash, filePath));
+        // SECURITY: Prevent path traversal attacks (e.g., ../../etc/passwd)
+        if (!localPath.StartsWith(Path.GetFullPath(_storageRoot), StringComparison.OrdinalIgnoreCase))
+        {
+            context.Response.StatusCode = 403;
+            return;
+        }
         if (!System.IO.File.Exists(localPath))
         {
             context.Response.StatusCode = 404;

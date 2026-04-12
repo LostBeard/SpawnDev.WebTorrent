@@ -21,8 +21,8 @@ public class WebTorrentClient : IAsyncDisposable
     public string[] DefaultTrackers { get; set; } = new[]
     {
         "wss://tracker.openwebtorrent.com",
+        "wss://tracker.webtorrent.dev",
         "wss://tracker.btorrent.xyz",
-        "wss://tracker.fastcast.nz",
         "wss://hub.spawndev.com:44365/announce",
     };
 

@@ -179,6 +179,7 @@ public class SipSorceryPeer : SimplePeer
         });
 
         await _iceCompleteTcs.Task;
+        candidateTimer?.Stop();
         candidateTimer?.Dispose();
     }
 

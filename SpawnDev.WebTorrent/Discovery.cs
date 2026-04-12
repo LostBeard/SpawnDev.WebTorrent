@@ -14,6 +14,7 @@ public class Discovery : IAsyncDisposable
     public bool Destroyed { get; private set; }
 
     private readonly List<WebSocketTracker> _wsTrackers = new();
+    private readonly List<(WebSocketTracker tracker, Action handler)> _announceHandlers = new();
     private readonly List<HttpTracker> _httpTrackers = new();
     private readonly List<UdpTrackerClient> _udpTrackers = new();
     private readonly Func<bool, SimplePeer> _createPeerFunc;
@@ -59,12 +60,14 @@ public class Discovery : IAsyncDisposable
                     peerFactory: createPeerFunc,
                     onUpdate: (update) => OnTrackerUpdate?.Invoke(update),
                     onWarning: (msg) => OnWarning?.Invoke(msg));
-                tracker.OnAnnounce += () =>
+                Action announceHandler = () =>
                 {
-                    // Re-announce triggered by tracker interval
+                    if (Destroyed) return;
                     _ = tracker.AnnounceAsync(infoHash, new AnnounceOptions(), peerId);
                     OnTrackerAnnounce?.Invoke();
                 };
+                tracker.OnAnnounce += announceHandler;
+                _announceHandlers.Add((tracker, announceHandler));
                 _wsTrackers.Add(tracker);
             }
             else if (url.StartsWith("http://") || url.StartsWith("https://"))
@@ -140,6 +143,10 @@ public class Discovery : IAsyncDisposable
         // Unsubscribe from shared trackers instead of disposing them (shared pool)
         foreach (var t in _wsTrackers)
             t.Unsubscribe(InfoHash);
+        // Remove OnAnnounce handlers to prevent leaked re-announces
+        foreach (var (tracker, handler) in _announceHandlers)
+            tracker.OnAnnounce -= handler;
+        _announceHandlers.Clear();
         foreach (var t in _httpTrackers)
             await t.DisposeAsync();
         foreach (var t in _udpTrackers)

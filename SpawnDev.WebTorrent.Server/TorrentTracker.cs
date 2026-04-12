@@ -27,14 +27,7 @@ public class TorrentTracker
 
     /// <summary>Serialize to JSON matching JS wire format - no \u00XX escapes for C1 control chars.</summary>
     private static string SerializeJson(object value)
-    {
-        var json = JsonSerializer.Serialize(value, _jsonWriteOpts);
-        // System.Text.Json escapes C1 control chars (0x80-0x9F) even with UnsafeRelaxedJsonEscaping.
-        // JS JSON.stringify does NOT escape them. Replace to match JS wire format.
-        // Only un-escape 0x80-0xFF (C1 + latin1 upper). Leave 0x00-0x1F escaped (valid JSON).
-        return System.Text.RegularExpressions.Regex.Replace(json, @"\\u00([89a-fA-F][0-9a-fA-F])", m =>
-            ((char)Convert.ToByte(m.Groups[1].Value, 16)).ToString());
-    }
+        => BinaryJsonSerializer.Serialize(value, _jsonWriteOpts);
     private static readonly JsonSerializerOptions _jsonReadOpts = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,

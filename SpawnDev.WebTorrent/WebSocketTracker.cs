@@ -527,20 +527,7 @@ public class WebSocketTracker : IAsyncDisposable
         if (Destroyed || _ws?.State != WebSocketState.Open) return;
         _expectingResponse = true;
 
-        var json = JsonSerializer.Serialize(msg, new JsonSerializerOptions
-        {
-            PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-        });
-        // System.Text.Json escapes C1 control chars (0x80-0x9F) as \u00XX even with
-        // UnsafeRelaxedJsonEscaping. JS JSON.stringify does NOT escape them.
-        // Only un-escape 0x80-0xFF range (C1 + latin1 upper). Leave 0x00-0x1F escaped (valid JSON).
-        json = System.Text.RegularExpressions.Regex.Replace(json, @"\\u00([89a-fA-F][0-9a-fA-F])", m =>
-        {
-            var ch = (char)Convert.ToByte(m.Groups[1].Value, 16);
-            return ch.ToString();
-        });
+        var json = BinaryJsonSerializer.Serialize(msg);
         var bytes = Encoding.UTF8.GetBytes(json);
         await _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
     }

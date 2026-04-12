@@ -52,6 +52,9 @@ public class DesktopWebRtcTest
     [Test, Timeout(60000)]
     public async Task Desktop_TwoClients_DiscoverViaTracker()
     {
+        // Clear shared tracker pool so each client gets its own WebSocket connection
+        // (in production one app = one client, but this test creates two)
+        WebSocketTracker.ClearPool();
         WebTorrentClient.VerboseLogging = true;
 
         // Seeder

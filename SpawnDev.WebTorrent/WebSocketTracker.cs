@@ -26,6 +26,17 @@ public class WebSocketTracker : IAsyncDisposable
     private static readonly Dictionary<string, WebSocketTracker> _socketPool = new();
     private static readonly object _poolLock = new();
 
+    /// <summary>Clear all shared tracker connections. Use in tests that create multiple clients.</summary>
+    public static void ClearPool()
+    {
+        lock (_poolLock)
+        {
+            foreach (var t in _socketPool.Values)
+                _ = t.DisposeAsync();
+            _socketPool.Clear();
+        }
+    }
+
     /// <summary>
     /// Get or create a shared WebSocketTracker for the given URL.
     /// Matches the JS bittorrent-tracker socketPool pattern - one connection per tracker URL.

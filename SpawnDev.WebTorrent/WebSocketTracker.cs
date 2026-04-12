@@ -38,17 +38,18 @@ public class WebSocketTracker : IAsyncDisposable
     }
 
     /// <summary>
-    /// Get or create a shared WebSocketTracker for the given URL.
-    /// Matches the JS bittorrent-tracker socketPool pattern - one connection per tracker URL.
+    /// Get or create a shared WebSocketTracker for the given URL and peer ID.
+    /// Keyed by (url + peerId) so different clients get separate connections.
     /// </summary>
     public static WebSocketTracker GetOrCreate(string announceUrl, byte[] peerId, Func<bool, SimplePeer> createPeerFunc)
     {
         lock (_poolLock)
         {
-            if (_socketPool.TryGetValue(announceUrl, out var existing) && !existing.Destroyed)
+            var key = announceUrl + ":" + Convert.ToHexString(peerId);
+            if (_socketPool.TryGetValue(key, out var existing) && !existing.Destroyed)
                 return existing;
             var tracker = new WebSocketTracker(announceUrl, peerId, createPeerFunc);
-            _socketPool[announceUrl] = tracker;
+            _socketPool[key] = tracker;
             return tracker;
         }
     }

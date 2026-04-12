@@ -398,7 +398,9 @@ public partial class MainWindow : Window
         DetailUploaded.Text = FormatBytes(t.Uploaded);
         DetailRatio.Text = t.Ratio.ToString("F3");
         DetailEta.Text = vm.EtaText;
-        DetailPeerCount.Text = $"{t.PeerCount}";
+        DetailPeerCount.Text = $"{t.PeerCount} (+ {t.WebSeedCount} web seeds)";
+        DetailStrategy.Text = t.Strategy;
+        DetailStatus.Text = vm.StatusText;
         DetailHash.Text = vm.HashFull;
 
         PanelFiles.ItemsSource = vm.Files;

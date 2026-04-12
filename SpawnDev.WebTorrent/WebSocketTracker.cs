@@ -531,9 +531,15 @@ public class WebSocketTracker : IAsyncDisposable
         {
             PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
             DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
-            // CRITICAL: Do NOT escape chars 0x80-0xFF as \uXXXX - JS JSON.stringify doesn't
-            // escape them, and the tracker expects matching wire format for info_hash/peer_id
             Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        });
+        // System.Text.Json escapes C1 control chars (0x80-0x9F) as \u00XX even with
+        // UnsafeRelaxedJsonEscaping. JS JSON.stringify does NOT escape them.
+        // Replace \u00XX escapes with literal UTF-8 chars to match JS wire format.
+        json = System.Text.RegularExpressions.Regex.Replace(json, @"\\u00([0-9a-fA-F]{2})", m =>
+        {
+            var ch = (char)Convert.ToByte(m.Groups[1].Value, 16);
+            return ch.ToString();
         });
         var bytes = Encoding.UTF8.GetBytes(json);
         await _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);

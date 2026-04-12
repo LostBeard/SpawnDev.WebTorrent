@@ -24,6 +24,16 @@ public class TorrentTracker
     {
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
+
+    /// <summary>Serialize to JSON matching JS wire format - no \u00XX escapes for C1 control chars.</summary>
+    private static string SerializeJson(object value)
+    {
+        var json = JsonSerializer.Serialize(value, _jsonWriteOpts);
+        // System.Text.Json escapes C1 control chars (0x80-0x9F) even with UnsafeRelaxedJsonEscaping.
+        // JS JSON.stringify does NOT escape them. Replace to match JS wire format.
+        return System.Text.RegularExpressions.Regex.Replace(json, @"\\u00([0-9a-fA-F]{2})", m =>
+            ((char)Convert.ToByte(m.Groups[1].Value, 16)).ToString());
+    }
     private static readonly JsonSerializerOptions _jsonReadOpts = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
@@ -150,7 +160,7 @@ public class TorrentTracker
             .Select(p => new { peer_id = p.PeerId })
             .ToArray();
 
-        var response = JsonSerializer.Serialize(new
+        var response = SerializeJson(new
         {
             action = "announce",
             info_hash = msg.InfoHash,
@@ -158,7 +168,7 @@ public class TorrentTracker
             complete = swarm.Peers.Count(p => p.Value.IsSeeder),
             incomplete = swarm.Peers.Count(p => !p.Value.IsSeeder),
             peers = otherPeers,
-        }, _jsonWriteOpts);
+        });
 
         await SendText(peer, response);
 
@@ -181,14 +191,14 @@ public class TorrentTracker
                 if (offer.TryGetProperty("offer", out var offerSdp) &&
                     offer.TryGetProperty("offer_id", out var offerId))
                 {
-                    var forward = JsonSerializer.Serialize(new
+                    var forward = SerializeJson(new
                     {
                         action = "announce",
                         info_hash = msg.InfoHash,
                         peer_id = peer.PeerId,
                         offer = offerSdp,
                         offer_id = offerId,
-                    }, _jsonWriteOpts);
+                    });
                     await SendText(target, forward);
                 }
 
@@ -205,14 +215,14 @@ public class TorrentTracker
             Console.WriteLine($"[Tracker] Answer relay: to={msg.ToPeerId[..Math.Min(12, msg.ToPeerId.Length)]}, found={foundTarget}, wsOpen={target?.WebSocket.State}");
             if (foundTarget && target!.WebSocket.State == WebSocketState.Open)
             {
-                var forward = JsonSerializer.Serialize(new
+                var forward = SerializeJson(new
                 {
                     action = "announce",
                     info_hash = msg.InfoHash,
                     peer_id = peer.PeerId,
                     answer = answerElement,
                     offer_id = msg.OfferId,
-                }, _jsonWriteOpts);
+                });
                 Console.WriteLine($"[Tracker] Forwarding answer ({forward.Length} bytes)");
                 await SendText(target, forward);
             }
@@ -230,14 +240,14 @@ public class TorrentTracker
         if (!_swarms.TryGetValue(msg.InfoHash, out var swarm)) return;
         if (!swarm.Peers.TryGetValue(msg.ToPeerId, out var target)) return;
 
-        var forward = JsonSerializer.Serialize(new
+        var forward = SerializeJson(new
         {
             action = "offer",
             info_hash = msg.InfoHash,
             peer_id = peer.PeerId,
             offer = msg.Offer,
             offer_id = msg.OfferId,
-        }, _jsonWriteOpts);
+        });
 
         await SendText(target, forward);
     }
@@ -249,14 +259,14 @@ public class TorrentTracker
         if (!_swarms.TryGetValue(msg.InfoHash, out var swarm)) return;
         if (!swarm.Peers.TryGetValue(msg.ToPeerId, out var target)) return;
 
-        var forward = JsonSerializer.Serialize(new
+        var forward = SerializeJson(new
         {
             action = "answer",
             info_hash = msg.InfoHash,
             peer_id = peer.PeerId,
             answer = msg.Answer,
             offer_id = msg.OfferId,
-        }, _jsonWriteOpts);
+        });
 
         await SendText(target, forward);
     }

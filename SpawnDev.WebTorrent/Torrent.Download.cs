@@ -150,7 +150,7 @@ public partial class Torrent
             {
                 // Verified! Store the piece to chunk store for seeding
                 if (_store != null)
-                    _ = _store.PutAsync(index, buf);
+                    await _store.PutAsync(index, buf);
 
                 Pieces[index] = new Piece(0); // mark as done (length 0 = flushed)
                 Bitfield[index] = true;
@@ -332,6 +332,7 @@ public partial class Torrent
     /// </summary>
     private void Rechoke()
     {
+        if (Destroyed) return;
         if (!Ready || Paused || Destroyed) return;
 
         // Sort wires: increasing quality (pop = best)

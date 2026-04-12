@@ -36,11 +36,14 @@ public class RarityMap
         var candidates = new List<int>();
         int min = int.MaxValue;
 
-        for (int i = 0; i < _numPieces; i++)
+        // Snapshot for thread safety - _pieces can be reassigned by Recalculate on another thread
+        var pieces = _pieces;
+        var numPieces = Math.Min(_numPieces, pieces.Length);
+        for (int i = 0; i < numPieces; i++)
         {
             if (filter != null && !filter(i)) continue;
 
-            int availability = _pieces[i];
+            int availability = pieces[i];
             if (availability == min)
             {
                 candidates.Add(i);
@@ -66,7 +69,7 @@ public class RarityMap
 
         foreach (var wire in _torrent.Wires)
         {
-            for (int i = 0; i < _numPieces; i++)
+            for (int i = 0; i < _numPieces && i < _pieces.Length; i++)
             {
                 if (wire.PeerPieces != null && i < wire.PeerPieces.Length && wire.PeerPieces[i])
                     _pieces[i]++;

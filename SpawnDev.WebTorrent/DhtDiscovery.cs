@@ -79,19 +79,30 @@ public class DhtDiscovery : IAsyncDisposable
         }
     }
 
-    /// <summary>Send a BEP 44 get request to closest nodes for a target hash.</summary>
+    /// <summary>Send a BEP 44 get request using iterative closest-node lookup (3 rounds).</summary>
     public async Task GetAsync(byte[] target, CancellationToken ct = default)
     {
         if (_udp == null) return;
-        var closest = _routingTable.GetClosest(target, 8);
-        foreach (var node in closest)
+
+        var queried = new HashSet<string>();
+        var toQuery = _routingTable.GetClosest(target, 8);
+
+        for (int round = 0; round < 3 && toQuery.Count > 0 && !ct.IsCancellationRequested; round++)
         {
-            try
+            var batch = toQuery.Where(n => queried.Add(n.Id)).Take(3).ToList();
+            var tasks = new List<Task>(batch.Count);
+            foreach (var node in batch)
             {
-                var query = BuildGet(target);
-                await SendKrpcAsync(node.EndPoint, query, ct);
+                tasks.Add(Task.Run(async () =>
+                {
+                    try { await SendKrpcAsync(node.EndPoint, BuildGet(target), ct); }
+                    catch { }
+                }, ct));
             }
-            catch { }
+            await Task.WhenAll(tasks);
+            await Task.Delay(300, ct);
+            // Re-query - responses may have added closer nodes to routing table
+            toQuery = _routingTable.GetClosest(target, 8);
         }
     }
 

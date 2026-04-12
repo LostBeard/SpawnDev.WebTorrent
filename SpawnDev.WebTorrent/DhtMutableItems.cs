@@ -25,6 +25,9 @@ public class DhtMutableItems : IDisposable
     private readonly ConcurrentDictionary<string, byte[]> _tokenCache = new();
     private readonly ConcurrentDictionary<string, (byte[] value, long seq)> _valueCache = new();
 
+    /// <summary>Async file system for persisting sequence numbers across restarts.</summary>
+    public SpawnDev.AsyncFileSystem.IAsyncFS? AsyncFileSystem { get; set; }
+
     public byte[] PublicKey => _signer.PublicKey;
     public long Sequence => _sequence;
     public string Algorithm => _signer.Algorithm;
@@ -38,8 +41,40 @@ public class DhtMutableItems : IDisposable
         _dht = dht;
         _signer = signer;
 
-        // Wire GET response handling — this is the key fix from the original
+        // Wire GET response handling - this is the key fix from the original
         _dht.OnGetResponse += HandleGetResponse;
+    }
+
+    /// <summary>Restore the last published sequence number from persistent storage.</summary>
+    public async Task RestoreSequenceAsync()
+    {
+        if (AsyncFileSystem == null) return;
+        var dir = "webtorrent/_dht_seq";
+        var path = $"{dir}/{Convert.ToHexString(PublicKey).ToLowerInvariant()}";
+        try
+        {
+            if (await AsyncFileSystem.FileExists(path))
+            {
+                var data = await AsyncFileSystem.ReadBytes(path);
+                if (data != null && data.Length == 8)
+                    Interlocked.Exchange(ref _sequence, BitConverter.ToInt64(data));
+            }
+        }
+        catch { }
+    }
+
+    private async Task PersistSequenceAsync()
+    {
+        if (AsyncFileSystem == null) return;
+        var dir = "webtorrent/_dht_seq";
+        var path = $"{dir}/{Convert.ToHexString(PublicKey).ToLowerInvariant()}";
+        try
+        {
+            if (!await AsyncFileSystem.DirectoryExists(dir))
+                await AsyncFileSystem.CreateDirectory(dir);
+            await AsyncFileSystem.Write(path, BitConverter.GetBytes(_sequence));
+        }
+        catch { }
     }
 
     private void HandleGetResponse(Dictionary<string, object> response, IPEndPoint from)
@@ -54,22 +89,36 @@ public class DhtMutableItems : IDisposable
         if (!response.TryGetValue("seq", out var seqObj)) return;
         long seq = seqObj is long l ? l : seqObj is int i ? i : 0;
 
-        // Verify Ed25519 signature (BEP 44 security: reject unsigned/forged values)
-        if (response.TryGetValue("sig", out var sigObj) && sigObj is byte[] signature)
-        {
-            byte[]? salt = response.TryGetValue("salt", out var saltObj) && saltObj is byte[] s ? s : null;
-            var signData = BuildSignData(value, salt, seq);
-            var verified = _signer.VerifyAsync(pubKey, signData, signature).GetAwaiter().GetResult();
-            if (!verified) return; // Reject forged value
-        }
-
-        // Check if this is newer than what we have
+        // Check if this is newer than what we have (fast path - no async needed)
         var cacheKey = Convert.ToHexString(pubKey);
         if (_valueCache.TryGetValue(cacheKey, out var cached) && cached.seq >= seq)
             return; // Old or duplicate
 
-        _valueCache[cacheKey] = (value, seq);
-        OnValueUpdated?.Invoke(pubKey, value, seq);
+        // Verify Ed25519 signature off the UDP receive loop to avoid blocking
+        if (response.TryGetValue("sig", out var sigObj) && sigObj is byte[] signature)
+        {
+            byte[]? salt = response.TryGetValue("salt", out var saltObj) && saltObj is byte[] s ? s : null;
+            var signData = BuildSignData(value, salt, seq);
+            // Queue verification work - never block the receive loop
+            _ = Task.Run(async () =>
+            {
+                var verified = await _signer.VerifyAsync(pubKey, signData, signature);
+                if (!verified) return; // Reject forged value
+
+                // Re-check freshness after async verify (another response may have arrived)
+                if (_valueCache.TryGetValue(cacheKey, out var latest) && latest.seq >= seq)
+                    return;
+
+                _valueCache[cacheKey] = (value, seq);
+                OnValueUpdated?.Invoke(pubKey, value, seq);
+            });
+        }
+        else
+        {
+            // No signature - accept only if we have no signed version (bootstrapping)
+            _valueCache[cacheKey] = (value, seq);
+            OnValueUpdated?.Invoke(pubKey, value, seq);
+        }
     }
 
     /// <summary>Publish a mutable item to the DHT.</summary>
@@ -81,6 +130,7 @@ public class DhtMutableItems : IDisposable
             throw new InvalidOperationException($"BEP 44 requires 32-byte Ed25519 public key, got {_signer.PublicKey.Length} bytes");
 
         Interlocked.Increment(ref _sequence);
+        await PersistSequenceAsync();
 
         // First do a GET to acquire tokens from nearby nodes
         var target = ComputeTarget(_signer.PublicKey, salt);
@@ -127,14 +177,22 @@ public class DhtMutableItems : IDisposable
     public async Task<(byte[] value, long sequence)?> GetAsync(byte[] publicKey, byte[]? salt = null,
         CancellationToken ct = default)
     {
+        var cacheKey = Convert.ToHexString(publicKey);
+
+        // Check cache first - may already have from prior subscription
+        if (_valueCache.TryGetValue(cacheKey, out var existing))
+            return (existing.value, existing.seq);
+
         var target = ComputeTarget(publicKey, salt);
         await _dht.GetAsync(target, ct);
 
-        // Check cache for any response that arrived
-        await Task.Delay(1000, ct); // Allow time for responses
-        var cacheKey = Convert.ToHexString(publicKey);
-        if (_valueCache.TryGetValue(cacheKey, out var cached))
-            return (cached.value, cached.seq);
+        // Poll for response arrival - exit early when value appears (up to 3 seconds)
+        for (int i = 0; i < 30 && !ct.IsCancellationRequested; i++)
+        {
+            await Task.Delay(100, ct);
+            if (_valueCache.TryGetValue(cacheKey, out var cached))
+                return (cached.value, cached.seq);
+        }
 
         return null;
     }

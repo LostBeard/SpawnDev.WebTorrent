@@ -97,9 +97,57 @@ public class Ed25519Signer : IDhtSigner
 }
 
 /// <summary>
-/// Read-only signer for BEP 46 subscribers who only need to resolve targets,
-/// not sign data. VerifyAsync always returns true (no crypto context available).
-/// Use Ed25519Signer for production verification.
+/// Read-only Ed25519 verifier for BEP 46 subscribers who only need to resolve targets and
+/// verify signatures, not sign data. Uses Ed25519Signer.ImportPublicKeyAsync internally.
+/// Works on both desktop and browser via SpawnDev.BlazorJS.Cryptography.
+/// </summary>
+public class ReadOnlyEd25519Verifier : IDhtSigner
+{
+    private readonly Ed25519Signer _inner;
+
+    public string Algorithm => "Ed25519-ReadOnly";
+    public byte[] PublicKey { get; }
+
+    private ReadOnlyEd25519Verifier(Ed25519Signer inner, byte[] publicKey)
+    {
+        _inner = inner;
+        PublicKey = publicKey;
+    }
+
+    /// <summary>Create a read-only verifier from a raw 32-byte public key.</summary>
+    public static async Task<ReadOnlyEd25519Verifier> CreateAsync(IPortableCrypto crypto, byte[] publicKey)
+    {
+        var signer = new Ed25519Signer(crypto);
+        // Import as SPKI if raw 32-byte key, otherwise pass through
+        var spki = publicKey.Length == 32 ? BuildSpkiFromRaw(publicKey) : publicKey;
+        await signer.ImportPublicKeyAsync(spki);
+        return new ReadOnlyEd25519Verifier(signer, publicKey);
+    }
+
+    public Task<byte[]> SignAsync(byte[] message) =>
+        throw new NotSupportedException("ReadOnlyEd25519Verifier cannot sign - use Ed25519Signer");
+
+    public Task<bool> VerifyAsync(byte[] publicKey, byte[] message, byte[] signature) =>
+        _inner.VerifyAsync(publicKey, message, signature);
+
+    public Task<(byte[] publicKey, byte[] privateKey)> ExportKeyPairAsync() =>
+        throw new NotSupportedException("ReadOnlyEd25519Verifier has no private key");
+
+    /// <summary>Build 44-byte SPKI from 32-byte raw Ed25519 public key.</summary>
+    private static byte[] BuildSpkiFromRaw(byte[] rawKey)
+    {
+        // DER SPKI prefix for Ed25519: 30 2A 30 05 06 03 2B 65 70 03 21 00
+        var spki = new byte[44];
+        new byte[] { 0x30, 0x2A, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, 0x70, 0x03, 0x21, 0x00 }
+            .CopyTo(spki, 0);
+        rawKey.CopyTo(spki, 12);
+        return spki;
+    }
+}
+
+/// <summary>
+/// No-op signer for testing only. VerifyAsync always returns true.
+/// DO NOT use in production - accepts forged values without verification.
 /// </summary>
 public class NoOpSigner : IDhtSigner
 {
@@ -109,10 +157,10 @@ public class NoOpSigner : IDhtSigner
     public NoOpSigner(byte[] publicKey) { PublicKey = publicKey; }
 
     public Task<byte[]> SignAsync(byte[] message) =>
-        throw new NotSupportedException("NoOpSigner cannot sign — use Ed25519Signer");
+        throw new NotSupportedException("NoOpSigner cannot sign - use Ed25519Signer");
 
     public Task<bool> VerifyAsync(byte[] publicKey, byte[] message, byte[] signature) =>
-        Task.FromResult(true); // No crypto context — caller must verify separately
+        Task.FromResult(true); // Test only - no verification
 
     public Task<(byte[] publicKey, byte[] privateKey)> ExportKeyPairAsync() =>
         throw new NotSupportedException("NoOpSigner has no key pair");

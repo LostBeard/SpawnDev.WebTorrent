@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using SpawnDev.BlazorJS.Cryptography;
 
 namespace SpawnDev.WebTorrent;
 
@@ -90,6 +91,9 @@ public class WebTorrentClient : IAsyncDisposable
 
     // HTTP client for web seeds
     internal readonly HttpClient _http;
+
+    /// <summary>Portable crypto for Ed25519 operations (BEP 44/46). Null if not configured.</summary>
+    public IPortableCrypto? Crypto { get; set; }
 
     /// <summary>Async file system for persistent storage.</summary>
     public SpawnDev.AsyncFileSystem.IAsyncFS? AsyncFileSystem { get; set; }
@@ -197,6 +201,7 @@ public class WebTorrentClient : IAsyncDisposable
 
         _http = opts.HttpClient ?? new HttpClient();
         AsyncFileSystem = opts.AsyncFileSystem;
+        Crypto = opts.Crypto;
 
         // Wire up stream handler if provided
         if (opts.StreamHandler != null)
@@ -310,8 +315,27 @@ public class WebTorrentClient : IAsyncDisposable
             return null;
         }
 
+        // Create signer for verification - prefer explicit signer, then ReadOnlyEd25519Verifier, then NoOpSigner (test only)
+        IDhtSigner resolvedSigner;
+        if (signer != null)
+        {
+            resolvedSigner = signer;
+        }
+        else if (Crypto != null)
+        {
+            resolvedSigner = await ReadOnlyEd25519Verifier.CreateAsync(Crypto, publicKey);
+        }
+        else
+        {
+            if (VerboseLogging)
+                Console.WriteLine("[WebTorrentClient] WARNING: No IPortableCrypto configured - BEP 46 signature verification disabled. Set WebTorrentClientOptions.Crypto for production use.");
+            resolvedSigner = new NoOpSigner(publicKey);
+        }
+
         // Resolve the current infohash from DHT
-        var items = signer != null ? Dht.CreateMutableItems(signer) : Dht.CreateMutableItems(new NoOpSigner(publicKey));
+        var items = Dht.CreateMutableItems(resolvedSigner);
+        items.AsyncFileSystem = AsyncFileSystem;
+        await items.RestoreSequenceAsync();
         var result = await items.GetAsync(publicKey, salt, ct);
 
         Torrent? torrent = null;
@@ -699,6 +723,8 @@ public class WebTorrentClientOptions
     public ServiceWorkerStreamHandler? StreamHandler { get; set; }
     /// <summary>IP addresses to block from connecting.</summary>
     public HashSet<string>? Blocklist { get; set; }
+    /// <summary>Portable crypto for Ed25519 verification (BEP 44/46). Required for secure mutable DHT operations.</summary>
+    public IPortableCrypto? Crypto { get; set; }
 }
 
 public class AddTorrentOptions

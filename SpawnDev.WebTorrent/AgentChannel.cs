@@ -36,15 +36,20 @@ public class AgentChannel : IAsyncDisposable
     public event Action<byte[], byte[], long>? OnAgentUpdate; // publicKey, value, sequence
 
     /// <summary>
-    /// Create an agent channel backed by DHT (desktop — BEP 46 over UDP).
+    /// Create an agent channel backed by DHT (desktop - BEP 46 over UDP).
     /// </summary>
-    public AgentChannel(DhtDiscovery dht, IDhtSigner signer)
+    /// <param name="asyncFs">Optional persistent storage for sequence number recovery across restarts.</param>
+    public AgentChannel(DhtDiscovery dht, IDhtSigner signer, SpawnDev.AsyncFileSystem.IAsyncFS? asyncFs = null)
     {
         _signer = signer;
         _dhtItems = dht.CreateMutableItems(signer);
+        _dhtItems.AsyncFileSystem = asyncFs;
         _dhtItems.OnValueUpdated += (key, value, seq) => OnAgentUpdate?.Invoke(key, value, seq);
         _publicKey = _dhtItems.PublicKey;
     }
+
+    /// <summary>Restore the last published sequence number from persistent storage. Call before publishing.</summary>
+    public Task RestoreSequenceAsync() => _dhtItems?.RestoreSequenceAsync() ?? Task.CompletedTask;
 
     /// <summary>
     /// Create with no transport — for testing, deferred init, or browser relay (to be wired later).

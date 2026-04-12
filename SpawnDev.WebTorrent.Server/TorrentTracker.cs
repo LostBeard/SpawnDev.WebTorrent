@@ -154,14 +154,13 @@ public class TorrentTracker
             .Select(p => new { peer_id = p.PeerId })
             .ToArray();
 
-        var response = SerializeJson(new
+        var response = SerializeJson(new TrackerAnnounceResponse
         {
-            action = "announce",
-            info_hash = msg.InfoHash,
-            interval = _options.AnnounceInterval,
-            complete = swarm.Peers.Count(p => p.Value.IsSeeder),
-            incomplete = swarm.Peers.Count(p => !p.Value.IsSeeder),
-            peers = otherPeers,
+            InfoHash = msg.InfoHash!,
+            Interval = _options.AnnounceInterval,
+            Complete = swarm.Peers.Count(p => p.Value.IsSeeder),
+            Incomplete = swarm.Peers.Count(p => !p.Value.IsSeeder),
+            Peers = otherPeers.Length > 0 ? otherPeers : null,
         });
 
         await SendText(peer, response);
@@ -185,13 +184,12 @@ public class TorrentTracker
                 if (offer.TryGetProperty("offer", out var offerSdp) &&
                     offer.TryGetProperty("offer_id", out var offerId))
                 {
-                    var forward = SerializeJson(new
+                    var forward = SerializeJson(new TrackerRelayMessage
                     {
-                        action = "announce",
-                        info_hash = msg.InfoHash,
-                        peer_id = peer.PeerId,
-                        offer = offerSdp,
-                        offer_id = offerId,
+                        InfoHash = msg.InfoHash!,
+                        PeerId = peer.PeerId!,
+                        Offer = offerSdp,
+                        OfferId = offerId,
                     });
                     await SendText(target, forward);
                 }
@@ -209,13 +207,12 @@ public class TorrentTracker
             Console.WriteLine($"[Tracker] Answer relay: to={msg.ToPeerId[..Math.Min(12, msg.ToPeerId.Length)]}, found={foundTarget}, wsOpen={target?.WebSocket.State}");
             if (foundTarget && target!.WebSocket.State == WebSocketState.Open)
             {
-                var forward = SerializeJson(new
+                var forward = SerializeJson(new TrackerRelayMessage
                 {
-                    action = "announce",
-                    info_hash = msg.InfoHash,
-                    peer_id = peer.PeerId,
-                    answer = answerElement,
-                    offer_id = msg.OfferId,
+                    InfoHash = msg.InfoHash!,
+                    PeerId = peer.PeerId!,
+                    Answer = answerElement,
+                    OfferId = msg.OfferId,
                 });
                 Console.WriteLine($"[Tracker] Forwarding answer ({forward.Length} bytes)");
                 await SendText(target, forward);
@@ -234,13 +231,13 @@ public class TorrentTracker
         if (!_swarms.TryGetValue(msg.InfoHash, out var swarm)) return;
         if (!swarm.Peers.TryGetValue(msg.ToPeerId, out var target)) return;
 
-        var forward = SerializeJson(new
+        var forward = SerializeJson(new TrackerRelayMessage
         {
-            action = "offer",
-            info_hash = msg.InfoHash,
-            peer_id = peer.PeerId,
-            offer = msg.Offer,
-            offer_id = msg.OfferId,
+            Action = "offer",
+            InfoHash = msg.InfoHash!,
+            PeerId = peer.PeerId!,
+            Offer = msg.Offer,
+            OfferId = msg.OfferId,
         });
 
         await SendText(target, forward);
@@ -253,13 +250,13 @@ public class TorrentTracker
         if (!_swarms.TryGetValue(msg.InfoHash, out var swarm)) return;
         if (!swarm.Peers.TryGetValue(msg.ToPeerId, out var target)) return;
 
-        var forward = SerializeJson(new
+        var forward = SerializeJson(new TrackerRelayMessage
         {
-            action = "answer",
-            info_hash = msg.InfoHash,
-            peer_id = peer.PeerId,
-            answer = msg.Answer,
-            offer_id = msg.OfferId,
+            Action = "answer",
+            InfoHash = msg.InfoHash!,
+            PeerId = peer.PeerId!,
+            Answer = msg.Answer,
+            OfferId = msg.OfferId,
         });
 
         await SendText(target, forward);

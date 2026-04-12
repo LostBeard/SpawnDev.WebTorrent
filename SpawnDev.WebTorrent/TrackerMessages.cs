@@ -74,6 +74,58 @@ public class TrackerAnswerMessage
     public string? TrackerId { get; set; }
 }
 
+/// <summary>Server announce response.</summary>
+public class TrackerAnnounceResponse
+{
+    [JsonPropertyName("action")]
+    public string Action { get; set; } = "announce";
+
+    [JsonPropertyName("info_hash")]
+    public string InfoHash { get; set; } = "";
+
+    [JsonPropertyName("interval")]
+    public int Interval { get; set; } = 120;
+
+    [JsonPropertyName("complete")]
+    public int Complete { get; set; }
+
+    [JsonPropertyName("incomplete")]
+    public int Incomplete { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [JsonPropertyName("peers")]
+    public object[]? Peers { get; set; }
+}
+
+/// <summary>Server offer/answer relay message.</summary>
+public class TrackerRelayMessage
+{
+    [JsonPropertyName("action")]
+    public string Action { get; set; } = "announce";
+
+    [JsonPropertyName("info_hash")]
+    public string InfoHash { get; set; } = "";
+
+    [JsonPropertyName("peer_id")]
+    public string PeerId { get; set; } = "";
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [JsonPropertyName("offer")]
+    public object? Offer { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [JsonPropertyName("answer")]
+    public object? Answer { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [JsonPropertyName("offer_id")]
+    public object? OfferId { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [JsonPropertyName("to_peer_id")]
+    public string? ToPeerId { get; set; }
+}
+
 /// <summary>
 /// Extension methods for binary string (latin1 char-per-byte) encoding.
 /// Ported from SpawnDev.BlazorJS.Rally's CharStringExtensions.

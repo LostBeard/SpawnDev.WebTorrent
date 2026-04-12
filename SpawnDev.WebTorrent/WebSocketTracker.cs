@@ -535,8 +535,8 @@ public class WebSocketTracker : IAsyncDisposable
         });
         // System.Text.Json escapes C1 control chars (0x80-0x9F) as \u00XX even with
         // UnsafeRelaxedJsonEscaping. JS JSON.stringify does NOT escape them.
-        // Replace \u00XX escapes with literal UTF-8 chars to match JS wire format.
-        json = System.Text.RegularExpressions.Regex.Replace(json, @"\\u00([0-9a-fA-F]{2})", m =>
+        // Only un-escape 0x80-0xFF range (C1 + latin1 upper). Leave 0x00-0x1F escaped (valid JSON).
+        json = System.Text.RegularExpressions.Regex.Replace(json, @"\\u00([89a-fA-F][0-9a-fA-F])", m =>
         {
             var ch = (char)Convert.ToByte(m.Groups[1].Value, 16);
             return ch.ToString();

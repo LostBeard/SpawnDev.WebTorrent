@@ -22,7 +22,6 @@ public class WebTorrentClient : IAsyncDisposable
     {
         "wss://tracker.openwebtorrent.com",
         "wss://tracker.webtorrent.dev",
-        "wss://tracker.btorrent.xyz",
         "wss://hub.spawndev.com:44365/announce",
     };
 

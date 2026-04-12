@@ -100,8 +100,7 @@ public class DesktopWebRtcTest
 
         var magnet = "magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Sintel" +
             "&tr=wss%3A%2F%2Ftracker.openwebtorrent.com" +
-            "&tr=wss%3A%2F%2Ftracker.btorrent.xyz" +
-            "&tr=wss%3A%2F%2Ftracker.fastcast.nz" +
+            "&tr=wss%3A%2F%2Ftracker.webtorrent.dev" +
             "&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce" +
             "&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F";
 

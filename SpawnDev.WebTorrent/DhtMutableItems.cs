@@ -85,23 +85,35 @@ public class DhtMutableItems : IDisposable
         // First do a GET to acquire tokens from nearby nodes
         var target = ComputeTarget(_signer.PublicKey, salt);
         await _dht.GetAsync(target, ct);
-        await Task.Delay(500, ct); // Allow time for GET responses with tokens
 
+        // Wait for GET responses with tokens - retry up to 5 times with increasing delay
         var signData = BuildSignData(value, salt, _sequence);
         var signature = await _signer.SignAsync(signData);
 
-        var closest = _dht._routingTable.GetClosest(target, 8);
-        foreach (var node in closest)
+        int putCount = 0;
+        for (int attempt = 0; attempt < 5 && !ct.IsCancellationRequested; attempt++)
         {
-            var nodeKey = node.EndPoint.ToString();
-            if (!_tokenCache.TryGetValue(nodeKey, out var nodeToken)) continue;
-            try
+            await Task.Delay(500 * (attempt + 1), ct); // 500ms, 1s, 1.5s, 2s, 2.5s
+
+            var closest = _dht._routingTable.GetClosest(target, 8);
+            foreach (var node in closest)
             {
-                var putMsg = BuildPutMessage(value, _signer.PublicKey, signature, _sequence, salt, nodeToken);
-                await _dht.SendKrpcAsync(node.EndPoint, putMsg, ct);
+                var nodeKey = node.EndPoint.ToString();
+                if (!_tokenCache.TryGetValue(nodeKey, out var nodeToken)) continue;
+                try
+                {
+                    var putMsg = BuildPutMessage(value, _signer.PublicKey, signature, _sequence, salt, nodeToken);
+                    await _dht.SendKrpcAsync(node.EndPoint, putMsg, ct);
+                    putCount++;
+                }
+                catch { }
             }
-            catch { }
+
+            if (putCount > 0) break; // Successfully sent at least one PUT
         }
+
+        if (putCount == 0 && WebTorrentClient.VerboseLogging)
+            Console.WriteLine($"[DhtMutableItems] WARNING: PublishAsync sent 0 PUTs (no tokens acquired)");
     }
 
     /// <summary>Publish an info hash as a mutable item (core BEP 46 use case).</summary>

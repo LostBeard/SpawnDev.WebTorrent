@@ -16,10 +16,11 @@ namespace SpawnDev.WebTorrent;
 ///   put: { v, k, seq, sig, salt?, token }
 ///   get: { target: sha1(k + salt) } → returns latest { v, k, seq, sig }
 /// </summary>
-public class DhtMutableItems
+public class DhtMutableItems : IDisposable
 {
     private readonly DhtDiscovery _dht;
     private readonly IDhtSigner _signer;
+    private bool _disposed;
     private long _sequence;
     private readonly ConcurrentDictionary<string, byte[]> _tokenCache = new();
     private readonly ConcurrentDictionary<string, (byte[] value, long seq)> _valueCache = new();
@@ -214,5 +215,12 @@ public class DhtMutableItems
         buf.AddRange(txId);
         buf.AddRange(Encoding.ASCII.GetBytes("1:y1:qe"));
         return buf.ToArray();
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _dht.OnGetResponse -= HandleGetResponse;
     }
 }

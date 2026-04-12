@@ -23,8 +23,6 @@ public class AgentChannel : IAsyncDisposable
     private readonly byte[] _publicKey;
     private readonly List<CancellationTokenSource> _subscriptions = new();
     private long _sequence;
-    private readonly ConcurrentDictionary<string, long> _subscribedSequences = new();
-
     /// <summary>This agent's public key identity.</summary>
     public byte[] PublicKey => _publicKey;
 

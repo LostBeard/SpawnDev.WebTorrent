@@ -3,7 +3,7 @@
 [![NuGet](https://img.shields.io/nuget/v/SpawnDev.WebTorrent.svg)](https://www.nuget.org/packages/SpawnDev.WebTorrent)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Runs on desktop (.NET) and browser (Blazor WASM). 244 tests (168 Playwright + 76 NUnit). 17 BEPs implemented.
+Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Runs on desktop (.NET) and browser (Blazor WASM). 374 tests (184 Playwright browser+desktop x2, 6 integration). 17 BEPs implemented.
 
 ## Features
 
@@ -25,7 +25,7 @@ Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Run
 - **HuggingFace Integration** — Optional server extension that proxies HuggingFace model CDN with local caching and automatic torrent generation.
 - **Custom Wire Extensions** — `UseExtension()` factory pattern (same as JS WebTorrent `wire.use()`). Build custom P2P protocols on top of the BitTorrent wire — distributed compute, AI agents, anything. Extensions negotiate via BEP 10.
 - **.torrent Creation** — Create and parse .torrent files. Complete Bencode encoder/decoder.
-- **244 Real Tests** (168 Playwright browser+desktop, 76 NUnit desktop) — Every BEP tested, Ed25519 signing verified, official BEP 46 test vector validated, live WebRTC interop with JS WebTorrent peers. No mocks. Every test exercises real production code with real data.
+- **374 Real Tests** (184 shared tests x2 browser+desktop, 6 integration) — Every BEP tested, Ed25519 signing verified, official BEP 46 test vector validated, live WebRTC interop with JS WebTorrent peers. No mocks. Every test exercises real production code with real data.
 
 ## Packages
 

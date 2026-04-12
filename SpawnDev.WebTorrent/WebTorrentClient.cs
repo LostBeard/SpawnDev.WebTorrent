@@ -659,9 +659,10 @@ public class WebTorrentClient : IAsyncDisposable
 
         foreach (var torrent in Torrents.ToArray())
         {
-            await torrent.DisposeAsync();
+            try { await torrent.DisposeAsync(); } catch { }
         }
         Torrents.Clear();
+        _http.Dispose();
     }
 }
 

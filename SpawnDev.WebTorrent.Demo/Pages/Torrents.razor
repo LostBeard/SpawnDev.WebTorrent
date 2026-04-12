@@ -327,7 +327,7 @@
                                                 <td>@(wire.Type == "webSeed" ? "WebSeed" : "WebRTC")</td>
                                                 <td class="qb-mono">@(dl > 0 ? FormatSpeed(dl) : "")</td>
                                                 <td class="qb-mono">@(ul > 0 ? FormatSpeed(ul) : "")</td>
-                                                <td class="qb-mono">@(wire.PeerHasAll ? "100%" : "---")</td>
+                                                <td class="qb-mono">@(wire.PeerHasAll ? "100%" : wire.PeerPieces != null && wire.PeerPieces.Length > 0 ? $"{wire.PeerPieces.Count(b => b) * 100.0 / wire.PeerPieces.Length:F0}%" : "---")</td>
                                             </tr>
                                         }
                                     </tbody>

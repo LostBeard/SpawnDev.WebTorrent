@@ -450,7 +450,9 @@ public partial class MainWindow : Window
                 Type = w.Type == "webSeed" ? "WebSeed" : "WebRTC",
                 DownSpeed = dl > 0 ? FormatSpeed(dl) : "",
                 UpSpeed = ul > 0 ? FormatSpeed(ul) : "",
-                Progress = w.PeerHasAll ? "100%" : "---",
+                Progress = w.PeerHasAll ? "100%" : w.PeerPieces != null && w.PeerPieces.Length > 0
+                    ? $"{w.PeerPieces.Count(b => b) * 100.0 / w.PeerPieces.Length:F0}%"
+                    : "---",
             };
         }).ToList();
         PanelPeers.ItemsSource = peers;

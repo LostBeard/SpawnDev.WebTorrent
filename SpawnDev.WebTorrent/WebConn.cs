@@ -107,8 +107,12 @@ public class WebConn : IAsyncDisposable
 
                     if (fileStart > rangeEnd || fileEnd < rangeStart) continue;
 
-                    // Convert OS path separators to URL slashes and encode each segment
-                    var pathSegments = (file.Path ?? file.Name ?? "").Replace('\\', '/').Split('/');
+                    // Build BEP 19 URL: baseUrl/torrentName/filePath
+                    var filePath = (file.Path ?? file.Name ?? "").Replace('\\', '/');
+                    // Ensure path includes torrent name prefix (parsed torrents have it, created may not)
+                    if (_torrent.Name != null && !filePath.StartsWith(_torrent.Name + "/", StringComparison.OrdinalIgnoreCase))
+                        filePath = _torrent.Name + "/" + filePath;
+                    var pathSegments = filePath.Split('/');
                     var encodedPath = string.Join("/", pathSegments.Select(Uri.EscapeDataString));
                     var fileUrl = Url.TrimEnd('/') + "/" + encodedPath;
                     long start = Math.Max(rangeStart - fileStart, 0);

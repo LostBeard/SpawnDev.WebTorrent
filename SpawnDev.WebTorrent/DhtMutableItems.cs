@@ -53,6 +53,15 @@ public class DhtMutableItems
         if (!response.TryGetValue("seq", out var seqObj)) return;
         long seq = seqObj is long l ? l : seqObj is int i ? i : 0;
 
+        // Verify Ed25519 signature (BEP 44 security: reject unsigned/forged values)
+        if (response.TryGetValue("sig", out var sigObj) && sigObj is byte[] signature)
+        {
+            byte[]? salt = response.TryGetValue("salt", out var saltObj) && saltObj is byte[] s ? s : null;
+            var signData = BuildSignData(value, salt, seq);
+            var verified = _signer.VerifyAsync(pubKey, signData, signature).GetAwaiter().GetResult();
+            if (!verified) return; // Reject forged value
+        }
+
         // Check if this is newer than what we have
         var cacheKey = Convert.ToHexString(pubKey);
         if (_valueCache.TryGetValue(cacheKey, out var cached) && cached.seq >= seq)
@@ -66,6 +75,7 @@ public class DhtMutableItems
     public async Task PublishAsync(byte[] value, byte[]? salt = null, CancellationToken ct = default)
     {
         if (value.Length > 1000) throw new ArgumentException("Value too large (max 1000 bytes per BEP 44)");
+        if (salt != null && salt.Length > 200) throw new ArgumentException("Salt too large (max 200 bytes per BEP 44)");
         if (_signer.PublicKey.Length != 32)
             throw new InvalidOperationException($"BEP 44 requires 32-byte Ed25519 public key, got {_signer.PublicKey.Length} bytes");
 

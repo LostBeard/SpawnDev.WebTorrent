@@ -48,14 +48,17 @@ public class Ed25519Signer : IDhtSigner
     public async Task GenerateKeyAsync()
     {
         _key = await _crypto.GenerateEd25519Key(extractable: true);
-        _publicKey = await _crypto.ExportPublicKeySpki(_key);
+        var spki = await _crypto.ExportPublicKeySpki(_key);
+        // BEP 44 requires raw 32-byte Ed25519 key, not 44-byte SPKI (strip 12-byte DER prefix)
+        _publicKey = spki.Length == 44 ? spki[12..] : spki;
     }
 
     /// <summary>Import an existing Ed25519 key pair.</summary>
     public async Task ImportKeyAsync(byte[] publicKeySpki, byte[] privateKeyPkcs8)
     {
         _key = await _crypto.ImportEd25519Key(publicKeySpki, privateKeyPkcs8, extractable: true);
-        _publicKey = publicKeySpki;
+        // Strip SPKI prefix if present
+        _publicKey = publicKeySpki.Length == 44 ? publicKeySpki[12..] : publicKeySpki;
     }
 
     /// <summary>Import a public key only (for verification).</summary>

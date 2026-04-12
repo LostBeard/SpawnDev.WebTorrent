@@ -1193,7 +1193,7 @@
 
     private static bool IsMediaType(string mimeType)
     {
-        return mimeType.StartsWith("video/") || mimeType.StartsWith("audio/");
+        return mimeType.StartsWith("video/") || mimeType.StartsWith("audio/") || mimeType.StartsWith("image/");
     }
 
     private static string TruncateMagnet(string magnet)

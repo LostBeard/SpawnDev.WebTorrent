@@ -465,57 +465,57 @@ public class WebSocketTracker : IAsyncDisposable
 
     private async Task<List<object>> GenerateOffersAsync(int numwant, string infoHashBinary)
     {
-        var offers = new List<object>();
+        // Generate all offers in parallel (matches JS Promise.all pattern)
+        var tasks = new List<Task<object?>>();
 
         for (int i = 0; i < numwant; i++)
         {
-            // Generate 20-byte random offer ID (matches JS: arr2hex(randomBytes(20)))
             var offerIdBytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(20);
             var offerIdHex = Convert.ToHexString(offerIdBytes).ToLowerInvariant();
 
-            var peer = _createPeerFunc(true); // initiator
+            // Use the per-info_hash factory if available
+            var factory = _peerFactories.TryGetValue(infoHashBinary, out var f) ? f : _createPeerFunc;
 
-            var signalTcs = new TaskCompletionSource<SignalData>();
-            peer.OnSignal += (signal) =>
+            tasks.Add(Task.Run(async () =>
             {
-                if (signal.Type == "offer")
-                    signalTcs.TrySetResult(signal);
-            };
-
-            // Start the peer (triggers offer creation)
-            await peer.InitAsync();
-
-            // Wait for offer signal (with timeout)
-            var timeoutTask = Task.Delay(15_000);
-            var completedTask = await Task.WhenAny(signalTcs.Task, timeoutTask);
-
-            if (completedTask == signalTcs.Task)
-            {
-                var signal = signalTcs.Task.Result;
-                // Store pending offer for answer matching
-                var offerTimer = new Timer(_ =>
+                try
                 {
-                    if (_pendingOffers.Remove(offerIdHex, out var entry))
-                        _ = entry.peer.DisposeAsync();
-                }, null, OfferTimeout, Timeout.Infinite);
+                    var peer = factory(true);
+                    var signalTcs = new TaskCompletionSource<SignalData>();
+                    peer.OnSignal += (signal) =>
+                    {
+                        if (signal.Type == "offer")
+                            signalTcs.TrySetResult(signal);
+                    };
 
-                _pendingOffers[offerIdHex] = (peer, offerTimer, infoHashBinary);
+                    await peer.InitAsync();
 
-                // offer_id transmitted as binary string (matches JS hex2bin(offerId))
-                offers.Add(new
-                {
-                    offer = new { type = signal.Type, sdp = signal.Sdp },
-                    offer_id = ToBinaryString(offerIdBytes),
-                });
-            }
-            else
-            {
-                // Timeout generating offer
-                await peer.DisposeAsync();
-            }
+                    var timeoutTask = Task.Delay(15_000);
+                    var completedTask = await Task.WhenAny(signalTcs.Task, timeoutTask);
+
+                    if (completedTask != signalTcs.Task) { await peer.DisposeAsync(); return null; }
+
+                    var signal = signalTcs.Task.Result;
+                    var offerTimer = new Timer(_ =>
+                    {
+                        if (_pendingOffers.Remove(offerIdHex, out var entry))
+                            _ = entry.peer.DisposeAsync();
+                    }, null, OfferTimeout, Timeout.Infinite);
+
+                    _pendingOffers[offerIdHex] = (peer, offerTimer, infoHashBinary);
+
+                    return (object?)new
+                    {
+                        offer = new { type = signal.Type, sdp = signal.Sdp },
+                        offer_id = ToBinaryString(offerIdBytes),
+                    };
+                }
+                catch { return null; }
+            }));
         }
 
-        return offers;
+        var results = await Task.WhenAll(tasks);
+        return results.Where(r => r != null).ToList()!;
     }
 
     // ========================

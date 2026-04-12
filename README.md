@@ -271,7 +271,7 @@ Browser Client                    Desktop Client
 |-----|-------------|
 | [Quick Start](Docs/quickstart.md) | Full API examples: download, seed, stream, events, config |
 | [Architecture](Docs/architecture.md) | Project structure, data flow, transport layer, wire protocol |
-| [Peer ID](Docs/peer-id.md) | Azureus-style peer ID convention (`-SD0110-`) and version history |
+| [Peer ID](Docs/peer-id.md) | Azureus-style peer ID convention (`-WW0208-`) and version history |
 | [Trackers](Docs/trackers.md) | Default tracker list, running your own tracker, protocol details |
 | [BEP Support](Docs/bep-support.md) | BitTorrent Enhancement Proposal implementation status |
 | [AI Agents](Docs/ai-agents.md) | DHT pub/sub for AI agent communication, shared compute, BEP 46 |

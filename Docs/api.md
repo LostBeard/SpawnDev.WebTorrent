@@ -14,7 +14,7 @@ var client = new WebTorrentClient(opts);
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `PeerId` | `string?` | auto-generated | Wire protocol peer ID (hex). Auto-generates Azureus-style `-SD{ver}-` + random. |
+| `PeerId` | `string?` | auto-generated | Wire protocol peer ID (hex). Auto-generates Azureus-style `-WW{ver}-` + random. |
 | `MaxConns` | `int` | `55` | Max peer connections per torrent |
 | `EnableWebSeeds` | `bool` | `true` | Enable BEP 19 web seed connections |
 | `IceServers` | `string[]?` | Google/Twilio STUN | ICE servers for WebRTC |

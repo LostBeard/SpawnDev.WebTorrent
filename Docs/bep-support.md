@@ -16,7 +16,7 @@ Status of BEP implementation in SpawnDev.WebTorrent _Alt.
 | [15](http://bittorrent.org/beps/bep_0015.html) | UDP Tracker Protocol | Yes | No | 3 | Connect, announce, exponential backoff. Browser has no UDP — hard platform constraint. |
 | [17](http://bittorrent.org/beps/bep_0017.html) | HTTP Seeding (Hoffman) | Yes | Yes | 1 | HTTP range request web seeds |
 | [19](http://bittorrent.org/beps/bep_0019.html) | WebSeed (GetRight style) | Yes | Yes | 1 | Multi-file piece assembly, path-safe URL encoding |
-| [20](http://bittorrent.org/beps/bep_0020.html) | Peer ID Conventions | Yes | Yes | 2 | Azureus-style: `-SD{ver}-` + random suffix |
+| [20](http://bittorrent.org/beps/bep_0020.html) | Peer ID Conventions | Yes | Yes | 2 | Azureus-style: `-WW{ver}-` (WebTorrent-compatible) + random suffix |
 | [23](http://bittorrent.org/beps/bep_0023.html) | Tracker Returns Compact Peer Lists | Yes | Yes | 3 | Via UDP, HTTP, and PEX compact format |
 | [27](http://bittorrent.org/beps/bep_0027.html) | Private Torrents | Yes | Yes | 2 | Private flag in torrent creation and parsing |
 | [44](http://bittorrent.org/beps/bep_0044.html) | Storing Arbitrary Data in DHT | Yes | Yes* | 5 | Desktop: full DHT put/get. Browser: via WebSocket tracker relay (AgentChannel). Ed25519 signed. |

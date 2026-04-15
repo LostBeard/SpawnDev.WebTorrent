@@ -1,0 +1,693 @@
+# Full Session Transcript
+
+Every captured event in chronological order.
+Total: 27 events over 5035ms.
+
+## Timeline
+
+### #1 [+0ms] client/seeder_created
+
+```json
+{
+  "event": "seeder_created",
+  "peer_id": "2d5757303230382d32774575423479702b536358",
+  "peer_id_hex": "32643537353733303332333033383264333237373435373534323334373937303262353336333538",
+  "peer_id_length": 40,
+  "peer_id_byte_values": [
+    50,
+    100,
+    53,
+    55,
+    53,
+    55,
+    51,
+    48,
+    51,
+    50,
+    51,
+    48,
+    51,
+    56,
+    50,
+    100,
+    51,
+    50,
+    55,
+    55,
+    52,
+    53,
+    55,
+    53,
+    52,
+    50,
+    51,
+    52,
+    55,
+    57,
+    55,
+    48,
+    50,
+    98,
+    53,
+    51,
+    54,
+    51,
+    53,
+    56
+  ]
+}
+```
+
+### #2 [+14ms] tracker/client_connected
+
+```json
+{
+  "event": "client_connected",
+  "addr": "::ffff:127.0.0.1:60598"
+}
+```
+
+### #3 [+34ms] tracker/message_received
+
+```json
+{
+  "event": "message_received",
+  "direction": "client->tracker",
+  "addr": "::ffff:127.0.0.1:60598",
+  "action": "announce",
+  "keys": [
+    "numwant",
+    "uploaded",
+    "downloaded",
+    "left",
+    "event",
+    "action",
+    "info_hash",
+    "peer_id"
+  ],
+  "info_hash_hex": "863e15ae3ac365c56bfbd1139401ece3a55f8422",
+  "peer_id_raw": "-WW0208-2wEuB4yp+ScX",
+  "peer_id_hex": "2d5757303230382d32774575423479702b536358",
+  "event_type": "completed",
+  "numwant": 50,
+  "uploaded": 0,
+  "downloaded": 49152,
+  "left": 0
+}
+```
+
+### #4 [+35ms] tracker/message_sent
+
+```json
+{
+  "event": "message_sent",
+  "direction": "tracker->client",
+  "addr": "::ffff:127.0.0.1:60598",
+  "action": "announce",
+  "keys": [
+    "complete",
+    "incomplete",
+    "action",
+    "interval",
+    "info_hash"
+  ],
+  "info_hash_hex": "863e15ae3ac365c56bfbd1139401ece3a55f8422",
+  "interval": 120,
+  "complete": 1,
+  "incomplete": 0
+}
+```
+
+### #5 [+2522ms] client/seeder_torrent_ready
+
+```json
+{
+  "event": "seeder_torrent_ready",
+  "info_hash": "863e15ae3ac365c56bfbd1139401ece3a55f8422",
+  "magnet_uri": "magnet:?xt=urn:btih:863e15ae3ac365c56bfbd1139401ece3a55f8422&dn=protocol-capture.bin&tr=ws%3A%2F%2F127.0.0.1%3A18900",
+  "piece_count": 3,
+  "piece_length": 16384,
+  "total_length": 49152,
+  "file_name": "protocol-capture.bin"
+}
+```
+
+### #6 [+3570ms] client/downloader_created
+
+```json
+{
+  "event": "downloader_created",
+  "peer_id": "2d5757303230382d5369617a37466a486b723244",
+  "peer_id_hex": "32643537353733303332333033383264353336393631376133373436366134383662373233323434"
+}
+```
+
+### #7 [+3570ms] client/downloader_infohash
+
+```json
+{
+  "event": "downloader_infohash",
+  "info_hash": "863e15ae3ac365c56bfbd1139401ece3a55f8422"
+}
+```
+
+### #8 [+3585ms] client/downloader_wire_event
+
+```json
+{
+  "event": "downloader_wire_event",
+  "addr": "192.168.1.120:56704"
+}
+```
+
+### #9 [+3585ms] wire/connected
+
+```json
+{
+  "event": "connected",
+  "role": "downloader",
+  "remote_peer_id": "2d5757303230382d32774575423479702b536358",
+  "remote_peer_id_hex": "32643537353733303332333033383264333237373435373534323334373937303262353336333538"
+}
+```
+
+### #10 [+3586ms] client/seeder_wire_event
+
+```json
+{
+  "event": "seeder_wire_event",
+  "addr": "192.168.1.120:55621"
+}
+```
+
+### #11 [+3586ms] wire/connected
+
+```json
+{
+  "event": "connected",
+  "role": "seeder",
+  "remote_peer_id": "2d5757303230382d5369617a37466a486b723244",
+  "remote_peer_id_hex": "32643537353733303332333033383264353336393631376133373436366134383662373233323434"
+}
+```
+
+### #12 [+3586ms] wire/extended
+
+```json
+{
+  "event": "extended",
+  "role": "downloader",
+  "direction": "received",
+  "extension_name": "handshake",
+  "payload_length": 0,
+  "peer_handshake": {
+    "m": {
+      "lt_donthave": 3,
+      "ut_metadata": 1,
+      "ut_pex": 2
+    },
+    "metadata_size": 139
+  },
+  "payload_decoded": {
+    "m": {
+      "lt_donthave": 3,
+      "ut_metadata": 1,
+      "ut_pex": 2
+    },
+    "metadata_size": 139
+  }
+}
+```
+
+### #13 [+3586ms] wire/have_all
+
+```json
+{
+  "event": "have_all",
+  "role": "downloader",
+  "direction": "received"
+}
+```
+
+### #14 [+3587ms] wire/port
+
+```json
+{
+  "event": "port",
+  "role": "downloader",
+  "direction": "received",
+  "port": 56049
+}
+```
+
+### #15 [+3587ms] wire/extended
+
+```json
+{
+  "event": "extended",
+  "role": "seeder",
+  "direction": "received",
+  "extension_name": "handshake",
+  "payload_length": 0,
+  "peer_handshake": {
+    "m": {
+      "lt_donthave": 3,
+      "ut_metadata": 1,
+      "ut_pex": 2
+    }
+  },
+  "payload_decoded": {
+    "m": {
+      "lt_donthave": 3,
+      "ut_metadata": 1,
+      "ut_pex": 2
+    }
+  }
+}
+```
+
+### #16 [+3588ms] wire/extended
+
+```json
+{
+  "event": "extended",
+  "role": "seeder",
+  "direction": "received",
+  "extension_name": "ut_metadata",
+  "payload_length": 25,
+  "payload_hex_first_128": "64383a6d73675f74797065693065353a706965636569306565"
+}
+```
+
+### #17 [+3588ms] wire/extended
+
+```json
+{
+  "event": "extended",
+  "role": "downloader",
+  "direction": "received",
+  "extension_name": "ut_metadata",
+  "payload_length": 182,
+  "payload_decoded": {
+    "0": 100,
+    "1": 56,
+    "2": 58,
+    "3": 109,
+    "4": 115,
+    "5": 103,
+    "6": 95,
+    "7": 116,
+    "8": 121,
+    "9": 112,
+    "10": 101,
+    "11": 105,
+    "12": 49,
+    "13": 101,
+    "14": 53,
+    "15": 58,
+    "16": 112,
+    "17": 105,
+    "18": 101,
+    "19": 99,
+    "20": 101,
+    "21": 105,
+    "22": 48,
+    "23": 101,
+    "24": 49,
+    "25": 48,
+    "26": 58,
+    "27": 116,
+    "28": 111,
+    "29": 116,
+    "30": 97,
+    "31": 108,
+    "32": 95,
+    "33": 115,
+    "34": 105,
+    "35": 122,
+    "36": 101,
+    "37": 105,
+    "38": 49,
+    "39": 51,
+    "40": 57,
+    "41": 101,
+    "42": 101,
+    "43": 100,
+    "44": 54,
+    "45": 58,
+    "46": 108,
+    "47": 101,
+    "48": 110,
+    "49": 103,
+    "50": 116,
+    "51": 104,
+    "52": 105,
+    "53": 52,
+    "54": 57,
+    "55": 49,
+    "56": 53,
+    "57": 50,
+    "58": 101,
+    "59": 52,
+    "60": 58,
+    "61": 110,
+    "62": 97,
+    "63": 109,
+    "64": 101,
+    "65": 50,
+    "66": 48,
+    "67": 58,
+    "68": 112,
+    "69": 114,
+    "70": 111,
+    "71": 116,
+    "72": 111,
+    "73": 99,
+    "74": 111,
+    "75": 108,
+    "76": 45,
+    "77": 99,
+    "78": 97,
+    "79": 112,
+    "80": 116,
+    "81": 117,
+    "82": 114,
+    "83": 101,
+    "84": 46,
+    "85": 98,
+    "86": 105,
+    "87": 110,
+    "88": 49,
+    "89": 50,
+    "90": 58,
+    "91": 112,
+    "92": 105,
+    "93": 101,
+    "94": 99,
+    "95": 101,
+    "96": 32,
+    "97": 108,
+    "98": 101,
+    "99": 110,
+    "100": 103,
+    "101": 116,
+    "102": 104,
+    "103": 105,
+    "104": 49,
+    "105": 54,
+    "106": 51,
+    "107": 56,
+    "108": 52,
+    "109": 101,
+    "110": 54,
+    "111": 58,
+    "112": 112,
+    "113": 105,
+    "114": 101,
+    "115": 99,
+    "116": 101,
+    "117": 115,
+    "118": 54,
+    "119": 48,
+    "120": 58,
+    "121": 195,
+    "122": 25,
+    "123": 69,
+    "124": 251,
+    "125": 95,
+    "126": 218,
+    "127": 99,
+    "128": 133,
+    "129": 196,
+    "130": 171,
+    "131": 154,
+    "132": 95,
+    "133": 188,
+    "134": 148,
+    "135": 211,
+    "136": 189,
+    "137": 124,
+    "138": 144,
+    "139": 10,
+    "140": 224,
+    "141": 195,
+    "142": 25,
+    "143": 69,
+    "144": 251,
+    "145": 95,
+    "146": 218,
+    "147": 99,
+    "148": 133,
+    "149": 196,
+    "150": 171,
+    "151": 154,
+    "152": 95,
+    "153": 188,
+    "154": 148,
+    "155": 211,
+    "156": 189,
+    "157": 124,
+    "158": 144,
+    "159": 10,
+    "160": 224,
+    "161": 195,
+    "162": 25,
+    "163": 69,
+    "164": 251,
+    "165": 95,
+    "166": 218,
+    "167": 99,
+    "168": 133,
+    "169": 196,
+    "170": 171,
+    "171": 154,
+    "172": 95,
+    "173": 188,
+    "174": 148,
+    "175": 211,
+    "176": 189,
+    "177": 124,
+    "178": 144,
+    "179": 10,
+    "180": 224,
+    "181": 101
+  }
+}
+```
+
+### #18 [+3589ms] client/downloader_metadata_received
+
+```json
+{
+  "event": "downloader_metadata_received",
+  "name": "protocol-capture.bin",
+  "piece_count": 3,
+  "piece_length": 16384,
+  "total_length": 49152,
+  "info_hash": "863e15ae3ac365c56bfbd1139401ece3a55f8422"
+}
+```
+
+### #19 [+3590ms] client/downloader_ready
+
+```json
+{
+  "event": "downloader_ready",
+  "peers": 1
+}
+```
+
+### #20 [+3590ms] client/downloader_done
+
+```json
+{
+  "event": "downloader_done",
+  "downloaded": 49152,
+  "uploaded": 157,
+  "peers": 1,
+  "ratio": 0.5627240143369175
+}
+```
+
+### #21 [+3590ms] tracker/message_received
+
+```json
+{
+  "event": "message_received",
+  "direction": "client->tracker",
+  "addr": "::ffff:127.0.0.1:60598",
+  "action": "announce",
+  "keys": [
+    "numwant",
+    "uploaded",
+    "downloaded",
+    "left",
+    "event",
+    "action",
+    "info_hash",
+    "peer_id"
+  ],
+  "info_hash_hex": "863e15ae3ac365c56bfbd1139401ece3a55f8422",
+  "peer_id_raw": "-WW0208-Siaz7FjHkr2D",
+  "peer_id_hex": "2d5757303230382d5369617a37466a486b723244",
+  "event_type": "completed",
+  "numwant": 50,
+  "uploaded": 157,
+  "downloaded": 49152,
+  "left": 0
+}
+```
+
+### #22 [+3590ms] tracker/message_sent
+
+```json
+{
+  "event": "message_sent",
+  "direction": "tracker->client",
+  "addr": "::ffff:127.0.0.1:60598",
+  "action": "announce",
+  "keys": [
+    "complete",
+    "incomplete",
+    "action",
+    "interval",
+    "info_hash"
+  ],
+  "info_hash_hex": "863e15ae3ac365c56bfbd1139401ece3a55f8422",
+  "interval": 120,
+  "complete": 2,
+  "incomplete": 0
+}
+```
+
+### #23 [+3591ms] wire/have_all
+
+```json
+{
+  "event": "have_all",
+  "role": "seeder",
+  "direction": "received"
+}
+```
+
+### #24 [+3591ms] wire/port
+
+```json
+{
+  "event": "port",
+  "role": "seeder",
+  "direction": "received",
+  "port": 56698
+}
+```
+
+### #25 [+5034ms] tracker/message_received
+
+```json
+{
+  "event": "message_received",
+  "direction": "client->tracker",
+  "addr": "::ffff:127.0.0.1:60598",
+  "action": "announce",
+  "keys": [
+    "numwant",
+    "uploaded",
+    "downloaded",
+    "left",
+    "event",
+    "action",
+    "info_hash",
+    "peer_id",
+    "offers"
+  ],
+  "info_hash_hex": "863e15ae3ac365c56bfbd1139401ece3a55f8422",
+  "peer_id_raw": "-WW0208-2wEuB4yp+ScX",
+  "peer_id_hex": "2d5757303230382d32774575423479702b536358",
+  "event_type": "started",
+  "numwant": 5,
+  "uploaded": 0,
+  "downloaded": 49152,
+  "left": 0,
+  "offers_count": 5,
+  "offers": [
+    {
+      "index": 0,
+      "offer_id_hex": "26bf8f3585e2be678f0da2a3fd4a65e1cc264ccf",
+      "sdp_type": "offer",
+      "sdp": "v=0\r\no=rtc 3374675295 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\na=msid-semantic:WMS *\r\na=ice-options:ice2,trickle\r\na=fingerprint:sha-256 57:90:89:53:7A:DE:03:06:0C:C0:2D:21:C7:2A:03:73:CD:37:F0:6C:2C:8C:81:7E:53:FF:FB:FB:60:38:04:2B\r\nm=application 55204 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 192.168.1.120\r\na=mid:0\r\na=sendrecv\r\na=sctp-port:5000\r\na=max-message-size:262144\r\na=setup:actpass\r\na=ice-ufrag:TC8V\r\na=ice-pwd:JpeiYW9htg3PQxpDvxZSc0\r\na=candidate:1 1 UDP 2114977791 192.168.1.120 55204 typ host\r\na=candidate:2 1 UDP 1678769919 64.246.234.108 55204 typ srflx raddr 0.0.0.0 rport 0\r\na=end-of-candidates\r\n"
+    },
+    {
+      "index": 1,
+      "offer_id_hex": "ff5233428a90a9720d68b5fe8d54b3c3c8a9b757",
+      "sdp_type": "offer",
+      "sdp": "v=0\r\no=rtc 2610308160 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\na=msid-semantic:WMS *\r\na=ice-options:ice2,trickle\r\na=fingerprint:sha-256 A9:D2:39:F2:A2:3E:C1:84:E6:6F:E0:BB:C5:BF:D2:3B:91:56:B8:29:F8:8F:2A:E6:1A:BC:6D:E8:5E:9D:EF:49\r\nm=application 55205 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 192.168.1.120\r\na=mid:0\r\na=sendrecv\r\na=sctp-port:5000\r\na=max-message-size:262144\r\na=setup:actpass\r\na=ice-ufrag:s0x6\r\na=ice-pwd:QdW5m9EkZ1KTixl9oOPG7Z\r\na=candidate:1 1 UDP 2114977791 192.168.1.120 55205 typ host\r\na=candidate:2 1 UDP 1678769919 64.246.234.108 55205 typ srflx raddr 0.0.0.0 rport 0\r\na=end-of-candidates\r\n"
+    },
+    {
+      "index": 2,
+      "offer_id_hex": "5d5482331b7b2551268ca7bb37298eda4b23c03d",
+      "sdp_type": "offer",
+      "sdp": "v=0\r\no=rtc 1303727296 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\na=msid-semantic:WMS *\r\na=ice-options:ice2,trickle\r\na=fingerprint:sha-256 F5:9C:7A:7C:B8:EF:25:AA:D7:F3:80:37:D7:3A:EC:99:F0:ED:D4:36:B9:40:74:3B:6B:43:75:D6:5D:DF:05:BF\r\nm=application 55206 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 192.168.1.120\r\na=mid:0\r\na=sendrecv\r\na=sctp-port:5000\r\na=max-message-size:262144\r\na=setup:actpass\r\na=ice-ufrag:H2yS\r\na=ice-pwd:Wk9o8cvPBw/VrdgtFTIoBq\r\na=candidate:1 1 UDP 2114977791 192.168.1.120 55206 typ host\r\na=candidate:2 1 UDP 1678769919 64.246.234.108 55206 typ srflx raddr 0.0.0.0 rport 0\r\na=end-of-candidates\r\n"
+    },
+    {
+      "index": 3,
+      "offer_id_hex": "35e57462e118ee04583e7a97993216f94aba87b8",
+      "sdp_type": "offer",
+      "sdp": "v=0\r\no=rtc 4099561181 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\na=msid-semantic:WMS *\r\na=ice-options:ice2,trickle\r\na=fingerprint:sha-256 AC:03:99:18:27:5C:D0:AB:A8:8C:F9:16:EA:B9:02:A9:7B:DB:F9:F8:5C:F5:B5:7D:47:58:1E:AC:FC:53:00:78\r\nm=application 55207 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 192.168.1.120\r\na=mid:0\r\na=sendrecv\r\na=sctp-port:5000\r\na=max-message-size:262144\r\na=setup:actpass\r\na=ice-ufrag:CJiU\r\na=ice-pwd:gAVN1xRfLGAIVNiA4Nlu/2\r\na=candidate:1 1 UDP 2114977791 192.168.1.120 55207 typ host\r\na=candidate:2 1 UDP 1678769919 64.246.234.108 55207 typ srflx raddr 0.0.0.0 rport 0\r\na=end-of-candidates\r\n"
+    },
+    {
+      "index": 4,
+      "offer_id_hex": "a291562f866cd2a564ac178692a27d7fc2f46c89",
+      "sdp_type": "offer",
+      "sdp": "v=0\r\no=rtc 567055318 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\na=msid-semantic:WMS *\r\na=ice-options:ice2,trickle\r\na=fingerprint:sha-256 28:32:3B:CB:EC:9C:22:F6:0C:1D:1B:D2:C2:8B:8B:EA:AD:0E:51:8F:F1:65:F0:D7:EB:FA:1D:73:EB:09:3F:BB\r\nm=application 55208 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 192.168.1.120\r\na=mid:0\r\na=sendrecv\r\na=sctp-port:5000\r\na=max-message-size:262144\r\na=setup:actpass\r\na=ice-ufrag:Y9d4\r\na=ice-pwd:9OIfMt5eqSLrc5LIPDEbkn\r\na=candidate:1 1 UDP 2114977791 192.168.1.120 55208 typ host\r\na=candidate:2 1 UDP 1678769919 64.246.234.108 55208 typ srflx raddr 0.0.0.0 rport 0\r\na=end-of-candidates\r\n"
+    }
+  ]
+}
+```
+
+### #26 [+5034ms] tracker/message_sent
+
+```json
+{
+  "event": "message_sent",
+  "direction": "tracker->client",
+  "addr": "::ffff:127.0.0.1:60598",
+  "action": "announce",
+  "keys": [
+    "complete",
+    "incomplete",
+    "action",
+    "interval",
+    "info_hash"
+  ],
+  "info_hash_hex": "863e15ae3ac365c56bfbd1139401ece3a55f8422",
+  "interval": 120,
+  "complete": 2,
+  "incomplete": 0
+}
+```
+
+### #27 [+5035ms] tracker/message_sent
+
+```json
+{
+  "event": "message_sent",
+  "direction": "tracker->client",
+  "addr": "::ffff:127.0.0.1:60598",
+  "action": "announce",
+  "keys": [
+    "action",
+    "offer",
+    "offer_id",
+    "peer_id",
+    "info_hash"
+  ],
+  "info_hash_hex": "863e15ae3ac365c56bfbd1139401ece3a55f8422",
+  "peer_id_hex": "2d5757303230382d32774575423479702b536358",
+  "offer_id_hex": "26bf8f3585e2be678f0da2a3fd4a65e1cc264ccf",
+  "offer": {
+    "type": "offer",
+    "sdp": "v=0\r\no=rtc 3374675295 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\na=msid-semantic:WMS *\r\na=ice-options:ice2,trickle\r\na=fingerprint:sha-256 57:90:89:53:7A:DE:03:06:0C:C0:2D:21:C7:2A:03:73:CD:37:F0:6C:2C:8C:81:7E:53:FF:FB:FB:60:38:04:2B\r\nm=application 55204 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 192.168.1.120\r\na=mid:0\r\na=sendrecv\r\na=sctp-port:5000\r\na=max-message-size:262144\r\na=setup:actpass\r\na=ice-ufrag:TC8V\r\na=ice-pwd:JpeiYW9htg3PQxpDvxZSc0\r\na=candidate:1 1 UDP 2114977791 192.168.1.120 55204 typ host\r\na=candidate:2 1 UDP 1678769919 64.246.234.108 55204 typ srflx raddr 0.0.0.0 rport 0\r\na=end-of-candidates\r\n"
+  }
+}
+```
+

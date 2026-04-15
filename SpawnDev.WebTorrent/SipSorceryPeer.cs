@@ -102,38 +102,32 @@ public class SipSorceryPeer : SimplePeer
 
     private async Task CreateOffer()
     {
-        // X_WaitForIceGatheringToComplete embeds all ICE candidates in the SDP
-        // (proven pattern from SipSorceryWebRtcTransport)
-        var offer = _pc!.createOffer(new RTCOfferOptions { X_WaitForIceGatheringToComplete = true });
+        // Pattern matching BrowserPeer + RTLink: create, set local, wait for ICE, read localDescription
+        var offer = _pc!.createOffer();
         await _pc.setLocalDescription(offer);
 
-        var sdp = FilterTrickle(offer.sdp ?? "");
+        if (!Trickle) await WaitForIceGatheringAsync();
+
+        // Read from localDescription which now contains gathered ICE candidates
+        var sdp = FilterTrickle(_pc.localDescription?.sdp?.ToString() ?? offer.sdp ?? "");
         EmitSignal(new SignalData { Type = "offer", Sdp = sdp });
     }
 
     private async Task CreateAnswer()
     {
-        // Create preliminary answer and set as local description to start ICE gathering
-        var prelimAnswer = _pc!.createAnswer();
-        if (prelimAnswer == null)
+        // Pattern matching BrowserPeer + RTLink: create ONCE, set local, wait for ICE, read localDescription
+        var answer = _pc!.createAnswer();
+        if (answer == null)
         {
             EmitError(new Exception("createAnswer returned null"));
             return;
         }
-        await _pc.setLocalDescription(prelimAnswer);
+        await _pc.setLocalDescription(answer);
 
-        // Wait for ICE gathering to complete
-        await WaitForIceGatheringAsync();
+        if (!Trickle) await WaitForIceGatheringAsync();
 
-        // Re-create answer with gathered candidates
-        var finalAnswer = _pc.createAnswer();
-        if (finalAnswer == null)
-        {
-            EmitError(new Exception("createAnswer (final) returned null"));
-            return;
-        }
-
-        var sdp = FilterTrickle(finalAnswer.sdp ?? "");
+        // Read from localDescription which now contains gathered ICE candidates
+        var sdp = FilterTrickle(_pc.localDescription?.sdp?.ToString() ?? answer.sdp ?? "");
         EmitSignal(new SignalData { Type = "answer", Sdp = sdp });
     }
 

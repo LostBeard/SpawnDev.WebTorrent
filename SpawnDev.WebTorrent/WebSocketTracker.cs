@@ -167,9 +167,17 @@ public class WebSocketTracker : IAsyncDisposable
             TrackerId = _trackerId,
         };
 
-        if (opts.Event == "stopped" || opts.Event == "completed")
+        if (opts.Event == "stopped")
         {
+            // Leaving the swarm - don't want peers, don't send offers
             msg.NumWant = 0;
+            await SendAsync(msg);
+        }
+        else if (opts.Event == "completed")
+        {
+            // Finished downloading, now a seeder - stay in swarm but don't send offers.
+            // JS WebTorrent sends numwant=50 for "completed" (wants to discover leechers).
+            msg.NumWant = Math.Min(opts.Numwant > 0 ? opts.Numwant : 50, MaxOffers);
             await SendAsync(msg);
         }
         else

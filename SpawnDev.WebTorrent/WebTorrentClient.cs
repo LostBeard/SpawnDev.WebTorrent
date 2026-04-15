@@ -666,8 +666,10 @@ public class WebTorrentClient : IAsyncDisposable
         if (PeerFactory != null)
             return PeerFactory(initiator);
 
-        // Default: SipSorcery for desktop (NUnit/console), BrowserPeer for Blazor WASM
-        // Runtime detection: if SIPSorcery types are available, use them
+        // Auto-detect platform: BrowserPeer in WASM, SipSorcery on desktop
+        if (OperatingSystem.IsBrowser())
+            return new BrowserPeer(initiator, IceServers, trickle: false);
+
         return new SipSorceryPeer(initiator, IceServers, trickle: false);
     }
 

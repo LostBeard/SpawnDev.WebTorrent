@@ -37,7 +37,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
 
-        // Resolve WebTorrentClient from DI (configured in App.xaml.cs with AsyncFileSystem + SipSorcery)
+        // Resolve WebTorrentClient from DI (configured in App.xaml.cs with AsyncFileSystem + RtcPeer)
         _client = App.Services.GetRequiredService<WebTorrentClient>();
 
         // Restore persisted torrents into the UI

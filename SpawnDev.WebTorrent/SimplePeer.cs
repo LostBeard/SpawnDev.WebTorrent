@@ -6,8 +6,8 @@ namespace SpawnDev.WebTorrent;
 /// <summary>
 /// Abstract WebRTC peer connection.
 /// Matches simple-peer behavior: create offer/answer, signal, send/receive binary data.
-/// Platform-specific implementations (browser via BlazorJS, desktop via SipSorcery)
-/// inherit from this class.
+/// Platform-specific implementations inherit from this class.
+/// Default: RtcPeer (cross-platform via SpawnDev.RTC).
 /// </summary>
 public abstract class SimplePeer : IAsyncDisposable
 {

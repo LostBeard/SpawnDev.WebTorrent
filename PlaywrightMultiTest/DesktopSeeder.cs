@@ -6,7 +6,7 @@ namespace PlaywrightMultiTest;
 /// <summary>
 /// Desktop WebTorrent seeder for cross-platform P2P tests.
 /// Started by GlobalSetup before browser tests run. Seeds deterministic test data
-/// via hub.spawndev.com tracker using SipSorcery WebRTC (desktop transport).
+/// via hub.spawndev.com tracker using SpawnDev.RTC WebRTC (cross-platform transport).
 /// Browser tests download from this seeder to verify desktop↔browser interop.
 /// </summary>
 public class DesktopSeeder : IAsyncDisposable

@@ -37,8 +37,6 @@ public partial class App : Application
             {
                 AsyncFileSystem = asyncFs,
             });
-            // RtcPeer is cross-platform via SpawnDev.RTC
-            client.PeerFactory = (initiator) => new RtcPeer(initiator, trickle: false);
             return client;
         });
 

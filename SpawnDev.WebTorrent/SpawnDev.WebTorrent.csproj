@@ -40,10 +40,12 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="SpawnDev.BlazorJS" Version="3.5.0" />
+		<PackageReference Include="SpawnDev.BlazorJS" Version="3.5.3" />
 		<PackageReference Include="SpawnDev.AsyncFileSystem" Version="1.2.0" />
-		<PackageReference Include="SpawnDev.BlazorJS.Cryptography" Version="3.1.0" />
-		<PackageReference Include="SIPSorcery" Version="10.0.3" />
+		<PackageReference Include="SpawnDev.BlazorJS.Cryptography" Version="3.2.0" />
+		<!-- SpawnDev.RTC replaces direct SipSorcery dependency — provides cross-platform WebRTC
+		     with proven browser-interop SipSorcery fork (SRTP profile fix) bundled inside -->
+		<ProjectReference Include="..\..\..\SpawnDev.RTC\SpawnDev.RTC\SpawnDev.RTC\SpawnDev.RTC.csproj" />
 	</ItemGroup>
 
 	<ItemGroup>

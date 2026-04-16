@@ -666,11 +666,8 @@ public class WebTorrentClient : IAsyncDisposable
         if (PeerFactory != null)
             return PeerFactory(initiator);
 
-        // Auto-detect platform: BrowserPeer in WASM, SipSorcery on desktop
-        if (OperatingSystem.IsBrowser())
-            return new BrowserPeer(initiator, IceServers, trickle: false);
-
-        return new SipSorceryPeer(initiator, IceServers, trickle: false);
+        // RtcPeer is cross-platform via SpawnDev.RTC - works on both browser and desktop
+        return new RtcPeer(initiator, IceServers, trickle: false);
     }
 
     // ========================

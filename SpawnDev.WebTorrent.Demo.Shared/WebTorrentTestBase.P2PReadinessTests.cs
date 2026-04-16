@@ -113,7 +113,7 @@ public abstract partial class WebTorrentTestBase
         // Register a custom extension factory, then join a known swarm (Sintel) that
         // always has active peers. When a peer connects, the factory should fire.
         var client = CreateIsolatedClient();
-        client.PeerFactory = (init) => new SipSorceryPeer(init, trickle: false);
+        client.PeerFactory = (init) => new RtcPeer(init, trickle: false);
         TestComputeExtension? createdExt = null;
 
         client.UseExtension((wire) =>
@@ -245,7 +245,7 @@ public abstract partial class WebTorrentTestBase
         string? receivedId = null;
 
         var client = CreateIsolatedClient();
-        client.PeerFactory = (init) => new SipSorceryPeer(init, trickle: false);
+        client.PeerFactory = (init) => new RtcPeer(init, trickle: false);
         var torrent = client.Add(P2PTestMagnet);
         torrent.OnWire += (wire, id) =>
         {

@@ -96,7 +96,7 @@ public class JsInteropTest
 
         // Create C# client and download
         var client = new WebTorrentClient();
-        client.PeerFactory = (initiator) => new SipSorceryPeer(initiator, trickle: false);
+        client.PeerFactory = (initiator) => new RtcPeer(initiator, trickle: false);
         var torrent = client.Add(magnetUri);
 
         Console.WriteLine($"[Interop] C# client added torrent: {torrent.InfoHashHex}");

@@ -22,7 +22,7 @@ builder.Services.AddAsyncFileSystem();
 // Service worker stream handler for media streaming (implements IAsyncBackgroundService)
 builder.Services.AddSingleton<ServiceWorkerStreamHandler>();
 
-// WebTorrent client — uses BrowserPeer for WebRTC in WASM, OPFS for persistence, SW streaming
+// WebTorrent client — uses RtcPeer (SpawnDev.RTC) for WebRTC, OPFS for persistence, SW streaming
 builder.Services.AddSingleton<WebTorrentClient>(sp =>
 {
     var asyncFs = sp.GetService<IAsyncFS>();
@@ -32,8 +32,6 @@ builder.Services.AddSingleton<WebTorrentClient>(sp =>
         AsyncFileSystem = asyncFs,
         StreamHandler = streamHandler,
     });
-    // In browser, use BrowserPeer (SpawnDev.BlazorJS RTCPeerConnection) for WebRTC
-    client.PeerFactory = (initiator) => new BrowserPeer(initiator, trickle: false);
     // Restore persisted torrents (fire and forget — completes before first page render)
     _ = client.RestoreFromStorageAsync();
     return client;

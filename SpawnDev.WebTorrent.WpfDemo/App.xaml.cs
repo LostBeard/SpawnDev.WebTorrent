@@ -37,8 +37,8 @@ public partial class App : Application
             {
                 AsyncFileSystem = asyncFs,
             });
-            // Desktop uses SipSorcery for WebRTC
-            client.PeerFactory = (initiator) => new SipSorceryPeer(initiator, trickle: false);
+            // RtcPeer is cross-platform via SpawnDev.RTC
+            client.PeerFactory = (initiator) => new RtcPeer(initiator, trickle: false);
             return client;
         });
 

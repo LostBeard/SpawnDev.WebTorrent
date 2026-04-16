@@ -15,11 +15,7 @@ public abstract partial class WebTorrentTestBase
     public async Task Network_TrackerConnect_Announces()
     {
         // Test that a WSS tracker connection results in peer discovery
-        if (OperatingSystem.IsBrowser())
-            throw new UnsupportedTestException("Uses SipSorceryPeer — desktop only");
-
         var client = CreateIsolatedClient();
-        client.PeerFactory = (initiator) => new SipSorceryPeer(initiator, trickle: false);
         var torrent = client.Add(SintelMagnet);
 
         // Wait for any peer to appear (proves tracker announced successfully)
@@ -38,10 +34,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Network_MagnetAdd_PeersFound()
     {
-        if (OperatingSystem.IsBrowser())
-            throw new UnsupportedTestException("Uses SipSorceryPeer — desktop only");
         var client = CreateIsolatedClient();
-        client.PeerFactory = (initiator) => new SipSorceryPeer(initiator, trickle: false);
         var torrent = client.Add(SintelMagnet);
 
         // Wait for any wire connection (NumPeers = Wires.Count) OR metadata (proves peer connected)
@@ -60,10 +53,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Network_MagnetAdd_MetadataReceived()
     {
-        if (OperatingSystem.IsBrowser())
-            throw new UnsupportedTestException("Uses SipSorceryPeer — desktop only");
         var client = CreateIsolatedClient();
-        client.PeerFactory = (initiator) => new SipSorceryPeer(initiator, trickle: false);
         var torrent = client.Add(SintelMagnet);
 
         using var cts = new CancellationTokenSource(60000);
@@ -83,10 +73,7 @@ public abstract partial class WebTorrentTestBase
     [TestMethod]
     public async Task Network_LiveSwarm_DownloadsPieces()
     {
-        if (OperatingSystem.IsBrowser())
-            throw new UnsupportedTestException("Uses SipSorceryPeer — desktop only");
         var client = CreateIsolatedClient();
-        client.PeerFactory = (initiator) => new SipSorceryPeer(initiator, trickle: false);
         var torrent = client.Add(SintelMagnet);
 
         // Wait for metadata

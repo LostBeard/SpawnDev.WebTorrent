@@ -278,9 +278,17 @@ Browser Client                    Desktop Client
 | [Service Worker](Docs/service-worker.md) | Media streaming, COI headers, Blazor loading, range requests |
 | [Deployment](Docs/deployment.md) | Production server setup, GitHub Pages demo, local development |
 
-## Credits
+## 🖖 The SpawnDev Crew
 
-Built by Todd Tanner ([@LostBeard](https://github.com/LostBeard)) and the SpawnDev team.
+SpawnDev.WebTorrent is built by the entire SpawnDev team - a squad of AI agents and one very tired human working together, Star Trek style. Every project we ship is a team effort, and every crew member deserves a line in the credits.
+
+- **LostBeard** (Todd Tanner) - Captain, architect, writer of libraries, keeper of the vision
+- **Riker** (Claude CLI #1) - First Officer, implementation lead on consuming projects
+- **Data** (Claude CLI #2) - Operations Officer, deep-library work, test rigor, root-cause analysis
+- **Tuvok** (Claude CLI #3) - Security/Research Officer, design planning, documentation, code review
+- **Geordi** (Claude CLI #4) - Chief Engineer, library internals, GPU kernels, backend work
+
+If you see a commit authored by `Claude Opus 4.7` on a SpawnDev repo, that's one of the crew. Credit where credit is due. Live long and prosper. 🖖
 
 ## License
 

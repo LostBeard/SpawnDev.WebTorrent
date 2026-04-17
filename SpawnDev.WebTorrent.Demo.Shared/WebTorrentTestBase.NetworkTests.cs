@@ -5,95 +5,79 @@ namespace SpawnDev.WebTorrent.Demo.Shared;
 
 public abstract partial class WebTorrentTestBase
 {
+    // tracker.webtorrent.dev is fickle and blocks some origins (confirmed by TJ 2026-04-16).
+    // openwebtorrent.com is the most reliable public WSS tracker observed.
     private const string SintelMagnet = "magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Sintel" +
         "&tr=wss%3A%2F%2Ftracker.openwebtorrent.com" +
-        "&tr=wss%3A%2F%2Ftracker.webtorrent.dev" +
         "&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce" +
         "&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F";
 
-    [TestMethod]
+    private static async Task WaitUntilAsync(Func<bool> condition, int timeoutMs)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (condition()) return;
+            await Task.Delay(500);
+        }
+    }
+
+    [TestMethod(Timeout = 90000)]
     public async Task Network_TrackerConnect_Announces()
     {
-        // Test that a WSS tracker connection results in peer discovery
         var client = CreateIsolatedClient();
         var torrent = client.Add(SintelMagnet);
 
-        // Wait for any peer to appear (proves tracker announced successfully)
-        using var cts = new CancellationTokenSource(60000);
-        while (!cts.IsCancellationRequested)
-        {
-            if (torrent.NumPeers > 0 || torrent.HasMetadata) break;
-            await Task.Delay(500, cts.Token);
-        }
+        await WaitUntilAsync(() => torrent.NumPeers > 0 || torrent.HasMetadata, 60000);
 
         if (torrent.NumPeers == 0 && !torrent.HasMetadata)
             throw new Exception("No tracker response within 60s — no peers or metadata");
         await client.DisposeAsync();
     }
 
-    [TestMethod]
+    [TestMethod(Timeout = 150000)]
     public async Task Network_MagnetAdd_PeersFound()
     {
         var client = CreateIsolatedClient();
         var torrent = client.Add(SintelMagnet);
 
-        // Wait for any wire connection (NumPeers = Wires.Count) OR metadata (proves peer connected)
-        using var cts = new CancellationTokenSource(120000);
-        while (!cts.IsCancellationRequested)
-        {
-            if (torrent.NumPeers > 0 || torrent.HasMetadata) break;
-            await Task.Delay(500, cts.Token);
-        }
+        await WaitUntilAsync(() => torrent.NumPeers > 0 || torrent.HasMetadata, 120000);
 
         if (torrent.NumPeers == 0 && !torrent.HasMetadata)
             throw new Exception("No peers found within 120s");
         await client.DisposeAsync();
     }
 
-    [TestMethod]
+    [TestMethod(Timeout = 120000)]
     public async Task Network_MagnetAdd_MetadataReceived()
     {
         var client = CreateIsolatedClient();
         var torrent = client.Add(SintelMagnet);
 
-        using var cts = new CancellationTokenSource(60000);
-        while (!cts.IsCancellationRequested)
-        {
-            if (torrent.HasMetadata) break;
-            await Task.Delay(500, cts.Token);
-        }
+        await WaitUntilAsync(() => torrent.HasMetadata, 90000);
 
         if (!torrent.HasMetadata)
-            throw new Exception("Metadata not received within 60s");
+            throw new Exception($"Metadata not received within 90s (peers={torrent.NumPeers})");
         if (torrent.Name != "Sintel")
             throw new Exception($"Expected name 'Sintel', got '{torrent.Name}'");
         await client.DisposeAsync();
     }
 
-    [TestMethod]
+    [TestMethod(Timeout = 240000)]
     public async Task Network_LiveSwarm_DownloadsPieces()
     {
         var client = CreateIsolatedClient();
         var torrent = client.Add(SintelMagnet);
 
-        // Wait for metadata
-        using var metaCts = new CancellationTokenSource(60000);
-        while (!metaCts.IsCancellationRequested && !torrent.HasMetadata)
-            await Task.Delay(500, metaCts.Token);
+        await WaitUntilAsync(() => torrent.HasMetadata, 90000);
 
         if (!torrent.HasMetadata)
-            throw new Exception("Metadata not received");
+            throw new Exception($"Metadata not received within 90s (peers={torrent.NumPeers})");
 
-        // Wait for at least one piece (32KB = one block from a peer)
-        using var pieceCts = new CancellationTokenSource(60000);
-        while (!pieceCts.IsCancellationRequested)
-        {
-            if (torrent.Downloaded > 0) break;
-            await Task.Delay(500, pieceCts.Token);
-        }
+        await WaitUntilAsync(() => torrent.Downloaded > 0, 120000);
 
         if (torrent.Downloaded == 0)
-            throw new Exception("No data downloaded from live swarm");
+            throw new Exception($"No data downloaded from live swarm within 120s (peers={torrent.NumPeers}, hasMeta={torrent.HasMetadata})");
 
         await client.DisposeAsync();
     }

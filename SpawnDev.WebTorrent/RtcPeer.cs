@@ -31,26 +31,42 @@ public class RtcPeer : SimplePeer
         _pc = RTCPeerConnectionFactory.Create(config);
         _openTcs = new TaskCompletionSource<bool>();
 
+        if (WebTorrentClient.VerboseLogging)
+            Console.WriteLine($"[RtcPeer] InitAsync initiator={Initiator} channel={ChannelName} trickle={Trickle}");
+
         if (Initiator)
         {
             // Create data channel, then create offer
             _dc = _pc.CreateDataChannel(ChannelName);
+            if (WebTorrentClient.VerboseLogging)
+                Console.WriteLine($"[RtcPeer] Initiator created DataChannel label={ChannelName} readyState={_dc.ReadyState}");
             WireDataChannel(_dc);
 
             _pc.OnIceCandidate += HandleIceCandidate;
 
-            var offer = await _pc.CreateOffer();
-            await _pc.SetLocalDescription(offer);
-
-            if (!Trickle)
+            // Non-trickle peers must ship a complete SDP with all candidates (host + srflx).
+            // Desktop (SipSorcery): WaitForIceGatheringToComplete=true makes createOffer
+            // block internally until STUN is done, so the returned SDP has all candidates.
+            // Browser (native): the flag is ignored; createOffer returns the base SDP and
+            // gathering starts on SetLocalDescription. localDescription.sdp is then updated
+            // as candidates arrive, so we wait for state=complete before reading it.
+            var offer = await _pc.CreateOffer(new RTCOfferOptions
             {
-                // Wait for ICE gathering to complete before emitting the offer
-                // The offer SDP already contains candidates after SetLocalDescription
-                // on SipSorcery (it gathers synchronously), but browser gathers async.
-                // Give a brief delay for gathering, then emit.
-                await Task.Delay(100);
-            }
+                WaitForIceGatheringToComplete = !Trickle,
+            });
+            await _pc.SetLocalDescription(offer);
+            if (!Trickle) await WaitForIceGatheringCompleteAsync();
 
+            if (WebTorrentClient.VerboseLogging)
+            {
+                var sdp = _pc.LocalDescription?.Sdp ?? "";
+                Console.WriteLine($"[RtcPeer] Initiator EmitSignal(offer) gather={_pc.IceGatheringState} sdpLen={sdp.Length} candTypes={SummarizeSdpCandidateTypes(sdp)}");
+                if (!_firstOfferLogged)
+                {
+                    _firstOfferLogged = true;
+                    Console.WriteLine($"[RtcPeer] === FIRST OFFER SDP ===\n{sdp}\n=== END SDP ===");
+                }
+            }
             EmitSignal(new SignalData
             {
                 Type = "offer",
@@ -62,6 +78,8 @@ public class RtcPeer : SimplePeer
             // Responder: wait for incoming data channel
             _pc.OnDataChannel += channel =>
             {
+                if (WebTorrentClient.VerboseLogging)
+                    Console.WriteLine($"[RtcPeer] Responder OnDataChannel label={channel.Label} readyState={channel.ReadyState}");
                 _dc = channel;
                 WireDataChannel(_dc);
             };
@@ -71,12 +89,10 @@ public class RtcPeer : SimplePeer
 
         _pc.OnConnectionStateChange += state =>
         {
-            if (state == "connected")
-            {
-                EmitConnect();
-                _openTcs?.TrySetResult(true);
-            }
-            else if (state == "disconnected")
+            if (WebTorrentClient.VerboseLogging)
+                Console.WriteLine($"[RtcPeer] PC state={state} dcReady={_dc?.ReadyState ?? "null"}");
+
+            if (state == "disconnected")
             {
                 EmitDisconnect();
             }
@@ -86,6 +102,29 @@ public class RtcPeer : SimplePeer
                 EmitClose();
                 _openTcs?.TrySetResult(false);
             }
+            // NOTE: "connected" intentionally does NOT emit connect.
+            // Peer connection "connected" means ICE+DTLS complete, but the SCTP
+            // data channel may still be negotiating. Emitting connect here would
+            // let consumers call Send() before the channel is open, which throws
+            // and destroys the peer. Connect fires from channel.OnOpen only.
+        };
+
+        _pc.OnIceConnectionStateChange += state =>
+        {
+            if (WebTorrentClient.VerboseLogging)
+                Console.WriteLine($"[RtcPeer] ICE state={state}");
+        };
+
+        _pc.OnSignalingStateChange += state =>
+        {
+            if (WebTorrentClient.VerboseLogging)
+                Console.WriteLine($"[RtcPeer] Signaling state={state}");
+        };
+
+        _pc.OnIceGatheringStateChange += state =>
+        {
+            if (WebTorrentClient.VerboseLogging)
+                Console.WriteLine($"[RtcPeer] ICE gathering state={state}");
         };
     }
 
@@ -93,29 +132,74 @@ public class RtcPeer : SimplePeer
     {
         channel.OnOpen += () =>
         {
+            if (WebTorrentClient.VerboseLogging)
+                Console.WriteLine($"[RtcPeer] DataChannel OPEN label={channel.Label} initiator={Initiator}");
             EmitConnect();
             _openTcs?.TrySetResult(true);
         };
 
-        channel.OnBinaryMessage += data => EmitData(data);
+        channel.OnBinaryMessage += data =>
+        {
+            if (WebTorrentClient.VerboseLogging && !_firstRecvLogged)
+            {
+                _firstRecvLogged = true;
+                Console.WriteLine($"[RtcPeer] First binary recv {data.Length} bytes");
+            }
+            EmitData(data);
+        };
 
         channel.OnStringMessage += msg =>
         {
+            if (WebTorrentClient.VerboseLogging)
+                Console.WriteLine($"[RtcPeer] String recv len={msg.Length}");
             // BitTorrent wire protocol is binary, but handle string messages gracefully
             EmitData(System.Text.Encoding.UTF8.GetBytes(msg));
         };
 
         channel.OnClose += () =>
         {
+            if (WebTorrentClient.VerboseLogging)
+                Console.WriteLine($"[RtcPeer] DataChannel CLOSE");
             EmitDisconnect();
             EmitClose();
         };
 
-        channel.OnError += err => EmitError(new Exception(err));
+        channel.OnError += err =>
+        {
+            if (WebTorrentClient.VerboseLogging)
+                Console.WriteLine($"[RtcPeer] DataChannel ERROR: {err}");
+            EmitError(new Exception(err));
+        };
+
+        // Defensive: if the channel is already open at subscription time
+        // (edge case on responder if SipSorcery fires onopen synchronously),
+        // fire connect immediately. Otherwise OnOpen fires later normally.
+        if (channel.ReadyState == "open")
+        {
+            if (WebTorrentClient.VerboseLogging)
+                Console.WriteLine($"[RtcPeer] DataChannel was already OPEN at subscribe time");
+            EmitConnect();
+            _openTcs?.TrySetResult(true);
+        }
     }
+
+    private bool _firstRecvLogged;
 
     private void HandleIceCandidate(RTCIceCandidateInit candidate)
     {
+        if (WebTorrentClient.VerboseLogging)
+        {
+            var cand = candidate.Candidate ?? "(null)";
+            var type = "";
+            var typIdx = cand.IndexOf(" typ ");
+            if (typIdx >= 0)
+            {
+                var rest = cand.Substring(typIdx + 5);
+                var sp = rest.IndexOf(' ');
+                type = sp > 0 ? rest.Substring(0, sp) : rest;
+            }
+            Console.WriteLine($"[RtcPeer] ICE candidate initiator={Initiator} type={type} cand={cand}");
+        }
         if (Trickle && !string.IsNullOrEmpty(candidate.Candidate))
         {
             EmitSignal(new SignalData
@@ -135,15 +219,23 @@ public class RtcPeer : SimplePeer
     {
         if (_pc == null) throw new InvalidOperationException("Peer not initialized. Call InitAsync() first.");
 
+        if (WebTorrentClient.VerboseLogging)
+            Console.WriteLine($"[RtcPeer] Signal recv type={data.Type} sdpLen={data.Sdp?.Length ?? 0}");
+
         if (data.Type == "offer")
         {
             await _pc.SetRemoteDescription(new RTCSessionDescriptionInit { Type = "offer", Sdp = data.Sdp ?? "" });
-            var answer = await _pc.CreateAnswer();
-            await _pc.SetLocalDescription(answer);
-
-            if (!Trickle)
+            var answer = await _pc.CreateAnswer(new RTCAnswerOptions
             {
-                await Task.Delay(100);
+                WaitForIceGatheringToComplete = !Trickle,
+            });
+            await _pc.SetLocalDescription(answer);
+            if (!Trickle) await WaitForIceGatheringCompleteAsync();
+
+            if (WebTorrentClient.VerboseLogging)
+            {
+                var sdp = _pc.LocalDescription?.Sdp ?? "";
+                Console.WriteLine($"[RtcPeer] Responder EmitSignal(answer) gather={_pc.IceGatheringState} sdpLen={sdp.Length} candTypes={SummarizeSdpCandidateTypes(sdp)}");
             }
 
             EmitSignal(new SignalData
@@ -170,10 +262,22 @@ public class RtcPeer : SimplePeer
     public override Task Send(byte[] data)
     {
         if (_dc == null || _dc.ReadyState != "open")
+        {
+            if (WebTorrentClient.VerboseLogging)
+                Console.WriteLine($"[RtcPeer] Send BLOCKED: dc={_dc?.ReadyState ?? "null"} len={data.Length}");
             throw new InvalidOperationException("Data channel is not open.");
+        }
+        if (WebTorrentClient.VerboseLogging && !_firstSendLogged)
+        {
+            _firstSendLogged = true;
+            Console.WriteLine($"[RtcPeer] First Send {data.Length} bytes");
+        }
         _dc.Send(data);
         return Task.CompletedTask;
     }
+
+    private bool _firstSendLogged;
+    private static bool _firstOfferLogged;
 
     public override async Task WaitForOpenAsync(CancellationToken ct = default)
     {
@@ -182,6 +286,64 @@ public class RtcPeer : SimplePeer
 
         using var reg = ct.Register(() => _openTcs.TrySetCanceled());
         await _openTcs.Task;
+    }
+
+    // Matches JS simple-peer IceCompleteTimeout (5000ms). On desktop, SipSorcery's
+    // createOffer already blocked for gathering so this returns immediately. On
+    // browser, we wait here for native WebRTC to finish gathering and update
+    // localDescription.sdp with host + srflx candidates.
+    private async Task WaitForIceGatheringCompleteAsync(int timeoutMs = 5000)
+    {
+        if (_pc == null) return;
+        if (_pc.IceGatheringState == "complete") return;
+
+        var tcs = new TaskCompletionSource();
+        Action<string> handler = state =>
+        {
+            if (state == "complete") tcs.TrySetResult();
+        };
+        _pc.OnIceGatheringStateChange += handler;
+        try
+        {
+            if (_pc.IceGatheringState == "complete")
+            {
+                tcs.TrySetResult();
+            }
+            var completed = await Task.WhenAny(tcs.Task, Task.Delay(timeoutMs));
+            if (completed != tcs.Task && WebTorrentClient.VerboseLogging)
+            {
+                Console.WriteLine($"[RtcPeer] ICE gathering timeout after {timeoutMs}ms, state={_pc.IceGatheringState}");
+            }
+        }
+        finally
+        {
+            _pc.OnIceGatheringStateChange -= handler;
+        }
+    }
+
+    private static string SummarizeSdpCandidateTypes(string sdp)
+    {
+        if (string.IsNullOrEmpty(sdp)) return "none";
+        int host = 0, srflx = 0, prflx = 0, relay = 0, other = 0;
+        foreach (var line in sdp.Split('\n'))
+        {
+            var l = line.Trim();
+            if (!l.StartsWith("a=candidate:")) continue;
+            var typIdx = l.IndexOf(" typ ");
+            if (typIdx < 0) { other++; continue; }
+            var rest = l.Substring(typIdx + 5);
+            var sp = rest.IndexOf(' ');
+            var t = sp > 0 ? rest.Substring(0, sp) : rest;
+            switch (t)
+            {
+                case "host": host++; break;
+                case "srflx": srflx++; break;
+                case "prflx": prflx++; break;
+                case "relay": relay++; break;
+                default: other++; break;
+            }
+        }
+        return $"host={host},srflx={srflx},prflx={prflx},relay={relay},other={other}";
     }
 
     public override ValueTask DisposeAsync()

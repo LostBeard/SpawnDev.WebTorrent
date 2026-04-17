@@ -17,12 +17,13 @@ public class WebTorrentClient : IAsyncDisposable
 
     /// <summary>
     /// Default WSS trackers merged into every torrent for peer discovery.
+    /// openwebtorrent is the most reliable public WSS tracker observed; tracker.webtorrent.dev
+    /// is fickle and blocks some origins so it is not included by default.
     /// Configurable via WebTorrentClientOptions.DefaultTrackers. Set to empty array to disable.
     /// </summary>
     public string[] DefaultTrackers { get; set; } = new[]
     {
         "wss://tracker.openwebtorrent.com",
-        "wss://tracker.webtorrent.dev",
         "wss://hub.spawndev.com:44365/announce",
     };
 

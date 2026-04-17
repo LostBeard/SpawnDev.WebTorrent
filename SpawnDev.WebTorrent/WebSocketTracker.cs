@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -73,7 +74,9 @@ public class WebSocketTracker : IAsyncDisposable
     private CancellationTokenSource? _readCts;
 
     // Peer tracking: offerId (hex) → (SimplePeer, timeout, infoHashBinary)
-    private readonly Dictionary<string, (SimplePeer peer, Timer? timeout, string infoHashBinary)> _pendingOffers = new();
+    // Concurrent because 10 parallel offer-generation Task.Run lambdas race
+    // to add entries while Timer callbacks (one per offer) race to remove them.
+    private readonly ConcurrentDictionary<string, (SimplePeer peer, Timer? timeout, string infoHashBinary)> _pendingOffers = new();
 
     // Binary strings for tracker protocol (match JS hex2bin encoding)
     private readonly byte[] _peerId;       // 20 bytes
@@ -419,7 +422,7 @@ public class WebSocketTracker : IAsyncDisposable
                 var peer = entry.peer;
                 var offerInfoHash = entry.infoHashBinary;
                 entry.timeout?.Dispose();
-                _pendingOffers.Remove(offerIdHex);
+                _pendingOffers.TryRemove(offerIdHex, out _);
 
                 // Route peer to the correct torrent by the info_hash stored with the offer
                 if (_peerHandlers.TryGetValue(offerInfoHash, out var peerHandler))
@@ -499,7 +502,7 @@ public class WebSocketTracker : IAsyncDisposable
                     var signal = signalTcs.Task.Result;
                     var offerTimer = new Timer(_ =>
                     {
-                        if (_pendingOffers.Remove(offerIdHex, out var entry))
+                        if (_pendingOffers.TryRemove(offerIdHex, out var entry))
                             _ = entry.peer.DisposeAsync();
                     }, null, OfferTimeout, Timeout.Infinite);
 

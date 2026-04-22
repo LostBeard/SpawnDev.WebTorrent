@@ -44,9 +44,13 @@ Rides the same WebRTC connections used for piece exchange — no new infrastruct
 ## Future Features (Post-4.0.0)
 
 ### BEP 52 (BitTorrent v2)
-- SHA-256 piece hashes (stronger integrity for weight files)
-- Per-file Merkle trees (verify individual file chunks without full piece)
+- **SHA-256 piece hashes** (stronger integrity for weight files) — **SHIPPED in 3.1.0-rc.3** (commit `de92f8d`, 2026-04-22). `TorrentCreator` defaults to SHA-256; verify hot path branches on hash length; `TorrentMetadata.PieceHashAlgorithm` surfaces the algorithm.
+- Per-file Merkle trees (verify individual file chunks without full piece) — Phase 2, pending
+- Hybrid v1+v2 info dict for backwards compatibility — Phase 2, pending
+- Parse v2 info dicts from external clients (qBittorrent, libtorrent) — Phase 2, pending
+- Multihash magnet URI (`urn:btmh:`) — Phase 3, pending
 - Better suited for random-access streaming pattern
+- See `Plans/bep52-sha256-support.md` for the full breakdown.
 
 ### SpawnDev.WebFS Integration
 - Virtual filesystem backed by torrent swarm

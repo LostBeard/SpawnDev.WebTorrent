@@ -15,12 +15,13 @@ Credit: Gemini flagged this during a conversation with TJ on 2026-03-27.
 
 ## Implementation Plan
 
-### Phase 1: SHA-256 Verification (our server-generated torrents)
-- [ ] `TorrentCreator` — option to generate SHA-256 piece hashes (alongside or instead of SHA-1)
-- [ ] `TorrentMetadata` — store SHA-256 piece hashes when present
-- [ ] `PieceManager` — use SHA-256 verification when metadata has SHA-256 hashes
-- [ ] `HuggingFaceProxy` — generate SHA-256 torrents for model delivery
-- [ ] Already using `IPortableCrypto.Digest("SHA-256", data)` — same API, just a different string
+### Phase 1: SHA-256 Verification (our server-generated torrents) — SHIPPED 2026-04-22 (commit `de92f8d`, SpawnDev.WebTorrent 3.1.0-rc.3)
+- [x] `TorrentCreator` — `HashAlgorithm` option on `TorrentCreatorOptions`; defaults to `"SHA-256"`. Set `"SHA-1"` for v1 back-compat.
+- [x] `TorrentMetadata` — `PieceHashes` stores hashes at their native byte length; new derived `PieceHashAlgorithm` property returns `"SHA-256"` / `"SHA-1"` / `null`.
+- [x] Piece verification (`Torrent.Download.cs` + `Torrent.RescanFilesAsync`) — branches on stored hash length (32 vs 20) before computing, so SHA-256 torrents don't pay the SHA-1 cost.
+- [x] `HuggingFaceProxy` — uses the default (SHA-256) for generated model torrents.
+- [x] Uses `System.Security.Cryptography.SHA256.HashData` directly (works on both desktop and Blazor WASM). `IPortableCrypto` was the original plan but not needed - the synchronous in-memory hash is fine.
+- [x] Tests: `CreateFromBytes_Sha256_RoundTripsThroughParser` (NUnit), `Creator_FromBytes_SHA256_RoundTrip` + `Metadata_PieceHashAlgorithm_DetectsSha1` (Demo.Shared cross-platform). Full suite 408/0/13 regression-clean.
 
 ### Phase 2: Full BEP 52 Compliance
 - [ ] Merkle hash tree for piece verification

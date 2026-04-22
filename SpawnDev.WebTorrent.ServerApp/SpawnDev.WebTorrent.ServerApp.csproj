@@ -11,7 +11,9 @@
 	<ItemGroup>
 		<ProjectReference Include="..\SpawnDev.WebTorrent.Server\SpawnDev.WebTorrent.Server.csproj" />
 		<ProjectReference Include="..\SpawnDev.WebTorrent.Server.HuggingFace\SpawnDev.WebTorrent.Server.HuggingFace.csproj" />
-		<ProjectReference Include="..\..\..\SpawnDev.RTC\SpawnDev.RTC\SpawnDev.RTC.Server\SpawnDev.RTC.Server.csproj" />
+		<!-- PackageReference (not ProjectReference) so this project builds from a
+		     standalone SpawnDev.WebTorrent checkout without the sibling RTC repo. -->
+		<PackageReference Include="SpawnDev.RTC.Server" Version="1.0.0" />
 	</ItemGroup>
 
 </Project>

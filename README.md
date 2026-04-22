@@ -279,14 +279,11 @@ Browser Client                    Desktop Client
 
 | Doc | Description |
 |-----|-------------|
-| [Quick Start](Docs/quickstart.md) | Full API examples: download, seed, stream, events, config |
-| [Architecture](Docs/architecture.md) | Project structure, data flow, transport layer, wire protocol |
-| [Peer ID](Docs/peer-id.md) | Azureus-style peer ID convention (`-WW0208-`) and version history |
-| [Trackers](Docs/trackers.md) | Default tracker list, running your own tracker, protocol details |
+| [API Reference](Docs/api.md) | Full API surface: `WebTorrentClient`, `Torrent`, `File`, `TorrentCreator`, `AgentChannel`, wire extensions |
 | [BEP Support](Docs/bep-support.md) | BitTorrent Enhancement Proposal implementation status |
-| [AI Agents](Docs/ai-agents.md) | DHT pub/sub for AI agent communication, shared compute, BEP 46 |
-| [Service Worker](Docs/service-worker.md) | Media streaming, COI headers, Blazor loading, range requests |
-| [Deployment](Docs/deployment.md) | Production server setup, GitHub Pages demo, local development |
+| [Protocol Reference](Docs/protocol-reference/) | Deep dives on the wire protocol, DHT, trackers, mutable items |
+
+For WebRTC signaling architecture (tracker wire protocol, `RoomKey`, running your own tracker) see the [SpawnDev.RTC docs](https://github.com/LostBeard/SpawnDev.RTC/tree/master/SpawnDev.RTC/Docs) - tracker signaling lives in that package as of 3.1.0.
 
 ## 🖖 The SpawnDev Crew
 

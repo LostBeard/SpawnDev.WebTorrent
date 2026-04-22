@@ -5,7 +5,7 @@
 		<LangVersion>latest</LangVersion>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
-		<Version>3.0.0</Version>
+		<Version>3.1.0-rc.1</Version>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>
@@ -13,14 +13,14 @@
 		<NoWarn>$(NoWarn);CS1591</NoWarn>
 		<Title>SpawnDev.WebTorrent.Server</Title>
 		<Authors>LostBeard</Authors>
-		<Description>WebTorrent tracker and web seed server library. Provides WebSocket tracker, piece serving, and torrent management. No HuggingFace dependency — use SpawnDev.WebTorrent.Server.HuggingFace for AI model proxy.</Description>
+		<Description>Web seed server for SpawnDev.WebTorrent. Serves torrent pieces over HTTP range requests (BEP 17/19). Tracker functionality moved to SpawnDev.RTC.Server in 3.1.0 - consumers wire both with `app.UseRtcSignaling("/announce")` + the web seed extension from this package. No HuggingFace dependency - use SpawnDev.WebTorrent.Server.HuggingFace for AI model proxy.</Description>
 		<PackageProjectUrl>https://github.com/LostBeard/SpawnDev.WebTorrent</PackageProjectUrl>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
 		<PackageLicenseFile>LICENSE.txt</PackageLicenseFile>
 		<PackageIcon>icon-128.png</PackageIcon>
 		<RepositoryUrl>https://github.com/LostBeard/SpawnDev.WebTorrent.git</RepositoryUrl>
 		<RepositoryType>git</RepositoryType>
-		<PackageTags>BitTorrent;WebTorrent;Tracker;WebSeed;P2P;Server;ASP.NET</PackageTags>
+		<PackageTags>BitTorrent;WebTorrent;WebSeed;P2P;Server;ASP.NET</PackageTags>
 		<NoPackageAnalysis>true</NoPackageAnalysis>
 		<IsPackable>true</IsPackable>
 	</PropertyGroup>

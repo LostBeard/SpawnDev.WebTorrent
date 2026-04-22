@@ -11,6 +11,7 @@
 	<ItemGroup>
 		<ProjectReference Include="..\SpawnDev.WebTorrent.Server\SpawnDev.WebTorrent.Server.csproj" />
 		<ProjectReference Include="..\SpawnDev.WebTorrent.Server.HuggingFace\SpawnDev.WebTorrent.Server.HuggingFace.csproj" />
+		<ProjectReference Include="..\..\..\SpawnDev.RTC\SpawnDev.RTC\SpawnDev.RTC.Server\SpawnDev.RTC.Server.csproj" />
 	</ItemGroup>
 
 </Project>

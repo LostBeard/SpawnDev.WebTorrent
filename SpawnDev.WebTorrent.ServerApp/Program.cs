@@ -1,4 +1,6 @@
 using Microsoft.AspNetCore.HttpOverrides;
+using SpawnDev.RTC.Server;
+using SpawnDev.RTC.Server.Extensions;
 using SpawnDev.WebTorrent.Server;
 using SpawnDev.WebTorrent.Server.HuggingFace;
 
@@ -22,12 +24,15 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 // Configuration from appsettings.json (falls back to defaults if not present)
 var config = builder.Configuration;
 
-var trackerOptions = new TrackerOptions
+// Tracker moved from SpawnDev.WebTorrent.Server.TorrentTracker to
+// SpawnDev.RTC.Server.TrackerSignalingServer in 3.1.0 - same wire protocol,
+// generic room signaling, WebTorrent-compatible. The server instance is wired
+// after `app.Build()` via `app.UseRtcSignaling(...)`.
+var trackerOptions = new TrackerServerOptions
 {
-    AnnounceInterval = config.GetValue("Tracker:AnnounceInterval", 120),
+    AnnounceIntervalSeconds = config.GetValue("Tracker:AnnounceInterval", 120),
     MaxPeersPerAnnounce = config.GetValue("Tracker:MaxPeersPerAnnounce", 50),
 };
-builder.Services.AddSingleton(new TorrentTracker(trackerOptions));
 
 builder.Services.AddSingleton(new WebSeedServer(config.GetValue("WebSeed:Directory", "seed-data")!));
 builder.Services.AddSingleton(new ComputeRequestBoard());
@@ -77,9 +82,21 @@ app.MapGet("/", () => new
 });
 
 // Register endpoints
-var tracker = app.Services.GetRequiredService<TorrentTracker>();
+var tracker = app.UseRtcSignaling("/announce", trackerOptions);
 var webSeed = app.Services.GetRequiredService<WebSeedServer>();
-app.MapWebTorrentServer(tracker, webSeed);
+app.MapWebSeedServer(webSeed);
+
+// /stats now reports from the generic signaling server.
+app.MapGet("/stats", () => new
+{
+    rooms = tracker.Rooms.Count,
+    totalPeers = tracker.TotalPeers,
+    roomDetails = tracker.Rooms.Select(r => new
+    {
+        roomKey = r.Key,
+        peers = r.Value.Peers.Count,
+    }),
+});
 
 var hfProxy = app.Services.GetRequiredService<HuggingFaceProxy>();
 app.MapHuggingFaceProxy(hfProxy);

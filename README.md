@@ -3,7 +3,7 @@
 [![NuGet](https://img.shields.io/nuget/v/SpawnDev.WebTorrent.svg)](https://www.nuget.org/packages/SpawnDev.WebTorrent)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Runs on desktop (.NET) and browser (Blazor WASM). 374 tests (184 Playwright browser+desktop x2, 6 integration). 17 BEPs implemented.
+Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Runs on desktop (.NET) and browser (Blazor WASM). 408 tests (203 Playwright browser+desktop x2, 6 integration). 17 BEPs implemented. BEP 52 Phase 1 (SHA-256 piece hashes) is the default.
 
 ## Features
 
@@ -24,15 +24,15 @@ Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Run
 - **AI Agent Communication** — BEP 46 DHT mutable items with Ed25519 signing via SpawnDev.BlazorJS.Cryptography 3.1.0. AgentChannel pub/sub for shared AI state. `btpk` magnet URI support for mutable torrent subscriptions.
 - **HuggingFace Integration** — Optional server extension that proxies HuggingFace model CDN with local caching and automatic torrent generation.
 - **Custom Wire Extensions** — `UseExtension()` factory pattern (same as JS WebTorrent `wire.use()`). Build custom P2P protocols on top of the BitTorrent wire — distributed compute, AI agents, anything. Extensions negotiate via BEP 10.
-- **.torrent Creation** — Create and parse .torrent files. Complete Bencode encoder/decoder.
-- **374 Real Tests** (184 shared tests x2 browser+desktop, 6 integration) — Every BEP tested, Ed25519 signing verified, official BEP 46 test vector validated, live WebRTC interop with JS WebTorrent peers. No mocks. Every test exercises real production code with real data.
+- **.torrent Creation** — Create and parse .torrent files. Complete Bencode encoder/decoder. SHA-256 piece hashes (BEP 52 Phase 1) by default for stronger integrity on large ML model files; SHA-1 available via `HashAlgorithm = "SHA-1"` for v1 back-compat. `TorrentMetadata.PieceHashAlgorithm` surfaces which algorithm a parsed torrent uses.
+- **408 Real Tests** (203 shared tests x2 browser+desktop, 6 integration) — Every BEP tested, Ed25519 signing verified, official BEP 46 test vector validated, live WebRTC interop with JS WebTorrent peers. SHA-256 piece creation + round-trip verification covered on both platforms (BEP 52 Phase 1). No mocks. Every test exercises real production code with real data.
 
 ## Packages
 
 | Package | Description |
 |---------|-------------|
-| [SpawnDev.WebTorrent](https://www.nuget.org/packages/SpawnDev.WebTorrent) | Client library — torrents, peers, streaming |
-| [SpawnDev.WebTorrent.Server](https://www.nuget.org/packages/SpawnDev.WebTorrent.Server) | Server library — tracker, web seed |
+| [SpawnDev.WebTorrent](https://www.nuget.org/packages/SpawnDev.WebTorrent) | Client library — torrents, peers, streaming. `WebSocketTracker` is a thin adapter over `SpawnDev.RTC.Signaling.TrackerSignalingClient` (source-compat with 3.0.x consumers). |
+| [SpawnDev.WebTorrent.Server](https://www.nuget.org/packages/SpawnDev.WebTorrent.Server) | Web seed server (BEP 17/19 HTTP range request piece server). Tracker functionality moved to `SpawnDev.RTC.Server` in 3.1.0 - compose them. |
 
 ## Quick Start — Blazor WebAssembly (DI)
 
@@ -178,17 +178,26 @@ Health check: fetch `/webtorrent-sw-check` to verify the SW is active.
 
 ## Quick Start — Server
 
-```csharp
-using SpawnDev.WebTorrent.Server;
+As of 3.1.0 the tracker moved out of `SpawnDev.WebTorrent.Server` and into its own dedicated package, [`SpawnDev.RTC.Server`](https://github.com/LostBeard/SpawnDev.RTC). Compose the two to get the classic WebTorrent server shape (tracker + web seed) on any ASP.NET Core app:
 
-var tracker = new TorrentTracker();
-var webSeed = new WebSeedServer("seed-data");
+```csharp
+using SpawnDev.RTC.Server.Extensions;
+using SpawnDev.WebTorrent.Server;
 
 var app = WebApplication.CreateBuilder(args).Build();
 app.UseWebSockets();
-app.MapWebTorrentServer(tracker, webSeed);
+
+// Tracker (WebSocket signaling, WebTorrent-compatible wire)
+app.UseRtcSignaling("/announce");
+
+// Web seed (HTTP range-request piece server)
+var webSeed = new WebSeedServer("seed-data");
+app.MapWebSeedServer(webSeed);
+
 app.Run();
 ```
+
+The tracker portion is now bit-compatible with the entire public WebTorrent tracker fleet and can be run standalone via [`SpawnDev.RTC.ServerApp`](https://github.com/LostBeard/SpawnDev.RTC) (single executable, Docker image, or `dotnet run`) when you don't need the web seed.
 
 ## Quick Start — HuggingFace Proxy
 
@@ -259,9 +268,10 @@ Browser Client                    Desktop Client
         v               v                v
 +-------------------------------------------+
 | hub.spawndev.com                          |
-| TorrentTracker (WebSocket signaling)      |
+| SpawnDev.RTC.Server (WebSocket signaling) |
 | WebSeedServer (HTTP range fallback)       |
-| HuggingFaceProxy (model CDN cache)        |
+| HuggingFaceProxy (model CDN cache, SHA-256|
+|   piece hashes for integrity)             |
 +-------------------------------------------+
 ```
 

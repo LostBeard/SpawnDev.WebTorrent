@@ -28,6 +28,35 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
+    public async Task Creator_FromBytes_SHA256_RoundTrip()
+    {
+        // Exactly one SHA-256 piece: parse it back and verify the stored hash matches
+        // a manually computed SHA-256 over the same data. Covers create + parse + BEP 52
+        // Phase 1 piece-hash-algorithm detection end-to-end.
+        var data = MakeDeterministicData(16384, seed: 301);
+        var (torrentBytes, meta) = TorrentCreator.CreateFromBytes("sha256-round.bin", data,
+            new TorrentCreatorOptions { HashAlgorithm = "SHA-256", PieceLength = 16384 });
+        var parsed = TorrentParser.Parse(torrentBytes);
+        if (parsed.PieceHashes == null || parsed.PieceHashes.Length != 1)
+            throw new Exception($"Expected 1 piece hash, got {parsed.PieceHashes?.Length}");
+        if (parsed.PieceHashAlgorithm != "SHA-256")
+            throw new Exception($"Expected PieceHashAlgorithm=SHA-256, got {parsed.PieceHashAlgorithm}");
+        var expected = System.Security.Cryptography.SHA256.HashData(data);
+        if (!parsed.PieceHashes[0].SequenceEqual(expected))
+            throw new Exception("Piece hash doesn't match manual SHA-256");
+    }
+
+    [TestMethod]
+    public async Task Metadata_PieceHashAlgorithm_DetectsSha1()
+    {
+        var data = MakeDeterministicData(16384, seed: 302);
+        var (_, meta) = TorrentCreator.CreateFromBytes("sha1.bin", data,
+            new TorrentCreatorOptions { HashAlgorithm = "SHA-1" });
+        if (meta.PieceHashAlgorithm != "SHA-1")
+            throw new Exception($"Expected PieceHashAlgorithm=SHA-1 for 20-byte hashes, got {meta.PieceHashAlgorithm}");
+    }
+
+    [TestMethod]
     public async Task Creator_MultiFile_FileLayout()
     {
         var file1 = MakeDeterministicData(16384, seed: 1);

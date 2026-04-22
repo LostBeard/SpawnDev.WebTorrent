@@ -1299,4 +1299,15 @@ public class TorrentMetadata
     public DateTimeOffset? CreationDate { get; set; }
     /// <summary>Comment embedded in .torrent file.</summary>
     public string? Comment { get; set; }
+
+    /// <summary>
+    /// Piece hash algorithm derived from <see cref="PieceHashes"/>. 32-byte hashes are
+    /// SHA-256 (BEP 52 Phase 1 compatibility); 20-byte hashes are classic v1 SHA-1.
+    /// Returns <c>"SHA-256"</c>, <c>"SHA-1"</c>, or <c>null</c> when pieces haven't
+    /// been parsed yet.
+    /// </summary>
+    public string? PieceHashAlgorithm => PieceHashes.Length == 0 ? null
+        : PieceHashes[0].Length == 32 ? "SHA-256"
+        : PieceHashes[0].Length == 20 ? "SHA-1"
+        : null;
 }

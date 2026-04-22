@@ -140,13 +140,20 @@ public partial class Torrent
             var buf = piece.Flush();
             if (buf == null) { UpdateWires(); return; }
 
-            var hash = System.Security.Cryptography.SHA1.HashData(buf);
-            bool sha1Match = index < _hashes.Length && hash.SequenceEqual(_hashes[index]);
-            // Also try SHA-256 if piece hashes are 32 bytes
-            bool sha256Match = !sha1Match && index < _hashes.Length && _hashes[index].Length == 32
-                && System.Security.Cryptography.SHA256.HashData(buf).SequenceEqual(_hashes[index]);
+            // BEP 52: detect algorithm from stored hash length rather than hashing twice.
+            // 32-byte = SHA-256, 20-byte = SHA-1. Avoids computing the wrong algorithm
+            // on every piece of a SHA-256 torrent.
+            bool hashMatch = false;
+            if (index < _hashes.Length)
+            {
+                var expected = _hashes[index];
+                var actual = expected.Length == 32
+                    ? System.Security.Cryptography.SHA256.HashData(buf)
+                    : System.Security.Cryptography.SHA1.HashData(buf);
+                hashMatch = actual.SequenceEqual(expected);
+            }
 
-            if (sha1Match || sha256Match)
+            if (hashMatch)
             {
                 // Verified! Store the piece to chunk store for seeding
                 if (_store != null)

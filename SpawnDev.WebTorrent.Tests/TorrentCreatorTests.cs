@@ -140,6 +140,28 @@ public class TorrentCreatorTests
         // Manually hash the same data
         var expected = System.Security.Cryptography.SHA1.HashData(data);
         Assert.That(metadata.PieceHashes[0], Is.EqualTo(expected));
+        Assert.That(metadata.PieceHashAlgorithm, Is.EqualTo("SHA-1"));
+    }
+
+    [Test]
+    public void CreateFromBytes_Sha256_RoundTripsThroughParser()
+    {
+        var data = new byte[16384];
+        Random.Shared.NextBytes(data);
+
+        var (torrentBytes, metadata) = TorrentCreator.CreateFromBytes("sha256-round.bin", data, new TorrentCreatorOptions
+        {
+            HashAlgorithm = "SHA-256",
+            PieceLength = 16384,
+        });
+
+        // Parser must round-trip the 32-byte SHA-256 hashes unchanged.
+        var parsed = TorrentParser.Parse(torrentBytes);
+        Assert.That(parsed.PieceHashes.Length, Is.EqualTo(1));
+        Assert.That(parsed.PieceHashes[0].Length, Is.EqualTo(32));
+        Assert.That(parsed.PieceHashAlgorithm, Is.EqualTo("SHA-256"));
+        Assert.That(parsed.PieceHashes[0], Is.EqualTo(System.Security.Cryptography.SHA256.HashData(data)));
+        Assert.That(parsed.PieceHashes[0], Is.EqualTo(metadata.PieceHashes[0]));
     }
 
     [Test]

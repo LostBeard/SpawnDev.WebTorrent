@@ -22,6 +22,7 @@ Status of BEP implementation in SpawnDev.WebTorrent _Alt.
 | [44](http://bittorrent.org/beps/bep_0044.html) | Storing Arbitrary Data in DHT | Yes | Yes* | 5 | Desktop: full DHT put/get. Browser: via WebSocket tracker relay (AgentChannel). Ed25519 signed. |
 | [46](http://bittorrent.org/beps/bep_0046.html) | Updating Torrents via DHT Mutable Items | Yes | Yes* | 13 | `btpk` magnet URI, auto-update subscription, official test vector validated. Browser: via tracker relay. |
 | [48](http://bittorrent.org/beps/bep_0048.html) | Tracker Scrape | Yes | Yes | — | HTTP scrape for seeder/leecher counts without announcing |
+| [52](http://bittorrent.org/beps/bep_0052.html) | BitTorrent v2 (Merkle-tree piece verification) | Yes | Yes | ~180 | SHA-256 info hash, 16 KiB Merkle leaves, per-file roots, piece layers, `urn:btmh:` magnet, hybrid v1+v2 (creator + parser), peer-wire extension (messages 21/22/23), `V2HashRequestCoordinator` state machine + seed path. See [`bep52.md`](bep52.md). |
 | [53](http://bittorrent.org/beps/bep_0053.html) | Magnet URI — Select Specific Files | Yes | Yes | 1 | `so=` parameter parsed into `SelectedFileIndices` |
 
 \* BEP 44/46 browser support uses the WebSocket tracker relay path via `AgentChannel`, not raw DHT UDP. The signing, encoding, sequence handling, and verification logic is identical on both platforms. Only the transport differs.

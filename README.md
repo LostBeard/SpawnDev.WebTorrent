@@ -3,7 +3,7 @@
 [![NuGet](https://img.shields.io/nuget/v/SpawnDev.WebTorrent.svg)](https://www.nuget.org/packages/SpawnDev.WebTorrent)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Runs on desktop (.NET) and browser (Blazor WASM). 408 tests (203 Playwright browser+desktop x2, 6 integration). 17 BEPs implemented. BEP 52 Phase 1 (SHA-256 piece hashes) is the default.
+Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Runs on desktop (.NET) and browser (Blazor WASM). 17 BEPs implemented, including **BEP 52** - SHA-256 piece hashes and Merkle-tree v2 torrents with hybrid v1+v2 output for universal client compatibility.
 
 ## Features
 
@@ -11,7 +11,7 @@ Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Run
 - **Desktop + Browser** — Same library, same API. WPF, console, Blazor WebAssembly.
 - **DI Singleton Services** — `WebTorrentClient` and `ServiceWorkerStreamHandler` implement `IAsyncBackgroundService`. Register once, start with the app, inject anywhere.
 - **Real WebRTC P2P** — Browser (SpawnDev.BlazorJS) and desktop (SIPSorcery) peers interop seamlessly via the same tracker.
-- **17 BEPs** — Full wire protocol, DHT, Fast Extension, ut_metadata, ut_pex, private torrents, magnet file selection, tracker scrape, local service discovery, and more.
+- **18 BEPs** — Full wire protocol, DHT, Fast Extension, ut_metadata, ut_pex, private torrents, magnet file selection, tracker scrape, local service discovery, BEP 52 v2 (SHA-256 + Merkle + hybrid + magnet), and more. The v2 peer wire messages (hash_request / hashes / hash_reject, BEP 52 §"Protocol extension") are the remaining Phase 2c item - pure v2-only magnets are parsed but v2-only downloads require that wire layer.
 - **3 Tracker Types** — WebSocket (browser+desktop), HTTP/HTTPS, UDP (desktop).
 - **Web Seed Download** — HTTP range requests with multi-file piece assembly (BEP 17/19).
 - **Persistent Storage** — Torrents and pieces persist in OPFS (browser) or filesystem (desktop). Survive page reloads. Resume downloading automatically.
@@ -25,7 +25,10 @@ Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Run
 - **HuggingFace Integration** — Optional server extension that proxies HuggingFace model CDN with local caching and automatic torrent generation.
 - **Custom Wire Extensions** — `UseExtension()` factory pattern (same as JS WebTorrent `wire.use()`). Build custom P2P protocols on top of the BitTorrent wire — distributed compute, AI agents, anything. Extensions negotiate via BEP 10.
 - **.torrent Creation** — Create and parse .torrent files. Complete Bencode encoder/decoder. SHA-256 piece hashes (BEP 52 Phase 1) by default for stronger integrity on large ML model files; SHA-1 available via `HashAlgorithm = "SHA-1"` for v1 back-compat. `TorrentMetadata.PieceHashAlgorithm` surfaces which algorithm a parsed torrent uses.
-- **408 Real Tests** (203 shared tests x2 browser+desktop, 6 integration) — Every BEP tested, Ed25519 signing verified, official BEP 46 test vector validated, live WebRTC interop with JS WebTorrent peers. SHA-256 piece creation + round-trip verification covered on both platforms (BEP 52 Phase 1). No mocks. Every test exercises real production code with real data.
+- **BEP 52 v2 Torrents** — `TorrentCreatorOptions.MetaVersion = 2` produces proper BEP 52 v2 torrents with Merkle-tree piece verification (16 KiB leaves, SHA-256, per-level pad-hash propagation). Works for single-file (in-memory + streaming) and multi-file inputs. Parser surfaces `MetaVersion`, `V2InfoHash`, `FileRoots`, and `PieceLayers` on `TorrentMetadata`. Streaming path is bounded-memory - the incremental Merkle hasher uses ~128 KiB of state for a 1 GiB file.
+- **Hybrid v1+v2 Torrents** — Add `Hybrid = true` to produce a single torrent with both the v1 SHA-1 piece list and the v2 Merkle tree in one info dict, yielding two valid infohashes (SHA-1 + SHA-256). Multi-file hybrid inserts BEP-52 pad files (`attr="p"`) between real files so both v1-only clients (qBittorrent pre-4.4, old libtorrent) and v2-aware clients see identically piece-aligned content.
+- **BEP 52 v2 Magnet URIs** — `xt=urn:btmh:1220<sha256>` parsed into `Torrent.V2InfoHash`; hybrid magnets (both `urn:btih:` and `urn:btmh:`) fully supported.
+- **Real Tests Everywhere** — 179 NUnit tests (desktop-only pure-CPU paths, including the BEP 52 v2 Merkle and bencode primitives) + 203-plus Playwright shared tests running on both browser and desktop + 6 integration tests. Every BEP tested, Ed25519 signing verified, official BEP 46 test vector validated, live WebRTC interop with JS WebTorrent peers. BEP 52 v2 coverage includes 111 new tests over Phase 2 (foundation Merkle hasher, incremental streaming hasher, v2 torrent round-trip, hybrid v1+v2 round-trip, pad-file structure, v2 magnet URI). No mocks. Every test exercises real production code with real data.
 
 ## Packages
 

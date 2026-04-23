@@ -216,6 +216,16 @@ public static class MerkleHasher
         return pieceRoots.Length == 1 ? pieceRoots[0] : ComputeRoot(pieceRoots, level: pieceLevel);
     }
 
+    /// <summary>
+    /// Create a new incremental BEP 52 Merkle hasher for streaming input. The hasher
+    /// accepts data in any-sized chunks via <see cref="IncrementalMerkleHasher.Update"/>
+    /// and produces the same file root + piece layer that
+    /// <see cref="ComputeFileRoot"/> / <see cref="ComputePieceLayer"/> would produce on
+    /// the full concatenation of those chunks. Memory usage is bounded (one piece worth
+    /// of leaf hashes + the per-piece root list), suitable for multi-GiB files.
+    /// </summary>
+    public static IncrementalMerkleHasher CreateIncremental(int pieceSize) => new IncrementalMerkleHasher(pieceSize);
+
     private static void ValidatePieceSize(int pieceSize)
     {
         if (pieceSize < LeafSize)

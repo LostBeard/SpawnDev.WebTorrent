@@ -198,13 +198,112 @@ public class TorrentCreatorV2Tests
     }
 
     [Test]
-    public void CreateFromStream_V2_Throws()
+    public async Task CreateFromStream_V2_SinglePieceFile_MatchesCreateFromBytes()
     {
-        using var ms = new MemoryStream(new byte[100]);
-        var opts = new TorrentCreatorOptions { MetaVersion = 2 };
+        var data = new byte[10000]; // less than one piece
+        Random.Shared.NextBytes(data);
+        var opts = new TorrentCreatorOptions { MetaVersion = 2, PieceLength = 16384 };
 
-        Assert.ThrowsAsync<NotSupportedException>(async () =>
-            await TorrentCreator.CreateFromStreamAsync("stream.bin", ms, 100, opts));
+        var (_, fromBytes) = TorrentCreator.CreateFromBytes("same.bin", data, opts);
+        using var ms = new MemoryStream(data);
+        var (_, fromStream) = await TorrentCreator.CreateFromStreamAsync("same.bin", ms, data.Length, opts);
+
+        // The v2 Merkle-derived fields must match exactly. CreationDate/torrentBytes differ
+        // because of the embedded timestamp, so we compare the content-deterministic fields.
+        Assert.That(fromStream.V2InfoHash, Is.EqualTo(fromBytes.V2InfoHash));
+        Assert.That(fromStream.FileRoots[0], Is.EqualTo(fromBytes.FileRoots[0]));
+        Assert.That(fromStream.PieceLayers.Count, Is.EqualTo(fromBytes.PieceLayers.Count));
+        Assert.That(fromStream.PieceHashes[0], Is.EqualTo(fromBytes.PieceHashes[0]));
+        Assert.That(fromStream.TotalLength, Is.EqualTo(data.Length));
+    }
+
+    [Test]
+    public async Task CreateFromStream_V2_MultiPieceFile_MatchesCreateFromBytes()
+    {
+        // Awkward multi-piece size: 3.5 pieces' worth of data.
+        int pieceLen = 32768;
+        var data = new byte[pieceLen * 3 + pieceLen / 2];
+        Random.Shared.NextBytes(data);
+        var opts = new TorrentCreatorOptions { MetaVersion = 2, PieceLength = pieceLen };
+
+        var (_, fromBytes) = TorrentCreator.CreateFromBytes("multi.bin", data, opts);
+        using var ms = new MemoryStream(data);
+        var (_, fromStream) = await TorrentCreator.CreateFromStreamAsync("multi.bin", ms, data.Length, opts);
+
+        Assert.That(fromStream.V2InfoHash, Is.EqualTo(fromBytes.V2InfoHash));
+        Assert.That(fromStream.FileRoots[0], Is.EqualTo(fromBytes.FileRoots[0]));
+        Assert.That(fromStream.PieceCount, Is.EqualTo(fromBytes.PieceCount));
+        Assert.That(fromStream.PieceLayers.Count, Is.EqualTo(1));
+        Assert.That(fromStream.PieceLayers[fromStream.FileRoots[0]],
+            Is.EqualTo(fromBytes.PieceLayers[fromBytes.FileRoots[0]]));
+    }
+
+    [Test]
+    public async Task CreateFromStream_V2_RoundTripThroughParser()
+    {
+        // End-to-end: streaming create -> parse the bytes back -> all v2 fields survive.
+        int pieceLen = 65536;
+        var data = new byte[pieceLen * 2 + 1234];
+        Random.Shared.NextBytes(data);
+        var opts = new TorrentCreatorOptions { MetaVersion = 2, PieceLength = pieceLen };
+
+        using var ms = new MemoryStream(data);
+        var (bytes, created) = await TorrentCreator.CreateFromStreamAsync("rt.bin", ms, data.Length, opts);
+        var parsed = TorrentParser.Parse(bytes);
+
+        Assert.That(parsed.MetaVersion, Is.EqualTo(2));
+        Assert.That(parsed.V2InfoHash, Is.EqualTo(created.V2InfoHash));
+        Assert.That(parsed.FileRoots[0], Is.EqualTo(created.FileRoots[0]));
+        Assert.That(parsed.PieceLayers[parsed.FileRoots[0]], Is.EqualTo(created.PieceLayers[created.FileRoots[0]]));
+        Assert.That(parsed.TotalLength, Is.EqualTo(data.Length));
+    }
+
+    [Test]
+    public async Task CreateFromStream_V2_SlowStream_StillWorks()
+    {
+        // A stream that hands back small chunks exercises the IncrementalMerkleHasher's
+        // partial-leaf accumulation paths through the TorrentCreator loop.
+        int pieceLen = 32768;
+        var data = new byte[100000];
+        Random.Shared.NextBytes(data);
+        var opts = new TorrentCreatorOptions { MetaVersion = 2, PieceLength = pieceLen };
+
+        var (_, fromBytes) = TorrentCreator.CreateFromBytes("slow.bin", data, opts);
+        using var slow = new SmallChunkStream(data, chunkSize: 777);
+        var (_, fromStream) = await TorrentCreator.CreateFromStreamAsync("slow.bin", slow, data.Length, opts);
+
+        Assert.That(fromStream.V2InfoHash, Is.EqualTo(fromBytes.V2InfoHash));
+        Assert.That(fromStream.FileRoots[0], Is.EqualTo(fromBytes.FileRoots[0]));
+    }
+
+    /// <summary>
+    /// Stream that returns at most <c>chunkSize</c> bytes per read, regardless of how much
+    /// the caller asked for. Simulates network / slow-reader stream behavior. Purely a test
+    /// helper; real stream classes rarely do this but framework contracts permit it.
+    /// </summary>
+    private sealed class SmallChunkStream : Stream
+    {
+        private readonly byte[] _data;
+        private readonly int _chunkSize;
+        private int _pos;
+        public SmallChunkStream(byte[] data, int chunkSize) { _data = data; _chunkSize = chunkSize; }
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => _data.Length;
+        public override long Position { get => _pos; set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            int take = Math.Min(Math.Min(_chunkSize, count), _data.Length - _pos);
+            if (take <= 0) return 0;
+            Array.Copy(_data, _pos, buffer, offset, take);
+            _pos += take;
+            return take;
+        }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     [Test]

@@ -19,12 +19,15 @@ public static class TorrentCreator
         CancellationToken ct = default)
     {
         options ??= new TorrentCreatorOptions();
-        if (options.MetaVersion == 2)
-            throw new NotSupportedException("BEP 52 v2 torrent creation from a stream is not yet implemented. Buffer the stream and use CreateFromBytes with MetaVersion=2, or wait for the Phase 2a streaming follow-up.");
 
         int pieceLength = options.PieceLength > 0
             ? options.PieceLength
             : CalculatePieceLength(length);
+
+        if (options.MetaVersion == 2)
+        {
+            return await CreateV2FromStreamAsync(name, stream, length, pieceLength, options, ct);
+        }
 
         var pieceHashes = new List<byte[]>();
         var buffer = new byte[pieceLength];
@@ -339,36 +342,75 @@ public static class TorrentCreator
     }
 
     /// <summary>
-    /// Build a BEP 52 v2 single-file torrent from in-memory bytes. The v2 info dict contains
-    /// <c>file tree</c>, <c>meta version = 2</c>, <c>name</c>, and <c>piece length</c>. The
-    /// file root (the "pieces root" for the single file) is computed via
-    /// <see cref="MerkleHasher.ComputeFileRoot"/>. The <c>piece layers</c> dict sits at the
-    /// top level of the torrent (outside the info dict) and is only populated when the file
-    /// is strictly larger than the piece length.
+    /// Build a BEP 52 v2 single-file torrent from in-memory bytes. Computes the Merkle tree
+    /// via <see cref="MerkleHasher"/> and delegates assembly to <see cref="AssembleV2Torrent"/>.
     /// </summary>
     private static (byte[] torrentBytes, TorrentMetadata metadata) BuildV2Torrent(
         string name, byte[] data, int pieceLength, TorrentCreatorOptions options)
+    {
+        ValidateV2PieceSize(pieceLength);
+
+        var fileRoot = MerkleHasher.ComputeFileRoot(data, pieceLength);
+        byte[][] pieceLayerHashes = data.Length > pieceLength
+            ? MerkleHasher.ComputePieceLayer(data, pieceLength)
+            : Array.Empty<byte[]>();
+
+        return AssembleV2Torrent(name, data.Length, pieceLength, fileRoot, pieceLayerHashes, options);
+    }
+
+    private static void ValidateV2PieceSize(int pieceLength)
     {
         // BEP 52 piece length validation: must be a power-of-two multiple of 16 KiB.
         if (pieceLength < MerkleHasher.LeafSize || pieceLength % MerkleHasher.LeafSize != 0)
             throw new ArgumentException(
                 $"BEP 52 v2 requires piece length to be a multiple of {MerkleHasher.LeafSize} (16 KiB). Got {pieceLength}.",
-                nameof(options));
+                nameof(pieceLength));
         int leavesPerPiece = pieceLength / MerkleHasher.LeafSize;
         if ((leavesPerPiece & (leavesPerPiece - 1)) != 0)
             throw new ArgumentException(
                 $"BEP 52 v2 requires piece length / leaf size ({pieceLength}/{MerkleHasher.LeafSize}) to be a power of two.",
-                nameof(options));
+                nameof(pieceLength));
+    }
 
-        // Compute Merkle tree for the single file.
-        var fileRoot = MerkleHasher.ComputeFileRoot(data, pieceLength);
+    /// <summary>
+    /// Streaming v2 torrent creation. Feeds the input stream through an incremental Merkle
+    /// hasher so large files (model weights, datasets) can be hashed without full buffering.
+    /// Memory footprint is bounded at roughly <c>pieceLength / 16 KiB</c> leaf hashes per
+    /// in-progress piece plus 32 bytes per completed piece root.
+    /// </summary>
+    private static async Task<(byte[] torrentBytes, TorrentMetadata metadata)> CreateV2FromStreamAsync(
+        string name, Stream stream, long length, int pieceLength, TorrentCreatorOptions options, CancellationToken ct)
+    {
+        ValidateV2PieceSize(pieceLength);
 
-        // piece layers is only included for files strictly larger than the piece length.
-        // Smaller-or-equal files carry all their hashing information in the single pieces root.
-        byte[][] pieceLayerHashes = data.Length > pieceLength
-            ? MerkleHasher.ComputePieceLayer(data, pieceLength)
-            : Array.Empty<byte[]>();
+        var hasher = MerkleHasher.CreateIncremental(pieceLength);
+        // Read in comfortable-sized chunks. The hasher absorbs any size, so we use the piece
+        // length as a natural unit - it lines up with the encoder's internal accumulation.
+        int bufferSize = Math.Max(pieceLength, 64 * 1024);
+        var buffer = new byte[bufferSize];
+        int bytesRead;
+        while ((bytesRead = await stream.ReadAsync(buffer.AsMemory(0, bufferSize), ct)) > 0)
+        {
+            hasher.Update(buffer.AsSpan(0, bytesRead));
+        }
+        var (fileRoot, pieceLayerHashes) = hasher.Finish();
 
+        // Trust the hasher's byte count over the declared length; the stream may have been
+        // shorter than advertised. The spec-shaped fields reflect what was actually hashed.
+        long actualLength = hasher.TotalBytesHashed;
+
+        return AssembleV2Torrent(name, actualLength, pieceLength, fileRoot, pieceLayerHashes, options);
+    }
+
+    /// <summary>
+    /// Pure assembly of a BEP 52 v2 single-file torrent from pre-computed Merkle results.
+    /// Shared between the in-memory (<see cref="BuildV2Torrent"/>) and streaming
+    /// (<see cref="CreateV2FromStreamAsync"/>) paths so both produce bit-identical output
+    /// for the same input bytes.
+    /// </summary>
+    private static (byte[] torrentBytes, TorrentMetadata metadata) AssembleV2Torrent(
+        string name, long length, int pieceLength, byte[] fileRoot, byte[][] pieceLayerHashes, TorrentCreatorOptions options)
+    {
         // Build the v2 info dict via the typed bencode encoder so nested dicts + alphabetical
         // key ordering are handled automatically. File tree uses UTF-8 filename keys which are
         // safe as strings; binary-keyed dicts (piece layers) are bencoded manually below.
@@ -379,7 +421,7 @@ public static class TorrentCreator
             {
                 [""] = new Dictionary<string, object>
                 {
-                    ["length"] = (long)data.Length,
+                    ["length"] = length,
                     ["pieces root"] = fileRoot,
                 }
             }
@@ -494,13 +536,13 @@ public static class TorrentCreator
             MetaVersion = 2,
             InfoDictBytes = infoBytes,
             Name = name,
-            TotalLength = data.Length,
+            TotalLength = length,
             PieceLength = pieceLength,
             PieceCount = pieceHashes.Length,
             PieceHashes = pieceHashes,
             FileRoots = new[] { fileRoot },
             PieceLayers = pieceLayersMap,
-            Files = new[] { new TorrentFileInfo { Path = name, Name = name, Length = data.Length, Offset = 0 } },
+            Files = new[] { new TorrentFileInfo { Path = name, Name = name, Length = length, Offset = 0 } },
             AnnounceUrls = options.Trackers,
             UrlList = options.WebSeeds,
             CreatedBy = options.CreatedBy,

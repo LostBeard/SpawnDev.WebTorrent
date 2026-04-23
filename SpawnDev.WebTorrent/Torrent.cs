@@ -1310,4 +1310,69 @@ public class TorrentMetadata
         : PieceHashes[0].Length == 32 ? "SHA-256"
         : PieceHashes[0].Length == 20 ? "SHA-1"
         : null;
+
+    /// <summary>
+    /// BEP 52 torrent meta version. <c>0</c> means this torrent does not carry a
+    /// <c>meta version</c> key (classic v1); <c>2</c> means the info dict is BEP 52
+    /// v2-shaped (has <c>file tree</c>, <c>piece layers</c>, SHA-256 info hash). A
+    /// hybrid v1+v2 torrent reports <c>2</c> and also populates <see cref="InfoHash"/>
+    /// with the v1 SHA-1 infohash while <see cref="V2InfoHash"/> carries the v2 SHA-256.
+    /// </summary>
+    public int MetaVersion { get; set; }
+
+    /// <summary>
+    /// BEP 52 v2 info hash: lowercase hex of SHA-256 of the info dictionary bytes.
+    /// Empty for v1-only torrents. For v2-only torrents, <see cref="InfoHash"/> will
+    /// be empty string and this field carries the canonical identity. For hybrid
+    /// torrents both are populated.
+    /// </summary>
+    public string V2InfoHash { get; set; } = "";
+
+    /// <summary>
+    /// BEP 52 per-file Merkle roots at the piece layer. One 32-byte root per file in
+    /// the same order as <see cref="Files"/>. Empty for v1-only torrents.
+    /// </summary>
+    public byte[][] FileRoots { get; set; } = Array.Empty<byte[]>();
+
+    /// <summary>
+    /// BEP 52 <c>piece layers</c> dict. Keys are per-file root hashes (32 bytes) for
+    /// files whose length exceeds <see cref="PieceLength"/>; values are the concatenated
+    /// piece-layer hashes for that file (one 32-byte entry per piece). Files smaller
+    /// than or equal to the piece size do not appear here - their root equals their
+    /// single piece-layer hash. Empty for v1-only torrents.
+    /// </summary>
+    public Dictionary<byte[], byte[]> PieceLayers { get; set; } = new Dictionary<byte[], byte[]>(ByteArrayEqualityComparer.Instance);
+}
+
+/// <summary>
+/// Byte-array equality + hash comparer for use as dictionary keys where the keys are
+/// raw binary data (e.g. SHA-256 piece-layer roots per BEP 52). Provides
+/// content-based equality; the default reference equality on byte[] is useless here.
+/// </summary>
+public sealed class ByteArrayEqualityComparer : IEqualityComparer<byte[]>
+{
+    public static readonly ByteArrayEqualityComparer Instance = new();
+
+    public bool Equals(byte[]? x, byte[]? y)
+    {
+        if (ReferenceEquals(x, y)) return true;
+        if (x is null || y is null) return false;
+        return x.AsSpan().SequenceEqual(y);
+    }
+
+    public int GetHashCode(byte[] obj)
+    {
+        if (obj is null) return 0;
+        // FNV-1a 32-bit hash over all bytes - stable across process runs (unlike
+        // HashCode.Combine on a long array which hashes structure, not content).
+        unchecked
+        {
+            uint hash = 2166136261u;
+            foreach (var b in obj)
+            {
+                hash = (hash ^ b) * 16777619u;
+            }
+            return (int)hash;
+        }
+    }
 }

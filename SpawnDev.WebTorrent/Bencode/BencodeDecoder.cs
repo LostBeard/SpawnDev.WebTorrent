@@ -8,6 +8,31 @@ namespace SpawnDev.WebTorrent.Bencode;
 /// </summary>
 public static class BencodeDecoder
 {
+    /// <summary>
+    /// Decode a bencode dictionary preserving raw binary keys. Required for
+    /// BEP 52 <c>piece layers</c> where keys are 32-byte SHA-256 roots that
+    /// are not valid UTF-8. Returns entries in source order; callers that need
+    /// map-style lookup can wrap the list in a byte-array-keyed dictionary.
+    /// </summary>
+    public static (List<KeyValuePair<byte[], object>> value, int consumed) DecodeDictionaryRawKeys(byte[] data, int offset)
+    {
+        if (data[offset] != 'd') throw new InvalidOperationException($"Expected 'd' at {offset}");
+        var entries = new List<KeyValuePair<byte[], object>>();
+        int pos = offset + 1;
+
+        while (pos < data.Length && data[pos] != 'e')
+        {
+            var (keyBytes, keyConsumed) = DecodeRawString(data, pos);
+            pos += keyConsumed;
+            var (value, valConsumed) = Decode(data, pos);
+            pos += valConsumed;
+            entries.Add(new KeyValuePair<byte[], object>(keyBytes, value));
+        }
+
+        if (pos >= data.Length) throw new InvalidOperationException("Unterminated dictionary");
+        return (entries, pos + 1 - offset);
+    }
+
     /// <summary>Decode a bencoded value from raw bytes.</summary>
     public static (object value, int consumed) Decode(byte[] data, int offset = 0)
     {

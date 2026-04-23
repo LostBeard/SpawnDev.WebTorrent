@@ -12,7 +12,7 @@ public static class TorrentParser
 {
     public static TorrentMetadata Parse(byte[] torrentBytes)
     {
-        var (dict, rawKeys, _) = BencodeDecoder.DecodeDictionaryWithRawKeys(torrentBytes, 0, "info");
+        var (dict, rawKeys, _) = BencodeDecoder.DecodeDictionaryWithRawKeys(torrentBytes, 0, "info", "piece layers");
         var metadata = new TorrentMetadata();
 
         // Announce
@@ -54,12 +54,30 @@ public static class TorrentParser
         if (!dict.TryGetValue("info", out var infoObj) || infoObj is not Dictionary<string, object> info)
             throw new InvalidOperationException("Missing or invalid 'info' dictionary");
 
-        // Compute info hash from raw bytes
+        // BEP 52 v2 detection: info dict has a "meta version" key with value 2.
+        // Hybrid torrents also carry this (alongside the v1 "pieces" key); v2-only torrents
+        // do not. Detecting here lets later parsing decide which shape to read.
+        bool isV2 = info.TryGetValue("meta version", out var metaVer) && metaVer is long mv && mv == 2;
+        if (isV2) metadata.MetaVersion = 2;
+
+        // Compute info hash(es) from raw bytes. v1 = SHA-1, v2 = SHA-256. Hybrid torrents get
+        // both populated; v2-only torrents leave InfoHash empty.
         if (rawKeys.TryGetValue("info", out var infoRaw))
         {
             var infoBytes = new byte[infoRaw.length];
             Array.Copy(torrentBytes, infoRaw.offset, infoBytes, 0, infoRaw.length);
-            metadata.InfoHash = Convert.ToHexString(SHA1.HashData(infoBytes)).ToLowerInvariant();
+            metadata.InfoDictBytes = infoBytes;
+            if (isV2)
+            {
+                metadata.V2InfoHash = Convert.ToHexString(SHA256.HashData(infoBytes)).ToLowerInvariant();
+            }
+            // v1 info hash is meaningful whenever the info dict carries a "pieces" key (v1 or
+            // hybrid torrents). Pure v2 torrents skip it - an SHA-1 of a v2 info dict is not
+            // the v1 infohash of anything and would be misleading to surface.
+            if (info.ContainsKey("pieces"))
+            {
+                metadata.InfoHash = Convert.ToHexString(SHA1.HashData(infoBytes)).ToLowerInvariant();
+            }
         }
 
         // Name
@@ -139,8 +157,111 @@ public static class TorrentParser
             metadata.Files = parsedFiles.ToArray();
         }
 
+        // BEP 52 v2 extensions: parse file tree, per-file Merkle roots, and piece layers.
+        // Runs last so v2 data overrides any v1 Files[] populated above (hybrid torrents must
+        // agree on file list between v1 and v2 anyway - v2 is the canonical source).
+        if (isV2 && info.TryGetValue("file tree", out var fileTreeObj)
+            && fileTreeObj is Dictionary<string, object> fileTree)
+        {
+            var v2Files = new List<TorrentFileInfo>();
+            var v2Roots = new List<byte[]>();
+            long cumulativeOffset = 0;
+            ParseV2FileTree(fileTree, currentPath: "", v2Files, v2Roots, ref cumulativeOffset);
+
+            if (v2Files.Count > 0)
+            {
+                metadata.Files = v2Files.ToArray();
+                metadata.FileRoots = v2Roots.ToArray();
+                metadata.TotalLength = cumulativeOffset;
+            }
+        }
+
+        // piece layers lives at the TOP level of the torrent dict (not in info). Re-decode it
+        // with raw-byte keys because the keys are 32-byte SHA-256 roots that generally are
+        // not valid UTF-8 and would be corrupted by the string-keyed decoder.
+        if (isV2 && rawKeys.TryGetValue("piece layers", out var pieceLayersRaw))
+        {
+            var (entries, _) = BencodeDecoder.DecodeDictionaryRawKeys(torrentBytes, pieceLayersRaw.offset);
+            foreach (var kvp in entries)
+            {
+                if (kvp.Value is byte[] concat)
+                    metadata.PieceLayers[kvp.Key] = concat;
+            }
+        }
+
+        // Populate PieceHashes uniformly so PieceHashAlgorithm and downstream code see the same
+        // shape as v1. Phase 2a supports single-file v2 only; multi-file Phase 2b will extend this.
+        if (isV2 && metadata.FileRoots.Length > 0)
+        {
+            var root = metadata.FileRoots[0];
+            if (metadata.PieceLayers.TryGetValue(root, out var concat))
+            {
+                int count = concat.Length / 32;
+                var hashes = new byte[count][];
+                for (int i = 0; i < count; i++)
+                {
+                    hashes[i] = new byte[32];
+                    Buffer.BlockCopy(concat, i * 32, hashes[i], 0, 32);
+                }
+                metadata.PieceHashes = hashes;
+                metadata.PieceCount = count;
+            }
+            else
+            {
+                // Single-piece file - the pieces root IS the single piece hash.
+                metadata.PieceHashes = new[] { root };
+                metadata.PieceCount = 1;
+            }
+        }
+
         metadata.OriginalTorrentBytes = torrentBytes;
         return metadata;
+    }
+
+    /// <summary>
+    /// Recursively walks a BEP 52 file tree dict and appends discovered files to the given lists.
+    /// File nodes are identified by the presence of an empty-string ("") key whose value is a
+    /// dict with "length" and "pieces root"; directory nodes contain keyed child entries.
+    /// </summary>
+    private static void ParseV2FileTree(
+        Dictionary<string, object> tree,
+        string currentPath,
+        List<TorrentFileInfo> files,
+        List<byte[]> roots,
+        ref long offset)
+    {
+        // BEP 52 requires dict keys be sorted as raw byte strings. Ordinal sort over the
+        // UTF-8-decoded strings is the right approximation for all filenames we will see.
+        foreach (var entry in tree.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+        {
+            if (entry.Value is not Dictionary<string, object> node) continue;
+
+            if (node.TryGetValue("", out var leafObj) && leafObj is Dictionary<string, object> fileInfo)
+            {
+                // File leaf.
+                long length = 0;
+                byte[] root = Array.Empty<byte>();
+                if (fileInfo.TryGetValue("length", out var lenObj) && lenObj is long len) length = len;
+                if (fileInfo.TryGetValue("pieces root", out var rootObj) && rootObj is byte[] rootBytes) root = rootBytes;
+
+                var filePath = string.IsNullOrEmpty(currentPath) ? entry.Key : $"{currentPath}/{entry.Key}";
+                files.Add(new TorrentFileInfo
+                {
+                    Path = filePath,
+                    Name = System.IO.Path.GetFileName(filePath),
+                    Length = length,
+                    Offset = offset,
+                });
+                roots.Add(root);
+                offset += length;
+            }
+            else
+            {
+                // Directory node - recurse.
+                var subPath = string.IsNullOrEmpty(currentPath) ? entry.Key : $"{currentPath}/{entry.Key}";
+                ParseV2FileTree(node, subPath, files, roots, ref offset);
+            }
+        }
     }
 
     /// <summary>Parse raw info dict bytes (from ut_metadata) with hash verification.</summary>

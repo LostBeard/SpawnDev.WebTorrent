@@ -19,6 +19,9 @@ public static class TorrentCreator
         CancellationToken ct = default)
     {
         options ??= new TorrentCreatorOptions();
+        if (options.MetaVersion == 2)
+            throw new NotSupportedException("BEP 52 v2 torrent creation from a stream is not yet implemented. Buffer the stream and use CreateFromBytes with MetaVersion=2, or wait for the Phase 2a streaming follow-up.");
+
         int pieceLength = options.PieceLength > 0
             ? options.PieceLength
             : CalculatePieceLength(length);
@@ -104,7 +107,9 @@ public static class TorrentCreator
     }
 
     /// <summary>
-    /// Create a .torrent file from in-memory bytes.
+    /// Create a .torrent file from in-memory bytes. Respects <see cref="TorrentCreatorOptions.MetaVersion"/>:
+    /// the default v1 path uses flat piece hashes; <c>MetaVersion = 2</c> builds a BEP 52
+    /// v2 single-file torrent with Merkle-tree piece verification.
     /// </summary>
     public static (byte[] torrentBytes, TorrentMetadata metadata) CreateFromBytes(
         string name, byte[] data, TorrentCreatorOptions? options = null)
@@ -113,6 +118,11 @@ public static class TorrentCreator
         int pieceLength = options.PieceLength > 0
             ? options.PieceLength
             : CalculatePieceLength(data.Length);
+
+        if (options.MetaVersion == 2)
+        {
+            return BuildV2Torrent(name, data, pieceLength, options);
+        }
 
         var pieceHashes = new List<byte[]>();
         bool useSha256 = options.HashAlgorithm == "SHA-256";
@@ -137,6 +147,8 @@ public static class TorrentCreator
         string torrentName, (string path, byte[] data)[] files, TorrentCreatorOptions? options = null)
     {
         options ??= new TorrentCreatorOptions();
+        if (options.MetaVersion == 2)
+            throw new NotSupportedException("BEP 52 v2 multi-file torrent creation requires per-file piece alignment (Phase 2b). Only single-file v2 torrents via CreateFromBytes are supported in Phase 2a.");
 
         long totalLength = files.Sum(f => (long)f.data.Length);
         int pieceLength = options.PieceLength > 0
@@ -326,6 +338,181 @@ public static class TorrentCreator
         parts.AddRange(BencodeEncoder.EncodeBytes(value));
     }
 
+    /// <summary>
+    /// Build a BEP 52 v2 single-file torrent from in-memory bytes. The v2 info dict contains
+    /// <c>file tree</c>, <c>meta version = 2</c>, <c>name</c>, and <c>piece length</c>. The
+    /// file root (the "pieces root" for the single file) is computed via
+    /// <see cref="MerkleHasher.ComputeFileRoot"/>. The <c>piece layers</c> dict sits at the
+    /// top level of the torrent (outside the info dict) and is only populated when the file
+    /// is strictly larger than the piece length.
+    /// </summary>
+    private static (byte[] torrentBytes, TorrentMetadata metadata) BuildV2Torrent(
+        string name, byte[] data, int pieceLength, TorrentCreatorOptions options)
+    {
+        // BEP 52 piece length validation: must be a power-of-two multiple of 16 KiB.
+        if (pieceLength < MerkleHasher.LeafSize || pieceLength % MerkleHasher.LeafSize != 0)
+            throw new ArgumentException(
+                $"BEP 52 v2 requires piece length to be a multiple of {MerkleHasher.LeafSize} (16 KiB). Got {pieceLength}.",
+                nameof(options));
+        int leavesPerPiece = pieceLength / MerkleHasher.LeafSize;
+        if ((leavesPerPiece & (leavesPerPiece - 1)) != 0)
+            throw new ArgumentException(
+                $"BEP 52 v2 requires piece length / leaf size ({pieceLength}/{MerkleHasher.LeafSize}) to be a power of two.",
+                nameof(options));
+
+        // Compute Merkle tree for the single file.
+        var fileRoot = MerkleHasher.ComputeFileRoot(data, pieceLength);
+
+        // piece layers is only included for files strictly larger than the piece length.
+        // Smaller-or-equal files carry all their hashing information in the single pieces root.
+        byte[][] pieceLayerHashes = data.Length > pieceLength
+            ? MerkleHasher.ComputePieceLayer(data, pieceLength)
+            : Array.Empty<byte[]>();
+
+        // Build the v2 info dict via the typed bencode encoder so nested dicts + alphabetical
+        // key ordering are handled automatically. File tree uses UTF-8 filename keys which are
+        // safe as strings; binary-keyed dicts (piece layers) are bencoded manually below.
+        var fileTree = new Dictionary<string, object>
+        {
+            // BEP 52: file tree entry for a file uses an empty-string key to mark the leaf.
+            [name] = new Dictionary<string, object>
+            {
+                [""] = new Dictionary<string, object>
+                {
+                    ["length"] = (long)data.Length,
+                    ["pieces root"] = fileRoot,
+                }
+            }
+        };
+
+        var infoDict = new Dictionary<string, object>
+        {
+            ["file tree"] = fileTree,
+            ["meta version"] = 2L,
+            ["name"] = Encoding.UTF8.GetBytes(name),
+            ["piece length"] = (long)pieceLength,
+        };
+
+        if (options.IsPrivate)
+        {
+            infoDict["private"] = 1L;
+        }
+
+        var infoBytes = BencodeEncoder.Encode(infoDict);
+        var v2InfoHashBytes = SHA256.HashData(infoBytes);
+        var v2InfoHashHex = Convert.ToHexString(v2InfoHashBytes).ToLowerInvariant();
+
+        // Top-level torrent dict. Keys sorted alphabetically. We build this manually because the
+        // "piece layers" dict has binary (SHA-256) keys that bencode as byte-string keys - the
+        // typed encoder's string-keyed API can't express them safely.
+        var topParts = new List<byte>();
+        topParts.AddRange(Encoding.ASCII.GetBytes("d"));
+
+        // announce
+        if (options.Trackers.Length > 0)
+            AppendBencodeKV(topParts, "announce", options.Trackers[0]);
+
+        // announce-list
+        if (options.Trackers.Length > 1)
+        {
+            topParts.AddRange(BencodeEncoder.EncodeBytes(Encoding.UTF8.GetBytes("announce-list")));
+            topParts.AddRange(Encoding.ASCII.GetBytes("l"));
+            foreach (var tracker in options.Trackers)
+            {
+                topParts.AddRange(Encoding.ASCII.GetBytes("l"));
+                topParts.AddRange(BencodeEncoder.EncodeBytes(Encoding.UTF8.GetBytes(tracker)));
+                topParts.AddRange(Encoding.ASCII.GetBytes("e"));
+            }
+            topParts.AddRange(Encoding.ASCII.GetBytes("e"));
+        }
+
+        if (!string.IsNullOrEmpty(options.Comment))
+            AppendBencodeKV(topParts, "comment", options.Comment);
+
+        AppendBencodeKV(topParts, "created by", options.CreatedBy);
+        AppendBencodeKV(topParts, "creation date", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
+        // info (raw pre-computed bytes)
+        topParts.AddRange(BencodeEncoder.EncodeBytes(Encoding.UTF8.GetBytes("info")));
+        topParts.AddRange(infoBytes);
+
+        // piece layers - only if multi-piece. Binary keys (SHA-256 roots).
+        // Keys order: BEP 52 inherits bencode's sort-by-raw-byte-string rule. With a single
+        // file we only have one key and order is trivial; multi-file hybrid (Phase 2b) will
+        // need to sort the key bytes explicitly before emitting.
+        if (pieceLayerHashes.Length > 0)
+        {
+            topParts.AddRange(BencodeEncoder.EncodeBytes(Encoding.UTF8.GetBytes("piece layers")));
+            topParts.AddRange(Encoding.ASCII.GetBytes("d"));
+
+            // Key: the file root (32 bytes).
+            topParts.AddRange(BencodeEncoder.EncodeBytes(fileRoot));
+
+            // Value: concat of all piece-layer hashes.
+            var concatenated = new byte[pieceLayerHashes.Length * MerkleHasher.HashSize];
+            for (int i = 0; i < pieceLayerHashes.Length; i++)
+                Buffer.BlockCopy(pieceLayerHashes[i], 0, concatenated, i * MerkleHasher.HashSize, MerkleHasher.HashSize);
+            topParts.AddRange(BencodeEncoder.EncodeBytes(concatenated));
+
+            topParts.AddRange(Encoding.ASCII.GetBytes("e"));
+        }
+
+        // url-list (web seeds)
+        if (options.WebSeeds.Length > 0)
+        {
+            topParts.AddRange(BencodeEncoder.EncodeBytes(Encoding.UTF8.GetBytes("url-list")));
+            topParts.AddRange(Encoding.ASCII.GetBytes("l"));
+            foreach (var ws in options.WebSeeds)
+                topParts.AddRange(BencodeEncoder.EncodeBytes(Encoding.UTF8.GetBytes(ws)));
+            topParts.AddRange(Encoding.ASCII.GetBytes("e"));
+        }
+
+        topParts.AddRange(Encoding.ASCII.GetBytes("e"));
+        var torrentBytes = topParts.ToArray();
+
+        // Concatenate piece-layer hashes for TorrentMetadata.PieceHashes (same storage shape
+        // as v1, so downstream code that already branches on PieceHashAlgorithm sees consistent
+        // data). For single-piece files the single piece's root IS the fileRoot.
+        var pieceHashes = pieceLayerHashes.Length > 0
+            ? pieceLayerHashes
+            : new[] { fileRoot };
+
+        var pieceLayersMap = new Dictionary<byte[], byte[]>(ByteArrayEqualityComparer.Instance);
+        if (pieceLayerHashes.Length > 0)
+        {
+            var concatenated = new byte[pieceLayerHashes.Length * MerkleHasher.HashSize];
+            for (int i = 0; i < pieceLayerHashes.Length; i++)
+                Buffer.BlockCopy(pieceLayerHashes[i], 0, concatenated, i * MerkleHasher.HashSize, MerkleHasher.HashSize);
+            pieceLayersMap[fileRoot] = concatenated;
+        }
+
+        var metadata = new TorrentMetadata
+        {
+            // v2-only torrents have no v1 info hash; leave InfoHash empty.
+            InfoHash = "",
+            V2InfoHash = v2InfoHashHex,
+            MetaVersion = 2,
+            InfoDictBytes = infoBytes,
+            Name = name,
+            TotalLength = data.Length,
+            PieceLength = pieceLength,
+            PieceCount = pieceHashes.Length,
+            PieceHashes = pieceHashes,
+            FileRoots = new[] { fileRoot },
+            PieceLayers = pieceLayersMap,
+            Files = new[] { new TorrentFileInfo { Path = name, Name = name, Length = data.Length, Offset = 0 } },
+            AnnounceUrls = options.Trackers,
+            UrlList = options.WebSeeds,
+            CreatedBy = options.CreatedBy,
+            CreationDate = DateTimeOffset.UtcNow,
+            Comment = options.Comment,
+            IsPrivate = options.IsPrivate,
+            OriginalTorrentBytes = torrentBytes,
+        };
+
+        return (torrentBytes, metadata);
+    }
+
     private static int CalculatePieceLength(long fileSize)
     {
         if (fileSize < 16 * 1024 * 1024) return 16 * 1024;
@@ -362,4 +549,17 @@ public class TorrentCreatorOptions
 
     /// <summary>Hash algorithm for piece verification. "SHA-256" (default) or "SHA-1".</summary>
     public string HashAlgorithm { get; set; } = "SHA-256";
+
+    /// <summary>
+    /// BEP 52 meta version. <c>0</c> or <c>1</c> (default) produces a classic v1 torrent
+    /// with a flat piece hash list (SHA-1 or SHA-256 per <see cref="HashAlgorithm"/>).
+    /// <c>2</c> produces a BEP 52 v2-only torrent with a Merkle-tree structure, a
+    /// <c>file tree</c> info dict, per-file <c>pieces root</c> values, a top-level
+    /// <c>piece layers</c> dict for multi-piece files, and a SHA-256 info hash. v2
+    /// always uses SHA-256 regardless of the <see cref="HashAlgorithm"/> field. Only
+    /// <see cref="TorrentCreator.CreateFromBytes"/> supports v2 today; streaming and
+    /// multi-file entry points throw <see cref="NotSupportedException"/> until the
+    /// Phase 2a streaming follow-up and Phase 2b per-file alignment land.
+    /// </summary>
+    public int MetaVersion { get; set; } = 1;
 }

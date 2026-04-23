@@ -16,6 +16,14 @@ public partial class Torrent : IAsyncDisposable
     // ========================
 
     public string? InfoHash { get; set; }
+
+    /// <summary>
+    /// BEP 52 v2 info hash: lowercase hex of SHA-256 of the info dict bytes. Populated by
+    /// parsing a v2 or hybrid magnet URI (<c>xt=urn:btmh:</c>) or by <see cref="InitFromMetadata"/>
+    /// when the underlying torrent is v2. Empty string for v1-only torrents.
+    /// </summary>
+    public string V2InfoHash { get; set; } = "";
+
     public string? PeerIdHex { get; set; }
     public string? Name { get; set; }
     public int PieceLength { get; set; }
@@ -93,19 +101,38 @@ public partial class Torrent : IAsyncDisposable
     /// <summary>Announce URLs from metadata (alias for AnnounceUrls).</summary>
     public string[] Announce => AnnounceUrls;
 
-    /// <summary>Computed magnet URI with trackers and web seeds.</summary>
+    /// <summary>
+    /// Computed magnet URI with trackers and web seeds. Emits xt=urn:btih: for v1,
+    /// xt=urn:btmh:1220&lt;digest&gt; for v2, and both for hybrid torrents. Returns
+    /// empty string when no infohash of either kind is available.
+    /// </summary>
     public string ComputedMagnetUri
     {
         get
         {
-            if (string.IsNullOrEmpty(InfoHash)) return "";
-            var sb = new StringBuilder($"magnet:?xt=urn:btih:{InfoHash}");
+            bool hasV1 = !string.IsNullOrEmpty(InfoHash);
+            bool hasV2 = !string.IsNullOrEmpty(V2InfoHash);
+            if (!hasV1 && !hasV2) return "";
+
+            var sb = new StringBuilder("magnet:");
+            bool first = true;
+            void AppendParam(string key, string value)
+            {
+                sb.Append(first ? '?' : '&');
+                first = false;
+                sb.Append(key);
+                sb.Append('=');
+                sb.Append(value);
+            }
+
+            if (hasV1) AppendParam("xt", $"urn:btih:{InfoHash}");
+            if (hasV2) AppendParam("xt", $"urn:btmh:1220{V2InfoHash}");
             if (!string.IsNullOrEmpty(Name))
-                sb.Append($"&dn={Uri.EscapeDataString(Name)}");
+                AppendParam("dn", Uri.EscapeDataString(Name));
             foreach (var tr in AnnounceUrls)
-                sb.Append($"&tr={Uri.EscapeDataString(tr)}");
+                AppendParam("tr", Uri.EscapeDataString(tr));
             foreach (var ws in UrlList)
-                sb.Append($"&ws={Uri.EscapeDataString(ws)}");
+                AppendParam("ws", Uri.EscapeDataString(ws));
             return sb.ToString();
         }
     }
@@ -232,8 +259,13 @@ public partial class Torrent : IAsyncDisposable
         if (opts.NoPeersIntervalTime > 0) _noPeersIntervalTime = opts.NoPeersIntervalTime;
 
         ParseMagnet(magnetUri);
-        if (string.IsNullOrEmpty(InfoHash))
+        if (string.IsNullOrEmpty(InfoHash) && string.IsNullOrEmpty(V2InfoHash))
             throw new Exception("Malformed magnet: no info hash");
+        if (string.IsNullOrEmpty(InfoHash) && !string.IsNullOrEmpty(V2InfoHash))
+            throw new NotSupportedException(
+                "v2-only magnet URIs (urn:btmh:) require the BEP 52 wire extension (ut_hash_request) " +
+                "for metadata and piece verification, which is a Phase 2c item not yet implemented. " +
+                "Hybrid magnets (urn:btih + urn:btmh) work today via the v1 signaling path.");
 
         // Merge client's default trackers for maximum peer discovery
         if (_client?.DefaultTrackers?.Length > 0)
@@ -277,20 +309,47 @@ public partial class Torrent : IAsyncDisposable
     /// <summary>Fire the mutable update event (called by WebTorrentClient when DHT detects new version).</summary>
     public void NotifyMutableUpdate(string newInfoHash) => OnMutableUpdate?.Invoke(newInfoHash);
 
-    private void ParseMagnet(string magnetUri)
+    /// <summary>
+    /// Parse a magnet URI and populate the torrent's info-hash / v2-info-hash / trackers /
+    /// web-seeds / display-name fields. Exposed <c>internal</c> primarily for testing; normal
+    /// callers go through <see cref="InitFromMagnetAsync"/>.
+    /// </summary>
+    internal void ParseMagnet(string magnetUri)
     {
         var queryStart = magnetUri.IndexOf('?');
         if (queryStart < 0) return;
         var query = System.Web.HttpUtility.ParseQueryString(magnetUri[(queryStart)..]);
 
-        var xt = query["xt"];
-        if (xt != null && xt.StartsWith("urn:btih:"))
+        // A magnet URI can carry multiple xt values (BEP 52 hybrid magnets carry both
+        // urn:btih: v1 and urn:btmh: v2 identifiers). ParseQueryString returns them
+        // comma-separated; split and handle each.
+        var xtValues = query["xt"];
+        if (xtValues != null)
         {
-            var hashPart = xt["urn:btih:".Length..];
-            if (hashPart.Length == 40)
-                InfoHash = hashPart.ToLowerInvariant();
-            else if (hashPart.Length == 32)
-                InfoHash = Convert.ToHexString(Base32Decode(hashPart)).ToLowerInvariant();
+            foreach (var xt in xtValues.Split(','))
+            {
+                if (xt.StartsWith("urn:btih:"))
+                {
+                    var hashPart = xt["urn:btih:".Length..];
+                    if (hashPart.Length == 40)
+                        InfoHash = hashPart.ToLowerInvariant();
+                    else if (hashPart.Length == 32)
+                        InfoHash = Convert.ToHexString(Base32Decode(hashPart)).ToLowerInvariant();
+                }
+                else if (xt.StartsWith("urn:btmh:"))
+                {
+                    // BEP 52 v2 multihash: <code-varint><length-varint><digest>. For SHA-256
+                    // code = 0x12, length = 0x20 = 32 bytes, digest = 32 bytes. Encoded as hex
+                    // the prefix is "1220" and the total string is 68 hex chars (4 prefix + 64
+                    // digest). Other multihash codecs could appear in theory but v2 currently
+                    // mandates SHA-256 so we only accept that.
+                    var multihashHex = xt["urn:btmh:".Length..];
+                    if (multihashHex.Length == 68 && multihashHex.StartsWith("1220", StringComparison.OrdinalIgnoreCase))
+                    {
+                        V2InfoHash = multihashHex[4..].ToLowerInvariant();
+                    }
+                }
+            }
         }
 
         // BEP 46: xs=urn:btpk:{public_key_hex} — mutable torrent via DHT
@@ -381,6 +440,7 @@ public partial class Torrent : IAsyncDisposable
         if (HasMetadata) return;
 
         InfoHash = metadata.InfoHash;
+        V2InfoHash = metadata.V2InfoHash;
         OnInfoHash?.Invoke();
         Name = metadata.Name;
         PieceLength = metadata.PieceLength;

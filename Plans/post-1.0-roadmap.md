@@ -43,14 +43,15 @@ Rides the same WebRTC connections used for piece exchange — no new infrastruct
 
 ## Future Features (Post-4.0.0)
 
-### BEP 52 (BitTorrent v2)
-- **SHA-256 piece hashes** (stronger integrity for weight files) — **SHIPPED in 3.1.0-rc.3** (commit `de92f8d`, 2026-04-22). `TorrentCreator` defaults to SHA-256; verify hot path branches on hash length; `TorrentMetadata.PieceHashAlgorithm` surfaces the algorithm.
-- Per-file Merkle trees (verify individual file chunks without full piece) — Phase 2, pending
-- Hybrid v1+v2 info dict for backwards compatibility — Phase 2, pending
-- Parse v2 info dicts from external clients (qBittorrent, libtorrent) — Phase 2, pending
-- Multihash magnet URI (`urn:btmh:`) — Phase 3, pending
-- Better suited for random-access streaming pattern
-- See `Plans/bep52-sha256-support.md` for the full breakdown.
+### BEP 52 (BitTorrent v2) — SHIPPED
+- **SHA-256 piece hashes** — SHIPPED in 3.1.0-rc.3 (commit `de92f8d`, 2026-04-22). `TorrentCreator` defaults to SHA-256; verify hot path branches on hash length; `TorrentMetadata.PieceHashAlgorithm` surfaces the algorithm.
+- **Per-file Merkle trees** (verify individual file chunks without full piece) — SHIPPED in 3.1.2 stable (2026-04-22). `MerkleHasher`, `IncrementalMerkleHasher`, `MerkleProofVerifier`, `MerkleProofBuilder`. Piece-layer lookup via file root.
+- **Hybrid v1+v2 info dict** for backwards compatibility — SHIPPED in 3.1.2 (`TorrentCreatorOptions.Hybrid = true`). Both SHA-1 + SHA-256 infohashes; pad files inserted for per-file piece alignment in multi-file hybrid.
+- **Parse v2 info dicts from external clients** — SHIPPED in 3.1.2 (parser) + 3.1.3-rc.2 (pure-v2 multi-file parser gap fixed). JS WebTorrent interop verified by Captain via `hub.spawndev.com`.
+- **Multihash magnet URI (`urn:btmh:`)** — SHIPPED in 3.1.2 (parse + emit in `ComputedMagnetUri`).
+- **Peer-wire extension** (messages 21/22/23) — SHIPPED in 3.1.2. `Bep52WireMessages` codecs + `V2HashRequestCoordinator` state machine + `Torrent.OnV2HashRequest` seed path + `RequestV2HashesAsync` client path.
+- **Remaining:** libtorrent / qBittorrent cross-client v2-peer-wire interop verification (manual; runbook in `Plans/PLAN-BEP52-External-Interop.md`). Not blocking production.
+- See `Plans/bep52-phase2-execution.md` + `Docs/bep52.md` for the full end-state.
 
 ### SpawnDev.WebFS Integration
 - Virtual filesystem backed by torrent swarm

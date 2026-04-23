@@ -151,7 +151,9 @@ public static class TorrentCreator
     {
         options ??= new TorrentCreatorOptions();
         if (options.MetaVersion == 2)
-            throw new NotSupportedException("BEP 52 v2 multi-file torrent creation requires per-file piece alignment (Phase 2b). Only single-file v2 torrents via CreateFromBytes are supported in Phase 2a.");
+        {
+            return BuildV2MultiFile(torrentName, files, options);
+        }
 
         long totalLength = files.Sum(f => (long)f.data.Length);
         int pieceLength = options.PieceLength > 0
@@ -444,73 +446,15 @@ public static class TorrentCreator
         var v2InfoHashBytes = SHA256.HashData(infoBytes);
         var v2InfoHashHex = Convert.ToHexString(v2InfoHashBytes).ToLowerInvariant();
 
-        // Top-level torrent dict. Keys sorted alphabetically. We build this manually because the
-        // "piece layers" dict has binary (SHA-256) keys that bencode as byte-string keys - the
-        // typed encoder's string-keyed API can't express them safely.
-        var topParts = new List<byte>();
-        topParts.AddRange(Encoding.ASCII.GetBytes("d"));
-
-        // announce
-        if (options.Trackers.Length > 0)
-            AppendBencodeKV(topParts, "announce", options.Trackers[0]);
-
-        // announce-list
-        if (options.Trackers.Length > 1)
-        {
-            topParts.AddRange(BencodeEncoder.EncodeBytes(Encoding.UTF8.GetBytes("announce-list")));
-            topParts.AddRange(Encoding.ASCII.GetBytes("l"));
-            foreach (var tracker in options.Trackers)
-            {
-                topParts.AddRange(Encoding.ASCII.GetBytes("l"));
-                topParts.AddRange(BencodeEncoder.EncodeBytes(Encoding.UTF8.GetBytes(tracker)));
-                topParts.AddRange(Encoding.ASCII.GetBytes("e"));
-            }
-            topParts.AddRange(Encoding.ASCII.GetBytes("e"));
-        }
-
-        if (!string.IsNullOrEmpty(options.Comment))
-            AppendBencodeKV(topParts, "comment", options.Comment);
-
-        AppendBencodeKV(topParts, "created by", options.CreatedBy);
-        AppendBencodeKV(topParts, "creation date", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
-
-        // info (raw pre-computed bytes)
-        topParts.AddRange(BencodeEncoder.EncodeBytes(Encoding.UTF8.GetBytes("info")));
-        topParts.AddRange(infoBytes);
-
-        // piece layers - only if multi-piece. Binary keys (SHA-256 roots).
-        // Keys order: BEP 52 inherits bencode's sort-by-raw-byte-string rule. With a single
-        // file we only have one key and order is trivial; multi-file hybrid (Phase 2b) will
-        // need to sort the key bytes explicitly before emitting.
+        // Build the sorted piece layers list (for single file, 0 or 1 entry).
+        var sortedLayers = new List<(byte[] key, byte[] value)>();
         if (pieceLayerHashes.Length > 0)
         {
-            topParts.AddRange(BencodeEncoder.EncodeBytes(Encoding.UTF8.GetBytes("piece layers")));
-            topParts.AddRange(Encoding.ASCII.GetBytes("d"));
-
-            // Key: the file root (32 bytes).
-            topParts.AddRange(BencodeEncoder.EncodeBytes(fileRoot));
-
-            // Value: concat of all piece-layer hashes.
-            var concatenated = new byte[pieceLayerHashes.Length * MerkleHasher.HashSize];
-            for (int i = 0; i < pieceLayerHashes.Length; i++)
-                Buffer.BlockCopy(pieceLayerHashes[i], 0, concatenated, i * MerkleHasher.HashSize, MerkleHasher.HashSize);
-            topParts.AddRange(BencodeEncoder.EncodeBytes(concatenated));
-
-            topParts.AddRange(Encoding.ASCII.GetBytes("e"));
+            var concatenated = ConcatPieceLayerHashes(pieceLayerHashes);
+            sortedLayers.Add((fileRoot, concatenated));
         }
 
-        // url-list (web seeds)
-        if (options.WebSeeds.Length > 0)
-        {
-            topParts.AddRange(BencodeEncoder.EncodeBytes(Encoding.UTF8.GetBytes("url-list")));
-            topParts.AddRange(Encoding.ASCII.GetBytes("l"));
-            foreach (var ws in options.WebSeeds)
-                topParts.AddRange(BencodeEncoder.EncodeBytes(Encoding.UTF8.GetBytes(ws)));
-            topParts.AddRange(Encoding.ASCII.GetBytes("e"));
-        }
-
-        topParts.AddRange(Encoding.ASCII.GetBytes("e"));
-        var torrentBytes = topParts.ToArray();
+        var torrentBytes = BuildV2TopLevelBytes(infoBytes, sortedLayers, options);
 
         // Concatenate piece-layer hashes for TorrentMetadata.PieceHashes (same storage shape
         // as v1, so downstream code that already branches on PieceHashAlgorithm sees consistent
@@ -553,6 +497,280 @@ public static class TorrentCreator
         };
 
         return (torrentBytes, metadata);
+    }
+
+    /// <summary>
+    /// Concatenates piece-layer hashes into a single byte array for storage inside the
+    /// piece layers dict value. One 32-byte entry per piece, in order.
+    /// </summary>
+    private static byte[] ConcatPieceLayerHashes(byte[][] pieceLayerHashes)
+    {
+        var concatenated = new byte[pieceLayerHashes.Length * MerkleHasher.HashSize];
+        for (int i = 0; i < pieceLayerHashes.Length; i++)
+            Buffer.BlockCopy(pieceLayerHashes[i], 0, concatenated, i * MerkleHasher.HashSize, MerkleHasher.HashSize);
+        return concatenated;
+    }
+
+    /// <summary>
+    /// Assembles the top-level bytes of a BEP 52 v2 torrent from pre-computed info-dict bytes
+    /// and a piece layers map. The caller is responsible for sorting the layers by key-byte
+    /// order (BEP 52 requires dict keys be sorted as raw byte strings). Shared between the
+    /// single-file and multi-file v2 creators so both emit identically shaped output.
+    /// </summary>
+    private static byte[] BuildV2TopLevelBytes(
+        byte[] infoBytes,
+        IReadOnlyList<(byte[] key, byte[] value)> sortedPieceLayers,
+        TorrentCreatorOptions options)
+    {
+        var topParts = new List<byte>();
+        topParts.AddRange(Encoding.ASCII.GetBytes("d"));
+
+        if (options.Trackers.Length > 0)
+            AppendBencodeKV(topParts, "announce", options.Trackers[0]);
+
+        if (options.Trackers.Length > 1)
+        {
+            topParts.AddRange(BencodeEncoder.EncodeBytes(Encoding.UTF8.GetBytes("announce-list")));
+            topParts.AddRange(Encoding.ASCII.GetBytes("l"));
+            foreach (var tracker in options.Trackers)
+            {
+                topParts.AddRange(Encoding.ASCII.GetBytes("l"));
+                topParts.AddRange(BencodeEncoder.EncodeBytes(Encoding.UTF8.GetBytes(tracker)));
+                topParts.AddRange(Encoding.ASCII.GetBytes("e"));
+            }
+            topParts.AddRange(Encoding.ASCII.GetBytes("e"));
+        }
+
+        if (!string.IsNullOrEmpty(options.Comment))
+            AppendBencodeKV(topParts, "comment", options.Comment);
+
+        AppendBencodeKV(topParts, "created by", options.CreatedBy);
+        AppendBencodeKV(topParts, "creation date", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
+        topParts.AddRange(BencodeEncoder.EncodeBytes(Encoding.UTF8.GetBytes("info")));
+        topParts.AddRange(infoBytes);
+
+        if (sortedPieceLayers.Count > 0)
+        {
+            topParts.AddRange(BencodeEncoder.EncodeBytes(Encoding.UTF8.GetBytes("piece layers")));
+            topParts.AddRange(Encoding.ASCII.GetBytes("d"));
+            foreach (var (key, value) in sortedPieceLayers)
+            {
+                topParts.AddRange(BencodeEncoder.EncodeBytes(key));
+                topParts.AddRange(BencodeEncoder.EncodeBytes(value));
+            }
+            topParts.AddRange(Encoding.ASCII.GetBytes("e"));
+        }
+
+        if (options.WebSeeds.Length > 0)
+        {
+            topParts.AddRange(BencodeEncoder.EncodeBytes(Encoding.UTF8.GetBytes("url-list")));
+            topParts.AddRange(Encoding.ASCII.GetBytes("l"));
+            foreach (var ws in options.WebSeeds)
+                topParts.AddRange(BencodeEncoder.EncodeBytes(Encoding.UTF8.GetBytes(ws)));
+            topParts.AddRange(Encoding.ASCII.GetBytes("e"));
+        }
+
+        topParts.AddRange(Encoding.ASCII.GetBytes("e"));
+        return topParts.ToArray();
+    }
+
+    /// <summary>
+    /// Sort piece-layer entries by key bytes per BEP 52 (dict keys must be sorted as raw
+    /// byte strings on the wire). Stable across calls for a given input.
+    /// </summary>
+    private static List<(byte[] key, byte[] value)> SortPieceLayers(IEnumerable<(byte[] key, byte[] value)> entries)
+    {
+        var list = entries.ToList();
+        list.Sort((a, b) => CompareBytes(a.key, b.key));
+        return list;
+    }
+
+    private static int CompareBytes(byte[] a, byte[] b)
+    {
+        int len = Math.Min(a.Length, b.Length);
+        for (int i = 0; i < len; i++)
+        {
+            int diff = a[i] - b[i];
+            if (diff != 0) return diff;
+        }
+        return a.Length - b.Length;
+    }
+
+    /// <summary>
+    /// Build a BEP 52 v2 multi-file torrent from in-memory file data. Produces a recursive
+    /// file tree reflecting the input paths' directory structure, one Merkle tree per file,
+    /// and a piece layers dict keyed on per-file root hashes (sorted per BEP 52).
+    ///
+    /// This method does NOT perform per-file piece alignment - pieces are computed
+    /// independently per file, so the v2 torrent is NOT safe to mix with a v1 interpretation
+    /// of the same content (pieces would not line up). Pure-v2 consumers are fine; hybrid
+    /// v1+v2 torrents are a Phase 2b feature requiring explicit alignment padding.
+    /// </summary>
+    private static (byte[] torrentBytes, TorrentMetadata metadata) BuildV2MultiFile(
+        string torrentName, (string path, byte[] data)[] files, TorrentCreatorOptions options)
+    {
+        if (files.Length == 0)
+            throw new ArgumentException("Multi-file torrent requires at least one file.", nameof(files));
+
+        long totalLength = files.Sum(f => (long)f.data.Length);
+        int pieceLength = options.PieceLength > 0
+            ? options.PieceLength
+            : CalculatePieceLength(totalLength);
+        ValidateV2PieceSize(pieceLength);
+
+        // Hash each file independently, collecting file roots and piece layers.
+        var fileRoots = new byte[files.Length][];
+        var filePieceLayers = new byte[files.Length][][];
+        for (int i = 0; i < files.Length; i++)
+        {
+            fileRoots[i] = MerkleHasher.ComputeFileRoot(files[i].data, pieceLength);
+            filePieceLayers[i] = files[i].data.Length > pieceLength
+                ? MerkleHasher.ComputePieceLayer(files[i].data, pieceLength)
+                : Array.Empty<byte[]>();
+        }
+
+        // Build the nested file tree from the path list.
+        var fileTree = BuildV2FileTree(files, fileRoots);
+
+        var infoDict = new Dictionary<string, object>
+        {
+            ["file tree"] = fileTree,
+            ["meta version"] = 2L,
+            ["name"] = Encoding.UTF8.GetBytes(torrentName),
+            ["piece length"] = (long)pieceLength,
+        };
+        if (options.IsPrivate) infoDict["private"] = 1L;
+
+        var infoBytes = BencodeEncoder.Encode(infoDict);
+        var v2InfoHashBytes = SHA256.HashData(infoBytes);
+        var v2InfoHashHex = Convert.ToHexString(v2InfoHashBytes).ToLowerInvariant();
+
+        // Build sorted piece layers for files > pieceLength.
+        var layersCollector = new List<(byte[] key, byte[] value)>();
+        var pieceLayersMap = new Dictionary<byte[], byte[]>(ByteArrayEqualityComparer.Instance);
+        for (int i = 0; i < files.Length; i++)
+        {
+            if (filePieceLayers[i].Length > 0)
+            {
+                var concat = ConcatPieceLayerHashes(filePieceLayers[i]);
+                layersCollector.Add((fileRoots[i], concat));
+                pieceLayersMap[fileRoots[i]] = concat;
+            }
+        }
+        var sortedLayers = SortPieceLayers(layersCollector);
+
+        var torrentBytes = BuildV2TopLevelBytes(infoBytes, sortedLayers, options);
+
+        // Build TorrentFileInfo array with cumulative (non-aligned) offsets. Offsets reflect
+        // concatenation order for application-level addressing; per-piece alignment is a
+        // separate Phase 2b concern.
+        var torrentFiles = new TorrentFileInfo[files.Length];
+        long offset = 0;
+        for (int i = 0; i < files.Length; i++)
+        {
+            torrentFiles[i] = new TorrentFileInfo
+            {
+                Path = files[i].path,
+                Name = System.IO.Path.GetFileName(files[i].path),
+                Length = files[i].data.Length,
+                Offset = offset,
+            };
+            offset += files[i].data.Length;
+        }
+
+        // Flatten piece hashes across all files for PieceHashes (for v2 multi-file these are
+        // per-file piece-layer hashes concatenated in file order; single-piece files
+        // contribute their file root as one entry).
+        var flatHashes = new List<byte[]>();
+        for (int i = 0; i < files.Length; i++)
+        {
+            if (filePieceLayers[i].Length > 0)
+                flatHashes.AddRange(filePieceLayers[i]);
+            else if (files[i].data.Length > 0)
+                flatHashes.Add(fileRoots[i]);
+        }
+
+        var metadata = new TorrentMetadata
+        {
+            InfoHash = "",
+            V2InfoHash = v2InfoHashHex,
+            MetaVersion = 2,
+            InfoDictBytes = infoBytes,
+            Name = torrentName,
+            TotalLength = totalLength,
+            PieceLength = pieceLength,
+            PieceCount = flatHashes.Count,
+            PieceHashes = flatHashes.ToArray(),
+            FileRoots = fileRoots,
+            PieceLayers = pieceLayersMap,
+            Files = torrentFiles,
+            AnnounceUrls = options.Trackers,
+            UrlList = options.WebSeeds,
+            CreatedBy = options.CreatedBy,
+            CreationDate = DateTimeOffset.UtcNow,
+            Comment = options.Comment,
+            IsPrivate = options.IsPrivate,
+            OriginalTorrentBytes = torrentBytes,
+        };
+
+        return (torrentBytes, metadata);
+    }
+
+    /// <summary>
+    /// Constructs a BEP 52 file-tree dictionary from a list of files with relative paths.
+    /// Paths are split on / and \\ into directory components. Duplicate paths throw. Empty
+    /// path components (e.g. "a//b" or leading slash) are rejected.
+    /// </summary>
+    private static Dictionary<string, object> BuildV2FileTree(
+        (string path, byte[] data)[] files, byte[][] fileRoots)
+    {
+        var root = new Dictionary<string, object>();
+
+        for (int i = 0; i < files.Length; i++)
+        {
+            var path = files[i].path;
+            if (string.IsNullOrWhiteSpace(path))
+                throw new ArgumentException($"File path at index {i} is empty or whitespace.", nameof(files));
+
+            var parts = path.Split(new[] { '/', '\\' }, StringSplitOptions.None);
+            if (parts.Any(string.IsNullOrEmpty))
+                throw new ArgumentException($"File path '{path}' has empty path components (leading/trailing slash or double slash).", nameof(files));
+
+            var current = root;
+            for (int j = 0; j < parts.Length - 1; j++)
+            {
+                if (current.TryGetValue(parts[j], out var existing))
+                {
+                    // An existing Dictionary<string, object> with an empty-string key is a file
+                    // leaf, not a directory - the incoming path would treat a file as a parent.
+                    if (existing is not Dictionary<string, object> existingDict || existingDict.ContainsKey(""))
+                        throw new ArgumentException($"Path '{path}' conflicts with existing file at component '{parts[j]}'.", nameof(files));
+                    current = existingDict;
+                }
+                else
+                {
+                    var subDict = new Dictionary<string, object>();
+                    current[parts[j]] = subDict;
+                    current = subDict;
+                }
+            }
+
+            var leafName = parts[^1];
+            if (current.ContainsKey(leafName))
+                throw new ArgumentException($"Duplicate file path '{path}' (or path component collides with existing directory).", nameof(files));
+
+            current[leafName] = new Dictionary<string, object>
+            {
+                [""] = new Dictionary<string, object>
+                {
+                    ["length"] = (long)files[i].data.Length,
+                    ["pieces root"] = fileRoots[i],
+                }
+            };
+        }
+
+        return root;
     }
 
     private static int CalculatePieceLength(long fileSize)

@@ -307,20 +307,6 @@ public class TorrentCreatorV2Tests
     }
 
     [Test]
-    public void CreateFromMultipleFiles_V2_Throws()
-    {
-        var files = new[]
-        {
-            ("a.bin", new byte[100]),
-            ("b.bin", new byte[200]),
-        };
-        var opts = new TorrentCreatorOptions { MetaVersion = 2 };
-
-        Assert.Throws<NotSupportedException>(() =>
-            TorrentCreator.CreateFromMultipleFiles("multi", files, opts));
-    }
-
-    [Test]
     public void V1Path_UnchangedByV2Support()
     {
         // Default options (MetaVersion=1) must still produce a v1 torrent with a SHA-1 info

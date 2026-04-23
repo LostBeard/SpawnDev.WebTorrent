@@ -286,6 +286,86 @@ public class TorrentCreatorHybridTests
         Assert.That(asText, Does.Not.Contain("4:.pad"));
     }
 
+    [Test]
+    public async Task Hybrid_Streaming_MatchesInMemory_SinglePiece()
+    {
+        var data = RandomBytes(8000);
+        var opts = new TorrentCreatorOptions { MetaVersion = 2, Hybrid = true, PieceLength = 16384 };
+
+        var (_, fromBytes) = TorrentCreator.CreateFromBytes("stream.bin", data, opts);
+        using var ms = new MemoryStream(data);
+        var (_, fromStream) = await TorrentCreator.CreateFromStreamAsync("stream.bin", ms, data.Length, opts);
+
+        Assert.That(fromStream.InfoHash, Is.EqualTo(fromBytes.InfoHash),
+            "v1 SHA-1 infohash must match between streaming and in-memory paths");
+        Assert.That(fromStream.V2InfoHash, Is.EqualTo(fromBytes.V2InfoHash),
+            "v2 SHA-256 infohash must match between streaming and in-memory paths");
+        Assert.That(fromStream.FileRoots[0], Is.EqualTo(fromBytes.FileRoots[0]));
+    }
+
+    [Test]
+    public async Task Hybrid_Streaming_MatchesInMemory_MultiPiece()
+    {
+        int pieceLen = 32768;
+        var data = RandomBytes(pieceLen * 3 + 777); // awkward boundary
+        var opts = new TorrentCreatorOptions { MetaVersion = 2, Hybrid = true, PieceLength = pieceLen };
+
+        var (_, fromBytes) = TorrentCreator.CreateFromBytes("big.bin", data, opts);
+        using var ms = new MemoryStream(data);
+        var (_, fromStream) = await TorrentCreator.CreateFromStreamAsync("big.bin", ms, data.Length, opts);
+
+        Assert.That(fromStream.InfoHash, Is.EqualTo(fromBytes.InfoHash));
+        Assert.That(fromStream.V2InfoHash, Is.EqualTo(fromBytes.V2InfoHash));
+        Assert.That(fromStream.FileRoots[0], Is.EqualTo(fromBytes.FileRoots[0]));
+        Assert.That(fromStream.PieceLayers[fromStream.FileRoots[0]],
+            Is.EqualTo(fromBytes.PieceLayers[fromBytes.FileRoots[0]]));
+        Assert.That(fromStream.PieceCount, Is.EqualTo(fromBytes.PieceCount));
+    }
+
+    [Test]
+    public async Task Hybrid_Streaming_SlowStream_StillMatches()
+    {
+        // Pathological stream that returns 321 bytes max per Read - exercises the piece
+        // buffer accumulation across many partial reads. Must still produce bit-identical
+        // hybrid output vs in-memory.
+        int pieceLen = 16384;
+        var data = RandomBytes(pieceLen * 2 + 999);
+        var opts = new TorrentCreatorOptions { MetaVersion = 2, Hybrid = true, PieceLength = pieceLen };
+
+        var (_, fromBytes) = TorrentCreator.CreateFromBytes("slow.bin", data, opts);
+        using var slow = new PathologicalStream(data, readSize: 321);
+        var (_, fromStream) = await TorrentCreator.CreateFromStreamAsync("slow.bin", slow, data.Length, opts);
+
+        Assert.That(fromStream.InfoHash, Is.EqualTo(fromBytes.InfoHash));
+        Assert.That(fromStream.V2InfoHash, Is.EqualTo(fromBytes.V2InfoHash));
+        Assert.That(fromStream.FileRoots[0], Is.EqualTo(fromBytes.FileRoots[0]));
+    }
+
+    private sealed class PathologicalStream : Stream
+    {
+        private readonly byte[] _data;
+        private readonly int _readSize;
+        private int _pos;
+        public PathologicalStream(byte[] data, int readSize) { _data = data; _readSize = readSize; }
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => _data.Length;
+        public override long Position { get => _pos; set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            int take = Math.Min(Math.Min(_readSize, count), _data.Length - _pos);
+            if (take <= 0) return 0;
+            Array.Copy(_data, _pos, buffer, offset, take);
+            _pos += take;
+            return take;
+        }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
     private static byte[] RandomBytes(int n)
     {
         var b = new byte[n];

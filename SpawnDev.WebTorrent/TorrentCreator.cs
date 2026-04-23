@@ -26,7 +26,9 @@ public static class TorrentCreator
 
         if (options.MetaVersion == 2)
         {
-            return await CreateV2FromStreamAsync(name, stream, length, pieceLength, options, ct);
+            return options.Hybrid
+                ? await CreateHybridSingleFileFromStreamAsync(name, stream, pieceLength, options, ct)
+                : await CreateV2FromStreamAsync(name, stream, length, pieceLength, options, ct);
         }
 
         var pieceHashes = new List<byte[]>();
@@ -623,9 +625,6 @@ public static class TorrentCreator
             int len = Math.Min(pieceLength, data.Length - offset);
             v1PieceHashes.Add(SHA1.HashData(data.AsSpan(offset, len)));
         }
-        var v1PiecesConcat = new byte[v1PieceHashes.Count * 20];
-        for (int i = 0; i < v1PieceHashes.Count; i++)
-            Buffer.BlockCopy(v1PieceHashes[i], 0, v1PiecesConcat, i * 20, 20);
 
         // v2 Merkle tree over the file.
         var fileRoot = MerkleHasher.ComputeFileRoot(data, pieceLength);
@@ -633,15 +632,87 @@ public static class TorrentCreator
             ? MerkleHasher.ComputePieceLayer(data, pieceLength)
             : Array.Empty<byte[]>();
 
-        // Build the hybrid info dict: union of v1 and v2 key sets, alphabetically sorted.
-        // Keys: file tree, length, meta version, name, piece length, pieces, (private).
+        return AssembleHybridSingleFile(name, data.Length, pieceLength,
+            v1PieceHashes.ToArray(), fileRoot, pieceLayerHashes, options);
+    }
+
+    /// <summary>
+    /// Streaming hybrid single-file torrent creation. Reads the input stream in piece-sized
+    /// chunks, hashing each full piece with both SHA-1 (for v1 pieces) and feeding it into
+    /// an incremental Merkle hasher (for v2 file tree + piece layers). Single pass, bounded
+    /// memory - one piece buffer + incremental Merkle state. Suitable for multi-GiB files
+    /// that cannot fit in memory.
+    /// </summary>
+    private static async Task<(byte[] torrentBytes, TorrentMetadata metadata)> CreateHybridSingleFileFromStreamAsync(
+        string name, Stream stream, int pieceLength, TorrentCreatorOptions options, CancellationToken ct)
+    {
+        ValidateV2PieceSize(pieceLength);
+
+        var v1PieceHashes = new List<byte[]>();
+        var merkle = MerkleHasher.CreateIncremental(pieceLength);
+        var pieceBuffer = new byte[pieceLength];
+        int pieceFill = 0;
+        long totalBytes = 0;
+
+        var readBuf = new byte[Math.Max(pieceLength, 64 * 1024)];
+        int bytesRead;
+        while ((bytesRead = await stream.ReadAsync(readBuf.AsMemory(0, readBuf.Length), ct)) > 0)
+        {
+            int srcPos = 0;
+            while (srcPos < bytesRead)
+            {
+                int toCopy = Math.Min(pieceLength - pieceFill, bytesRead - srcPos);
+                Buffer.BlockCopy(readBuf, srcPos, pieceBuffer, pieceFill, toCopy);
+                pieceFill += toCopy;
+                srcPos += toCopy;
+                totalBytes += toCopy;
+
+                if (pieceFill == pieceLength)
+                {
+                    v1PieceHashes.Add(SHA1.HashData(pieceBuffer.AsSpan(0, pieceLength)));
+                    merkle.Update(pieceBuffer.AsSpan(0, pieceLength));
+                    pieceFill = 0;
+                }
+            }
+        }
+        if (pieceFill > 0)
+        {
+            // Last partial piece: v1 hashes the partial content directly (no padding - v1
+            // allows the last piece to be short). Merkle absorbs the same bytes; its
+            // per-leaf zero-padding is internal to the v2 tree, not visible as v1 pieces.
+            v1PieceHashes.Add(SHA1.HashData(pieceBuffer.AsSpan(0, pieceFill)));
+            merkle.Update(pieceBuffer.AsSpan(0, pieceFill));
+        }
+        var (fileRoot, pieceLayerHashes) = merkle.Finish();
+
+        return AssembleHybridSingleFile(name, totalBytes, pieceLength,
+            v1PieceHashes.ToArray(), fileRoot, pieceLayerHashes, options);
+    }
+
+    /// <summary>
+    /// Pure assembly of a BEP 52 hybrid v1+v2 single-file torrent from pre-computed hashing
+    /// results. Shared between in-memory <see cref="BuildHybridSingleFile"/> and streaming
+    /// <see cref="CreateHybridSingleFileFromStreamAsync"/> so both produce bit-identical
+    /// output for the same input bytes.
+    /// </summary>
+    private static (byte[] torrentBytes, TorrentMetadata metadata) AssembleHybridSingleFile(
+        string name, long length, int pieceLength,
+        byte[][] v1PieceHashes, byte[] fileRoot, byte[][] pieceLayerHashes,
+        TorrentCreatorOptions options)
+    {
+        // v1 pieces concat (20 bytes per SHA-1 hash).
+        var v1PiecesConcat = new byte[v1PieceHashes.Length * 20];
+        for (int i = 0; i < v1PieceHashes.Length; i++)
+            Buffer.BlockCopy(v1PieceHashes[i], 0, v1PiecesConcat, i * 20, 20);
+
+        // Hybrid info dict: union of v1 and v2 key sets, alphabetically sorted.
         var fileTree = new Dictionary<string, object>
         {
             [name] = new Dictionary<string, object>
             {
                 [""] = new Dictionary<string, object>
                 {
-                    ["length"] = (long)data.Length,
+                    ["length"] = length,
                     ["pieces root"] = fileRoot,
                 }
             }
@@ -649,7 +720,7 @@ public static class TorrentCreator
         var infoDict = new Dictionary<string, object>
         {
             ["file tree"] = fileTree,
-            ["length"] = (long)data.Length,
+            ["length"] = length,
             ["meta version"] = 2L,
             ["name"] = Encoding.UTF8.GetBytes(name),
             ["piece length"] = (long)pieceLength,
@@ -658,12 +729,9 @@ public static class TorrentCreator
         if (options.IsPrivate) infoDict["private"] = 1L;
 
         var infoBytes = BencodeEncoder.Encode(infoDict);
-        var v1InfoHashBytes = SHA1.HashData(infoBytes);
-        var v1InfoHashHex = Convert.ToHexString(v1InfoHashBytes).ToLowerInvariant();
-        var v2InfoHashBytes = SHA256.HashData(infoBytes);
-        var v2InfoHashHex = Convert.ToHexString(v2InfoHashBytes).ToLowerInvariant();
+        var v1InfoHashHex = Convert.ToHexString(SHA1.HashData(infoBytes)).ToLowerInvariant();
+        var v2InfoHashHex = Convert.ToHexString(SHA256.HashData(infoBytes)).ToLowerInvariant();
 
-        // Assemble the top-level torrent bytes using the shared helper.
         var sortedLayers = new List<(byte[] key, byte[] value)>();
         var pieceLayersMap = new Dictionary<byte[], byte[]>(ByteArrayEqualityComparer.Instance);
         if (pieceLayerHashes.Length > 0)
@@ -674,9 +742,6 @@ public static class TorrentCreator
         }
         var torrentBytes = BuildV2TopLevelBytes(infoBytes, sortedLayers, options);
 
-        // Populate metadata with both infohashes. PieceHashes carries v2 piece-layer hashes
-        // for consistency with the other v2 paths (PieceHashAlgorithm = SHA-256 on this
-        // torrent). The v1 pieces are recoverable from InfoDictBytes + TorrentParser.
         var pieceHashes = pieceLayerHashes.Length > 0
             ? pieceLayerHashes
             : new[] { fileRoot };
@@ -688,13 +753,13 @@ public static class TorrentCreator
             MetaVersion = 2,
             InfoDictBytes = infoBytes,
             Name = name,
-            TotalLength = data.Length,
+            TotalLength = length,
             PieceLength = pieceLength,
             PieceCount = pieceHashes.Length,
             PieceHashes = pieceHashes,
             FileRoots = new[] { fileRoot },
             PieceLayers = pieceLayersMap,
-            Files = new[] { new TorrentFileInfo { Path = name, Name = name, Length = data.Length, Offset = 0 } },
+            Files = new[] { new TorrentFileInfo { Path = name, Name = name, Length = length, Offset = 0 } },
             AnnounceUrls = options.Trackers,
             UrlList = options.WebSeeds,
             CreatedBy = options.CreatedBy,

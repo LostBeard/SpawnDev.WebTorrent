@@ -59,6 +59,63 @@ public partial class Torrent : IAsyncDisposable
     /// </summary>
     public V2HashRequestCoordinator? V2HashCoord { get; private set; }
 
+    /// <summary>
+    /// Per-global-piece length in bytes. For v1 and hybrid torrents this is
+    /// [PieceLength, PieceLength, ..., LastPieceLength]. For pure-v2 multi-file torrents
+    /// each file's LAST piece may be partial (shorter than PieceLength) because BEP 52
+    /// requires implicit zero-padding between files so every file starts on a piece
+    /// boundary in the virtual stream - so pieces that straddle a file's end are short
+    /// even when they're not the final piece of the whole torrent. Populated by
+    /// <see cref="SetMetadata"/>; consumed by <see cref="VerifyPieceHash"/> and the
+    /// <c>Pieces[]</c> initializer.
+    /// </summary>
+    private int[] _pieceLengths = Array.Empty<int>();
+
+    /// <summary>
+    /// Compute the per-global-piece length array. Same logic as the old hard-coded
+    /// `LastPieceLength for the final piece, PieceLength for all others` for v1 / hybrid,
+    /// plus the pure-v2 multi-file variant where each file's last piece is sized from
+    /// <c>file.Length % PieceLength</c>.
+    /// </summary>
+    private static int[] ComputePieceLengths(TorrentMetadata metadata)
+    {
+        int n = metadata.PieceCount;
+        var result = new int[n];
+        int pieceLen = metadata.PieceLength;
+
+        // Pure-v2 multi-file path: derive per-piece length from per-file piece counts.
+        bool isPureV2MultiFile = metadata.MetaVersion == 2
+            && string.IsNullOrEmpty(metadata.InfoHash)  // pure v2 only, not hybrid
+            && metadata.Files != null && metadata.Files.Length > 1;
+
+        if (isPureV2MultiFile)
+        {
+            int globalIdx = 0;
+            foreach (var file in metadata.Files!)
+            {
+                if (file.Length == 0) continue;
+                int filePieceCount = (int)((file.Length + pieceLen - 1) / pieceLen);
+                int lastPieceLen = (int)(file.Length % pieceLen);
+                if (lastPieceLen == 0) lastPieceLen = pieceLen;
+                for (int pi = 0; pi < filePieceCount; pi++)
+                {
+                    if (globalIdx >= n) break;
+                    result[globalIdx++] = (pi == filePieceCount - 1) ? lastPieceLen : pieceLen;
+                }
+            }
+            // Pad any remainder (shouldn't happen if PieceCount matches) with PieceLength.
+            while (globalIdx < n) result[globalIdx++] = pieceLen;
+            return result;
+        }
+
+        // v1 / hybrid / single-file-v2: every piece is PieceLength except the last.
+        int lastLen = (int)(metadata.TotalLength % pieceLen);
+        if (lastLen == 0) lastLen = pieceLen;
+        for (int i = 0; i < n - 1; i++) result[i] = pieceLen;
+        if (n > 0) result[n - 1] = lastLen;
+        return result;
+    }
+
     public string? PeerIdHex { get; set; }
     public string? Name { get; set; }
     public int PieceLength { get; set; }
@@ -493,6 +550,13 @@ public partial class Torrent : IAsyncDisposable
         FileRoots = metadata.FileRoots ?? Array.Empty<byte[]>();
         PieceLayers = metadata.PieceLayers ?? new Dictionary<byte[], byte[]>(ByteArrayEqualityComparer.Instance);
 
+        // Pre-compute per-global-piece lengths. For hybrid + v1 torrents every piece is
+        // PieceLength except the LAST (LastPieceLength). For pure-v2 multi-file torrents
+        // each file's last piece may be partial - a piece is short whenever it straddles
+        // the tail of a file in the padded virtual stream. VerifyPieceHash and the Pieces[]
+        // initialization both consult this array.
+        _pieceLengths = ComputePieceLengths(metadata);
+
         // Allocate the coordinator exactly once per v2 torrent. It is shared across all peer
         // wires (requests and responses can be attributed to any peer in the swarm - the
         // RequestKey is root+baseLayer+index+length, not peer-id).
@@ -509,8 +573,7 @@ public partial class Torrent : IAsyncDisposable
         Bitfield = new bool[metadata.PieceCount];
         for (int i = 0; i < metadata.PieceCount; i++)
         {
-            int len = (i == metadata.PieceCount - 1) ? LastPieceLength : PieceLength;
-            Pieces[i] = new Piece(len);
+            Pieces[i] = new Piece(_pieceLengths[i]);
         }
 
         Files = metadata.Files;
@@ -1101,9 +1164,14 @@ public partial class Torrent : IAsyncDisposable
         if (Destroyed) return;
         Destroyed = true;
 
+        // Timer.Dispose() does NOT wait for in-flight callbacks. Rechoke iterates
+        // Wires in a LINQ OrderBy; if a callback is mid-iteration when the Wires
+        // collection is cleared below, it dereferences a null wire and NREs on
+        // the thread-pool — crashing the testhost during back-to-back test teardown.
+        // DisposeAsync drains in-flight callbacks first.
         _speedTimer?.Dispose();
         _noPeersTimer?.Dispose();
-        _rechokeTimer?.Dispose();
+        if (_rechokeTimer != null) await _rechokeTimer.DisposeAsync();
         _rarityMap?.Destroy();
 
         if (_discovery != null)

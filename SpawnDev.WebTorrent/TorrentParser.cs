@@ -166,13 +166,21 @@ public static class TorrentParser
             var v2Files = new List<TorrentFileInfo>();
             var v2Roots = new List<byte[]>();
             long cumulativeOffset = 0;
-            ParseV2FileTree(fileTree, currentPath: "", v2Files, v2Roots, ref cumulativeOffset);
+            // For multi-file v2 the virtual-stream offsets MUST include implicit zero-pad
+            // between files (BEP 52 §"File tree"). Pass pieceLength so ParseV2FileTree rounds
+            // each file's end up to the next piece boundary; single-file v2 where there's
+            // only one entry is unaffected (no file after it to align).
+            bool isMultiFileV2 = fileTree.Count > 1 || fileTree.Values.OfType<Dictionary<string, object>>().Any(n => !n.ContainsKey(""));
+            int alignmentPieceLength = isMultiFileV2 ? metadata.PieceLength : 0;
+            ParseV2FileTree(fileTree, currentPath: "", v2Files, v2Roots, ref cumulativeOffset, alignmentPieceLength);
 
             if (v2Files.Count > 0)
             {
                 metadata.Files = v2Files.ToArray();
                 metadata.FileRoots = v2Roots.ToArray();
-                metadata.TotalLength = cumulativeOffset;
+                // TotalLength = sum of real file sizes (not padded stream length). The padded
+                // value lives in the per-file Offsets + PieceCount.
+                metadata.TotalLength = v2Files.Sum(f => f.Length);
             }
         }
 
@@ -190,28 +198,36 @@ public static class TorrentParser
         }
 
         // Populate PieceHashes uniformly so PieceHashAlgorithm and downstream code see the same
-        // shape as v1. Phase 2a supports single-file v2 only; multi-file Phase 2b will extend this.
+        // shape as v1. For v2 multi-file we walk all files in the file-tree order (already
+        // captured in metadata.FileRoots) and flatten per-file piece-layer hashes into one
+        // contiguous array. Each file's section of the flat array corresponds to that file's
+        // aligned run of pieces in the padded virtual stream - so globalPieceIndex ->
+        // metadata.PieceHashes[globalPieceIndex] works for download/verify.
         if (isV2 && metadata.FileRoots.Length > 0)
         {
-            var root = metadata.FileRoots[0];
-            if (metadata.PieceLayers.TryGetValue(root, out var concat))
+            var flatHashes = new List<byte[]>();
+            for (int fi = 0; fi < metadata.FileRoots.Length; fi++)
             {
-                int count = concat.Length / 32;
-                var hashes = new byte[count][];
-                for (int i = 0; i < count; i++)
+                var root = metadata.FileRoots[fi];
+                if (metadata.PieceLayers.TryGetValue(root, out var concat))
                 {
-                    hashes[i] = new byte[32];
-                    Buffer.BlockCopy(concat, i * 32, hashes[i], 0, 32);
+                    int count = concat.Length / 32;
+                    for (int pi = 0; pi < count; pi++)
+                    {
+                        var h = new byte[32];
+                        Buffer.BlockCopy(concat, pi * 32, h, 0, 32);
+                        flatHashes.Add(h);
+                    }
                 }
-                metadata.PieceHashes = hashes;
-                metadata.PieceCount = count;
+                else if (metadata.Files != null && fi < metadata.Files.Length && metadata.Files[fi].Length > 0)
+                {
+                    // Single-piece file (file.Length <= PieceLength) - pieces_root IS the piece hash.
+                    flatHashes.Add(root);
+                }
+                // Zero-length files contribute no pieces - skip.
             }
-            else
-            {
-                // Single-piece file - the pieces root IS the single piece hash.
-                metadata.PieceHashes = new[] { root };
-                metadata.PieceCount = 1;
-            }
+            metadata.PieceHashes = flatHashes.ToArray();
+            metadata.PieceCount = flatHashes.Count;
         }
 
         metadata.OriginalTorrentBytes = torrentBytes;
@@ -228,7 +244,8 @@ public static class TorrentParser
         string currentPath,
         List<TorrentFileInfo> files,
         List<byte[]> roots,
-        ref long offset)
+        ref long offset,
+        int pieceLength = 0)
     {
         // BEP 52 requires dict keys be sorted as raw byte strings. Ordinal sort over the
         // UTF-8-decoded strings is the right approximation for all filenames we will see.
@@ -254,12 +271,24 @@ public static class TorrentParser
                 });
                 roots.Add(root);
                 offset += length;
+
+                // Pad each file's end up to the next piece boundary in the VIRTUAL stream so
+                // the next file starts aligned. BEP 52: "The piece index for data exchange is
+                // based on the logical concatenation of files in the order they appear in the
+                // file tree, with implicit zero-padding between files so that each file starts
+                // at a piece boundary." pieceLength == 0 = caller doesn't care about alignment
+                // (old behavior, kept for callers that only need unpadded offsets).
+                if (pieceLength > 0 && length > 0)
+                {
+                    long rem = length % pieceLength;
+                    if (rem != 0) offset += (pieceLength - rem);
+                }
             }
             else
             {
                 // Directory node - recurse.
                 var subPath = string.IsNullOrEmpty(currentPath) ? entry.Key : $"{currentPath}/{entry.Key}";
-                ParseV2FileTree(node, subPath, files, roots, ref offset);
+                ParseV2FileTree(node, subPath, files, roots, ref offset, pieceLength);
             }
         }
     }

@@ -129,6 +129,70 @@ public class VerifyPieceHashTests
     }
 
     /// <summary>
+    /// Pure-v2 multi-file download path - previously broken past file 0 because the parser
+    /// only populated PieceHashes from FileRoots[0]'s piece layer. After the refactor the
+    /// parser flattens all files' piece layers in file-tree walk order and uses padded
+    /// virtual-stream offsets, so every global piece index -> PieceHashes[globalIdx] is
+    /// correct. Exercise it: create a 3-file pure-v2 torrent, parse round-trip, feed each
+    /// file's bytes through VerifyPieceHash at the globally-indexed pieces and assert all
+    /// pass. If any file beyond index 0 fails, the parser/creator refactor regressed.
+    /// </summary>
+    [Test]
+    public void V2_PureMultiFile_AllPiecesVerify_PastFile0()
+    {
+        int pieceLen = 65536;
+        // Three multi-piece files with distinct content + an intentionally partial last piece
+        // on file 1 (5000 bytes past a piece boundary) to exercise short-piece verification.
+        var fileA = MakeData(pieceLen * 2, seed: 101);
+        var fileB = MakeData(pieceLen * 3 + 5000, seed: 102);
+        var fileC = MakeData(pieceLen * 2 + 100, seed: 103);
+        var inputs = new[]
+        {
+            ("a.bin", fileA),
+            ("b.bin", fileB),
+            ("c.bin", fileC),
+        };
+        var opts = new TorrentCreatorOptions { MetaVersion = 2, PieceLength = pieceLen };
+
+        var (bytes, _) = TorrentCreator.CreateFromMultipleFiles("pure-v2-multi", inputs, opts);
+        var parsed = TorrentParser.Parse(bytes);
+
+        if (parsed.MetaVersion != 2) Assert.Fail($"Expected MetaVersion=2, got {parsed.MetaVersion}");
+        if (parsed.Files.Length != 3) Assert.Fail($"Expected 3 files, got {parsed.Files.Length}");
+
+        // Walk files in the SAME order the parser emitted (file-tree alphabetical walk) and
+        // verify each file's pieces against the flattened PieceHashes array.
+        var t = MakeTorrent(parsed.MetaVersion, parsed.PieceLength, parsed.PieceHashes);
+        int globalIdx = 0;
+        foreach (var file in parsed.Files)
+        {
+            byte[] source = file.Path == "a.bin" ? fileA
+                : file.Path == "b.bin" ? fileB
+                : file.Path == "c.bin" ? fileC
+                : throw new Exception($"Unexpected file '{file.Path}'");
+
+            int filePieceCount = (int)((file.Length + pieceLen - 1) / pieceLen);
+            for (int pi = 0; pi < filePieceCount; pi++)
+            {
+                int offset = pi * pieceLen;
+                int len = Math.Min(pieceLen, (int)(file.Length - offset));
+                var piece = new byte[len];
+                Array.Copy(source, offset, piece, 0, len);
+
+                Assert.That(t.VerifyPieceHash(globalIdx, piece), Is.True,
+                    $"File '{file.Path}' piece {pi} (global={globalIdx}, len={len}) failed verification. " +
+                    $"Parser+creator broke for pure-v2-multi-file past file 0.");
+                globalIdx++;
+            }
+        }
+
+        // Sanity: consumed every piece in the flat array.
+        Assert.That(globalIdx, Is.EqualTo(parsed.PieceHashes.Length),
+            $"Walked {globalIdx} pieces across files but PieceHashes.Length = {parsed.PieceHashes.Length}. " +
+            $"Creator + parser must agree on total piece count.");
+    }
+
+    /// <summary>
     /// End-to-end: create a v2 torrent via TorrentCreator with a large (64 KiB) piece size,
     /// load its metadata into a Torrent, then feed each piece's bytes to VerifyPieceHash
     /// and confirm they all pass. This is the real-world path - TorrentCreator output going

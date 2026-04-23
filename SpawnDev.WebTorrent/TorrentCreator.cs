@@ -996,6 +996,15 @@ public static class TorrentCreator
             : CalculatePieceLength(totalLength);
         ValidateV2PieceSize(pieceLength);
 
+        // Sort input files into BEP 52 file-tree walk order (bytewise path ordering) so every
+        // downstream per-file structure - fileRoots[], filePieceLayers[], flatHashes[],
+        // torrentFiles[] - is in the SAME order a parse round-trip sees. Prevents a subtle
+        // bug where a creator built from input order ["b", "a"] produces a TorrentMetadata
+        // with PieceHashes in input order while TorrentParser.Parse(bytes) of the same torrent
+        // reads them back in alphabetical order, making globalPieceIndex ambiguous between
+        // the two sides.
+        files = files.OrderBy(f => f.path, StringComparer.Ordinal).ToArray();
+
         // Hash each file independently, collecting file roots and piece layers.
         var fileRoots = new byte[files.Length][];
         var filePieceLayers = new byte[files.Length][][];
@@ -1039,9 +1048,11 @@ public static class TorrentCreator
 
         var torrentBytes = BuildV2TopLevelBytes(infoBytes, sortedLayers, options);
 
-        // Build TorrentFileInfo array with cumulative (non-aligned) offsets. Offsets reflect
-        // concatenation order for application-level addressing; per-piece alignment is a
-        // separate Phase 2b concern.
+        // Build TorrentFileInfo array with PADDED offsets. BEP 52 §"File tree" defines the
+        // piece index as the logical concatenation of files with implicit zero-padding so
+        // each file starts on a piece boundary in the virtual stream. Offsets reflect the
+        // padded virtual layout (consumer-facing math for piece-to-file mapping), NOT the
+        // raw per-file byte counts.
         var torrentFiles = new TorrentFileInfo[files.Length];
         long offset = 0;
         for (int i = 0; i < files.Length; i++)
@@ -1054,11 +1065,19 @@ public static class TorrentCreator
                 Offset = offset,
             };
             offset += files[i].data.Length;
+            // Pad each file's tail up to the next piece boundary (implicit - no actual bytes
+            // are emitted; this only shifts the virtual offset of the next file).
+            if (files[i].data.Length > 0)
+            {
+                long rem = files[i].data.Length % pieceLength;
+                if (rem != 0) offset += (pieceLength - rem);
+            }
         }
 
-        // Flatten piece hashes across all files for PieceHashes (for v2 multi-file these are
-        // per-file piece-layer hashes concatenated in file order; single-piece files
-        // contribute their file root as one entry).
+        // Flatten piece hashes across all files for PieceHashes. Order matches file-tree walk
+        // (input already sorted above) so a parse round-trip produces the same sequence.
+        // Single-piece files (file.Length <= PieceLength) contribute their file root as the
+        // single piece hash.
         var flatHashes = new List<byte[]>();
         for (int i = 0; i < files.Length; i++)
         {

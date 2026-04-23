@@ -32,8 +32,12 @@ public class TorrentCreatorV2MultiFileTests
         Assert.That(meta.PieceLayers.Count, Is.EqualTo(0));
 
         Assert.That(meta.TotalLength, Is.EqualTo(a.Length + b.Length));
+        // BEP 52: file offsets in v2 multi-file torrents are in the PADDED virtual stream
+        // (each file starts on a piece boundary). a is 500 bytes + implicit zero-pad to
+        // pieceLength (16384) so b starts at 16384, not at 500. This is the global-piece-
+        // index addressing spec requires for wire-level piece messages.
         Assert.That(meta.Files[0].Offset, Is.EqualTo(0));
-        Assert.That(meta.Files[1].Offset, Is.EqualTo(a.Length));
+        Assert.That(meta.Files[1].Offset, Is.EqualTo(16384));
     }
 
     [Test]

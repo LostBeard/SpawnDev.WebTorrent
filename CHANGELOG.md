@@ -1,5 +1,22 @@
 # Changelog
 
+## 3.1.3-rc.2 (2026-04-23)
+
+### Pure-v2 multi-file download support
+
+- **TorrentParser** now walks the whole v2 file tree and flattens each file's piece-layer hashes into `PieceHashes` in file-tree order. Previously only `FileRoots[0]`'s piece layer was emitted, leaving `_hashes[globalIndex]` wrong (or out of range) for any piece belonging to a file past the first. A pure-v2 multi-file torrent created by libtorrent or any external v2-first creator can now verify past file 0.
+- **Per-file offsets** are now in the PADDED virtual stream — each file starts on a piece boundary with implicit zero-padding from the previous file's tail, per BEP 52 §"File tree". `TorrentFileInfo.Offset` reflects the virtual layout so the global-piece-index addressing used by BEP 3 wire request/piece messages is well-defined.
+- **Per-piece length array** (`Torrent._pieceLengths[]`) replaces the old "every piece is `PieceLength` except the last" assumption. For pure-v2 multi-file, each file's last piece is `file.Length % PieceLength` bytes long; pieces straddling a file-end boundary are sized correctly so `Piece.Flush()` returns the right length and `VerifyPieceHash` hands an appropriately-short buffer to `MerkleHasher.ComputePieceLayer` (which handles leaf-level zero-padding internally).
+- **TorrentCreator** (`BuildV2MultiFile`) now sorts input files by path into BEP 52 file-tree walk order before building per-file structures. Flat `PieceHashes` sequence matches what a parse round-trip produces.
+- New NUnit test `VerifyPieceHashTests.V2_PureMultiFile_AllPiecesVerify_PastFile0`: creates a 3-file pure-v2 torrent (with partial last pieces on files 2 + 3), parses round-trip, walks every file's pieces and asserts `VerifyPieceHash(globalIdx, piece)` succeeds for all of them. Passes in 22ms. Mirror browser test `Bep52_PureV2MultiFile_AllPiecesVerify_PastFile0` added to the cross-platform suite.
+- Existing test `TorrentCreatorV2MultiFileTests.MultiFile_V2_FlatFiles_ProducesFileTreeWithMultipleLeaves` updated: the second file's offset now asserts against the PADDED value (16384 instead of 500) since BEP 52 requires that layout for multi-file v2.
+- Full NUnit regression: **256/0/0 in 5s** (from 255, +1 new test, 0 regressions).
+
+### Wire._message + Rechoke timer hardening (concurrent work by Geordi's session)
+
+- `Wire._message` now issues one `_push` per logical Wire message instead of two (header + data). Each BEP 10 extension message previously became two separate SCTP user messages on the WebRTC data channel; SCTP paced each independently, which stacked on top of SCTP `MAX_BURST` / `BURST_PERIOD` rate limiting and bottlenecked SpawnDev.ILGPU.P2P multi-MB tensor transfers at ~100 KB/s end-to-end despite the underlying pipe sustaining 5.4 MB/s on single-send payloads (see 3.1.3-rc.1 SctpDataSender fix).
+- Hardens `Torrent.DisposeAsync` against late-firing Rechoke timer callbacks by using `Timer.DisposeAsync` to drain in-flight work, plus a defensive null filter + try/catch inside the callback.
+
 ## 3.1.3-rc.1 (2026-04-23)
 
 ### Dep-bump: SCTP sender throughput fix (via SpawnDev.RTC 1.1.3-rc.1)

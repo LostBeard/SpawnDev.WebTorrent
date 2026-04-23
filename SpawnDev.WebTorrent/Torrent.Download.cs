@@ -333,7 +333,11 @@ public partial class Torrent
         if (!Ready || Paused || Destroyed) return;
 
         // Sort wires: increasing quality (pop = best)
+        // Null filter defends against a concurrent wire Destroy between the
+        // ToArray snapshot and the OrderBy key-selector evaluation. The outer
+        // DisposeAsync timer-drain handles the primary shutdown race.
         var wireStack = Wires.ToArray()
+            .Where(wire => wire != null)
             .Select(wire => (wire, random: _random.NextDouble()))
             .OrderBy(x =>
             {
@@ -385,7 +389,13 @@ public partial class Torrent
     public void StartRechoke()
     {
         _rechokeTimer?.Dispose();
-        _rechokeTimer = new Timer(_ => Rechoke(), null, RechokeInterval, RechokeInterval);
+        _rechokeTimer = new Timer(_ =>
+        {
+            // Belt-and-suspenders: a callback that races with disposal should
+            // never escape to the thread-pool unhandled-exception handler.
+            try { Rechoke(); }
+            catch { /* Shutdown race — callback will not fire again after DisposeAsync. */ }
+        }, null, RechokeInterval, RechokeInterval);
     }
 
     // ========================

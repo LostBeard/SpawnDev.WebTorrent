@@ -377,6 +377,66 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
+    public async Task Bep52_PureV2MultiFile_AllPiecesVerify_PastFile0()
+    {
+        // Mirrors the desktop NUnit VerifyPieceHashTests.V2_PureMultiFile_AllPiecesVerify_PastFile0
+        // through SpawnDev.UnitTesting so Blazor WASM's SHA-256 / bencode / Merkle paths prove
+        // pure-v2 multi-file create -> parse -> verify works past file 0 in the browser too.
+        // Pre-2026-04-23 the parser only emitted PieceHashes for FileRoots[0], so any piece
+        // at a global index past the first file's count failed VerifyPieceHash.
+        int pieceLen = 65536;
+        var fileA = MakeDeterministicData(pieceLen * 2, seed: 301);
+        var fileB = MakeDeterministicData(pieceLen * 3 + 5000, seed: 302); // partial last piece
+        var fileC = MakeDeterministicData(pieceLen * 2 + 100, seed: 303);  // partial last piece
+
+        var inputs = new[]
+        {
+            ("a.bin", fileA),
+            ("b.bin", fileB),
+            ("c.bin", fileC),
+        };
+        var opts = new TorrentCreatorOptions { MetaVersion = 2, PieceLength = pieceLen };
+        var (bytes, _) = TorrentCreator.CreateFromMultipleFiles("pure-v2-multi", inputs, opts);
+        var parsed = TorrentParser.Parse(bytes);
+
+        if (parsed.MetaVersion != 2) throw new Exception($"MetaVersion: {parsed.MetaVersion}");
+        if (parsed.Files.Length != 3) throw new Exception($"Files.Length: {parsed.Files.Length}");
+
+        // SetMetadata drives the Torrent from the parsed metadata and populates _hashes
+        // for VerifyPieceHash to use.
+        var t = new Torrent();
+        t.SetMetadata(parsed);
+
+        int globalIdx = 0;
+        foreach (var file in parsed.Files)
+        {
+            byte[] source = file.Path == "a.bin" ? fileA
+                : file.Path == "b.bin" ? fileB
+                : file.Path == "c.bin" ? fileC
+                : throw new Exception($"Unexpected file '{file.Path}'");
+
+            int filePieceCount = (int)((file.Length + pieceLen - 1) / pieceLen);
+            for (int pi = 0; pi < filePieceCount; pi++)
+            {
+                int offset = pi * pieceLen;
+                int len = Math.Min(pieceLen, (int)(file.Length - offset));
+                var piece = new byte[len];
+                Array.Copy(source, offset, piece, 0, len);
+
+                if (!t.VerifyPieceHash(globalIdx, piece))
+                    throw new Exception($"File '{file.Path}' piece {pi} (global={globalIdx}, len={len}) " +
+                        $"failed VerifyPieceHash. Pure-v2 multi-file parser regressed in browser.");
+                globalIdx++;
+            }
+        }
+
+        if (globalIdx != parsed.PieceHashes.Length)
+            throw new Exception($"Walked {globalIdx} pieces but PieceHashes.Length = {parsed.PieceHashes.Length}");
+
+        await Task.CompletedTask;
+    }
+
+    [TestMethod]
     public async Task Bep52_Torrent_SeedPath_ReturnsNull_ForUnknownRoot()
     {
         // Unknown file root → return null → caller sends hash_reject. Guards against

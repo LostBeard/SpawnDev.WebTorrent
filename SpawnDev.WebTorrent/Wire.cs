@@ -167,6 +167,12 @@ public class Wire : IAsyncDisposable
     public event Action? OnHaveNone;
     public event Action<int, int, int>? OnReject; // index, offset, length
     public event Action<int>? OnAllowedFast; // pieceIndex
+    /// <summary>BEP 52 v2 hash_request (peer msg id 21): remote asks for a range of Merkle tree hashes for a file.</summary>
+    public event Action<Bep52WireMessages.HashRequest>? OnHashRequest;
+    /// <summary>BEP 52 v2 hashes (peer msg id 22): remote delivers a Merkle-proof hash range.</summary>
+    public event Action<Bep52WireMessages.Hashes>? OnHashes;
+    /// <summary>BEP 52 v2 hash_reject (peer msg id 23): remote refuses a hash_request.</summary>
+    public event Action<Bep52WireMessages.HashReject>? OnHashReject;
     public event Action<string, byte[]>? OnExtended; // ext name or "handshake", payload
     public event Action<int>? OnDownload; // bytes
     public event Action<int>? OnUpload; // bytes
@@ -402,6 +408,43 @@ public class Wire : IAsyncDisposable
     // ========================
 
     /// <summary>Send BitTorrent handshake.</summary>
+    /// <summary>
+    /// Send BEP 52 v2 hash_request (peer msg id 21): ask the remote peer for a range of Merkle
+    /// tree hashes so we can verify a piece we're downloading. Payload is exactly 48 bytes per
+    /// spec - 32-byte pieces root + 4x u32 big-endian (base_layer / index / length / proof_layers).
+    /// </summary>
+    public Task SendHashRequest(Bep52WireMessages.HashRequest msg) =>
+        _sendBep52(Bep52WireMessages.MessageIdHashRequest, Bep52WireMessages.Encode(msg));
+
+    /// <summary>
+    /// Send BEP 52 v2 hashes (peer msg id 22): deliver a Merkle-proof hash range to a peer that
+    /// previously sent us a hash_request.
+    /// </summary>
+    public Task SendHashes(Bep52WireMessages.Hashes msg) =>
+        _sendBep52(Bep52WireMessages.MessageIdHashes, Bep52WireMessages.Encode(msg));
+
+    /// <summary>
+    /// Send BEP 52 v2 hash_reject (peer msg id 23): refuse a peer's hash_request. Same 48-byte
+    /// payload shape as hash_request (echoes the request fields).
+    /// </summary>
+    public Task SendHashReject(Bep52WireMessages.HashReject msg) =>
+        _sendBep52(Bep52WireMessages.MessageIdHashReject, Bep52WireMessages.Encode(msg));
+
+    private async Task _sendBep52(byte messageId, byte[] payload)
+    {
+        // Standard BT peer-message frame: [4B BE total-length] [1B msg id] [payload].
+        // total-length = 1 (id byte) + payload.Length.
+        var frame = new byte[4 + 1 + payload.Length];
+        int len = 1 + payload.Length;
+        frame[0] = (byte)((len >> 24) & 0xFF);
+        frame[1] = (byte)((len >> 16) & 0xFF);
+        frame[2] = (byte)((len >> 8) & 0xFF);
+        frame[3] = (byte)(len & 0xFF);
+        frame[4] = messageId;
+        Buffer.BlockCopy(payload, 0, frame, 5, payload.Length);
+        await _push(frame);
+    }
+
     public async Task Handshake(byte[] infoHash, byte[] peerId, bool dht = false, bool fast = false)
     {
         if (infoHash.Length != 20 || peerId.Length != 20)
@@ -586,6 +629,28 @@ public class Wire : IAsyncDisposable
         OnAllowedFast?.Invoke(index);
     }
 
+    // BEP 52 v2 peer-message handlers. Each decodes the payload via Bep52WireMessages and
+    // fires the corresponding event; if the payload is malformed the decoder throws an
+    // ArgumentException which we convert into a quiet drop (log + ignore) rather than a
+    // connection teardown, matching how the existing handlers tolerate wire-level noise.
+    private void _handleHashRequest(byte[] payload)
+    {
+        try { OnHashRequest?.Invoke(Bep52WireMessages.DecodeHashRequest(payload)); }
+        catch (ArgumentException) { OnUnknownMessage?.Invoke(payload); }
+    }
+
+    private void _handleHashes(byte[] payload)
+    {
+        try { OnHashes?.Invoke(Bep52WireMessages.DecodeHashes(payload)); }
+        catch (ArgumentException) { OnUnknownMessage?.Invoke(payload); }
+    }
+
+    private void _handleHashReject(byte[] payload)
+    {
+        try { OnHashReject?.Invoke(Bep52WireMessages.DecodeHashReject(payload)); }
+        catch (ArgumentException) { OnUnknownMessage?.Invoke(payload); }
+    }
+
     private void _handleExtended(int extId, byte[] buf)
     {
         if (extId == 0)
@@ -738,6 +803,10 @@ public class Wire : IAsyncDisposable
             case 0x10: _handleReject(ReadInt32BE(buffer, 1), ReadInt32BE(buffer, 5), ReadInt32BE(buffer, 9)); break;
             case 0x11: _handleAllowedFast(ReadInt32BE(buffer, 1)); break;
             case 20: _handleExtended(buffer[1], buffer[2..]); break;
+            // BEP 52 v2 peer messages (core, not BEP 10 extensions). Spec §"Protocol extension".
+            case Bep52WireMessages.MessageIdHashRequest: _handleHashRequest(buffer[1..]); break;
+            case Bep52WireMessages.MessageIdHashes: _handleHashes(buffer[1..]); break;
+            case Bep52WireMessages.MessageIdHashReject: _handleHashReject(buffer[1..]); break;
             default: OnUnknownMessage?.Invoke(buffer); break;
         }
     }

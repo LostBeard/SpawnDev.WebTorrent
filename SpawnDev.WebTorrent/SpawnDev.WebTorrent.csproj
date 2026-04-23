@@ -31,6 +31,7 @@
 
 	<ItemGroup>
 		<InternalsVisibleTo Include="SpawnDev.WebTorrent.Tests" />
+		<InternalsVisibleTo Include="SpawnDev.WebTorrent.Demo.Shared" />
 	</ItemGroup>
 
 	<ItemGroup>

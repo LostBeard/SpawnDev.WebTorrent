@@ -124,7 +124,9 @@ public static class TorrentCreator
 
         if (options.MetaVersion == 2)
         {
-            return BuildV2Torrent(name, data, pieceLength, options);
+            return options.Hybrid
+                ? BuildHybridSingleFile(name, data, pieceLength, options)
+                : BuildV2Torrent(name, data, pieceLength, options);
         }
 
         var pieceHashes = new List<byte[]>();
@@ -598,6 +600,112 @@ public static class TorrentCreator
     }
 
     /// <summary>
+    /// Build a BEP 52 hybrid v1+v2 single-file torrent. The single info dict carries both
+    /// the v1 keys (length, name, piece length, pieces as flat SHA-1 hashes) and the v2 keys
+    /// (file tree, meta version = 2, pieces root via Merkle tree). Two valid infohashes -
+    /// SHA-1 of the info dict for v1 clients, SHA-256 of the same bytes for v2 clients.
+    ///
+    /// Single-file hybrid needs no padding because there is only one file in the piece stream;
+    /// its last piece is the partial piece of the file itself, which v1 clients already
+    /// handle correctly.
+    /// </summary>
+    private static (byte[] torrentBytes, TorrentMetadata metadata) BuildHybridSingleFile(
+        string name, byte[] data, int pieceLength, TorrentCreatorOptions options)
+    {
+        ValidateV2PieceSize(pieceLength);
+
+        // v1 piece hashes: flat SHA-1 over piece-sized chunks of the file.
+        var v1PieceHashes = new List<byte[]>();
+        for (int offset = 0; offset < data.Length; offset += pieceLength)
+        {
+            int len = Math.Min(pieceLength, data.Length - offset);
+            v1PieceHashes.Add(SHA1.HashData(data.AsSpan(offset, len)));
+        }
+        var v1PiecesConcat = new byte[v1PieceHashes.Count * 20];
+        for (int i = 0; i < v1PieceHashes.Count; i++)
+            Buffer.BlockCopy(v1PieceHashes[i], 0, v1PiecesConcat, i * 20, 20);
+
+        // v2 Merkle tree over the file.
+        var fileRoot = MerkleHasher.ComputeFileRoot(data, pieceLength);
+        byte[][] pieceLayerHashes = data.Length > pieceLength
+            ? MerkleHasher.ComputePieceLayer(data, pieceLength)
+            : Array.Empty<byte[]>();
+
+        // Build the hybrid info dict: union of v1 and v2 key sets, alphabetically sorted.
+        // Keys: file tree, length, meta version, name, piece length, pieces, (private).
+        var fileTree = new Dictionary<string, object>
+        {
+            [name] = new Dictionary<string, object>
+            {
+                [""] = new Dictionary<string, object>
+                {
+                    ["length"] = (long)data.Length,
+                    ["pieces root"] = fileRoot,
+                }
+            }
+        };
+        var infoDict = new Dictionary<string, object>
+        {
+            ["file tree"] = fileTree,
+            ["length"] = (long)data.Length,
+            ["meta version"] = 2L,
+            ["name"] = Encoding.UTF8.GetBytes(name),
+            ["piece length"] = (long)pieceLength,
+            ["pieces"] = v1PiecesConcat,
+        };
+        if (options.IsPrivate) infoDict["private"] = 1L;
+
+        var infoBytes = BencodeEncoder.Encode(infoDict);
+        var v1InfoHashBytes = SHA1.HashData(infoBytes);
+        var v1InfoHashHex = Convert.ToHexString(v1InfoHashBytes).ToLowerInvariant();
+        var v2InfoHashBytes = SHA256.HashData(infoBytes);
+        var v2InfoHashHex = Convert.ToHexString(v2InfoHashBytes).ToLowerInvariant();
+
+        // Assemble the top-level torrent bytes using the shared helper.
+        var sortedLayers = new List<(byte[] key, byte[] value)>();
+        var pieceLayersMap = new Dictionary<byte[], byte[]>(ByteArrayEqualityComparer.Instance);
+        if (pieceLayerHashes.Length > 0)
+        {
+            var concat = ConcatPieceLayerHashes(pieceLayerHashes);
+            sortedLayers.Add((fileRoot, concat));
+            pieceLayersMap[fileRoot] = concat;
+        }
+        var torrentBytes = BuildV2TopLevelBytes(infoBytes, sortedLayers, options);
+
+        // Populate metadata with both infohashes. PieceHashes carries v2 piece-layer hashes
+        // for consistency with the other v2 paths (PieceHashAlgorithm = SHA-256 on this
+        // torrent). The v1 pieces are recoverable from InfoDictBytes + TorrentParser.
+        var pieceHashes = pieceLayerHashes.Length > 0
+            ? pieceLayerHashes
+            : new[] { fileRoot };
+
+        var metadata = new TorrentMetadata
+        {
+            InfoHash = v1InfoHashHex,
+            V2InfoHash = v2InfoHashHex,
+            MetaVersion = 2,
+            InfoDictBytes = infoBytes,
+            Name = name,
+            TotalLength = data.Length,
+            PieceLength = pieceLength,
+            PieceCount = pieceHashes.Length,
+            PieceHashes = pieceHashes,
+            FileRoots = new[] { fileRoot },
+            PieceLayers = pieceLayersMap,
+            Files = new[] { new TorrentFileInfo { Path = name, Name = name, Length = data.Length, Offset = 0 } },
+            AnnounceUrls = options.Trackers,
+            UrlList = options.WebSeeds,
+            CreatedBy = options.CreatedBy,
+            CreationDate = DateTimeOffset.UtcNow,
+            Comment = options.Comment,
+            IsPrivate = options.IsPrivate,
+            OriginalTorrentBytes = torrentBytes,
+        };
+
+        return (torrentBytes, metadata);
+    }
+
+    /// <summary>
     /// Build a BEP 52 v2 multi-file torrent from in-memory file data. Produces a recursive
     /// file tree reflecting the input paths' directory structure, one Merkle tree per file,
     /// and a piece layers dict keyed on per-file root hashes (sorted per BEP 52).
@@ -813,13 +921,21 @@ public class TorrentCreatorOptions
     /// <summary>
     /// BEP 52 meta version. <c>0</c> or <c>1</c> (default) produces a classic v1 torrent
     /// with a flat piece hash list (SHA-1 or SHA-256 per <see cref="HashAlgorithm"/>).
-    /// <c>2</c> produces a BEP 52 v2-only torrent with a Merkle-tree structure, a
+    /// <c>2</c> produces a BEP 52 v2 torrent with a Merkle-tree structure, a
     /// <c>file tree</c> info dict, per-file <c>pieces root</c> values, a top-level
     /// <c>piece layers</c> dict for multi-piece files, and a SHA-256 info hash. v2
-    /// always uses SHA-256 regardless of the <see cref="HashAlgorithm"/> field. Only
-    /// <see cref="TorrentCreator.CreateFromBytes"/> supports v2 today; streaming and
-    /// multi-file entry points throw <see cref="NotSupportedException"/> until the
-    /// Phase 2a streaming follow-up and Phase 2b per-file alignment land.
+    /// always uses SHA-256 regardless of the <see cref="HashAlgorithm"/> field.
+    /// Combine with <see cref="Hybrid"/> = <c>true</c> for a hybrid v1+v2 torrent.
     /// </summary>
     public int MetaVersion { get; set; } = 1;
+
+    /// <summary>
+    /// When <c>true</c> and <see cref="MetaVersion"/> = 2, produce a hybrid v1+v2 torrent:
+    /// a single info dict carrying both the v1 flat piece hashes and the v2 Merkle tree,
+    /// yielding two valid infohashes (SHA-1 over the info dict for v1 clients, SHA-256 for
+    /// v2 clients). Multi-file hybrid torrents pad each file to a piece boundary with
+    /// pad-file entries (<c>attr = "p"</c>) in the v1 files list so both interpretations
+    /// see identical piece-aligned content. Default <c>false</c> (v2-only).
+    /// </summary>
+    public bool Hybrid { get; set; }
 }

@@ -255,10 +255,17 @@ public class HuggingFaceProxy
                 },
                 Comment = $"HuggingFace model: {repoId}/{filePath}",
                 CreatedBy = "SpawnDev.WebTorrent.Server.HuggingFace",
+                // BEP 52 hybrid v1+v2: model torrents carry both SHA-1 flat piece hashes
+                // (for v1-only clients) and a SHA-256 Merkle tree (for v2-aware clients).
+                // CreateFromFileAsync routes through the streaming hybrid path so large
+                // model weights are hashed in bounded memory (~1 piece + incremental
+                // Merkle state), not buffered whole.
+                MetaVersion = 2,
+                Hybrid = true,
             }, ct);
 
         _torrentCache[cacheKey] = torrentBytes;
-        Console.WriteLine($"[HF Proxy] .torrent ready: {cacheKey} ({metadata.PieceHashes.Length} pieces, infoHash={metadata.InfoHash})");
+        Console.WriteLine($"[HF Proxy] .torrent ready: {cacheKey} ({metadata.PieceHashes.Length} pieces, v1={metadata.InfoHash}, v2={metadata.V2InfoHash})");
 
         return torrentBytes;
     }

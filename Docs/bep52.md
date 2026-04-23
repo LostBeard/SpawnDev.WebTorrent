@@ -151,10 +151,16 @@ Key tests:
 
 Total BEP 52-specific tests: **~180** across NUnit (desktop) and SpawnDev.UnitTesting (browser via PlaywrightMultiTest).
 
-## What's not shipped yet
+## External-client interop
 
-- **External-client interop tests.** Generate a hybrid torrent with SpawnDev.WebTorrent, load it in libtorrent / qBittorrent, seed both ways, verify. Largely manual / integration-tool work. Tracked in `Plans/bep52-phase2-execution.md`.
-- **Serving leaf-level (`base_layer = 0`) hash_requests.** Would require re-hashing piece content from the chunk store. Straightforward extension; current peers rarely ask at leaf level because piece-layer hashes are sufficient for full-piece verification.
+**JS WebTorrent ↔ SpawnDev.WebTorrent: verified 2026-04-23.** Captain round-tripped content between the official JS WebTorrent library (via his [Blazor WASM wrapper](https://lostbeard.github.io/SpawnDev.BlazorJS.WebTorrents/)) and `SpawnDev.WebTorrent.Demo` through `hub.spawndev.com:44365/announce`. JS-WebTorrent seed → C# demo downloader completed end-to-end, byte-correct, fast. This covers the BEP 3 + BEP 9 + tracker + WebRTC signaling paths against the canonical JS WebTorrent stack.
+
+**libtorrent / qBittorrent v2-peer-wire interop: not yet verified.** JS WebTorrent is predominantly v1 so the above proof doesn't exercise messages 21/22/23 against an external v2-capable client. Plan: `Plans/PLAN-BEP52-External-Interop.md` details a 5-step runbook (byte-level torrent diff against libtorrent reference, qBittorrent drag-drop load test, libtorrent-generated-parses-in-SpawnDev reference test, end-to-end cross-seeding both directions, fixture corpus). Largely manual work; hasn't blocked any production consumer.
+
+## Known limitations
+
+- **Pure-v2-only multi-file downloads.** Torrents created with `MetaVersion=2, Hybrid=false` and multiple files parse correctly (metadata, file tree, per-file roots, piece layers) but the download engine's global-piece-index model only addresses file 0's piece layer. HuggingFace model torrents + our default creator emit hybrids so this is a rare edge case. Refactor to per-file piece indexing is a Phase 3 followup; detail in `Plans/bep52-phase2-execution.md`.
+- **Serving leaf-level (`base_layer = 0`) hash_requests.** Current seed path only serves `base_layer == pieceLayerLevel` (piece-layer range requests - the practical common case). Leaf-level requests would require re-hashing piece content from the chunk store. Straightforward extension if a use case emerges; peers rarely ask at leaf level because piece-layer hashes are sufficient for full-piece verification.
 
 ## File reference
 

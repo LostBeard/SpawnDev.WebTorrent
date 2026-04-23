@@ -1,8 +1,26 @@
 # BEP 52 External-Client Interop Tests (Phase 2c step 3)
 
-Phase 2c steps 1 + 2 shipped self-consistent SpawnDev BEP 52 v2: create a hybrid torrent with `TorrentCreator`, parse it with `TorrentParser`, exchange pieces over the WebRTC wire between two SpawnDev peers, verify the v2 Merkle chain all the way to the file root. That proves our implementation is internally coherent. It does NOT prove we interoperate with libtorrent / qBittorrent / transmission / the rest of the v2 ecosystem.
+Phase 2c steps 1 + 2 shipped self-consistent SpawnDev BEP 52 v2: create a hybrid torrent with `TorrentCreator`, parse it with `TorrentParser`, exchange pieces over the WebRTC wire between two SpawnDev peers, verify the v2 Merkle chain all the way to the file root. That proves our implementation is internally coherent. It does NOT by itself prove v2 peer-wire interop with libtorrent / qBittorrent / transmission.
 
 This plan scopes the interop verification. The work is largely manual (installing external clients, setting up cross-process testbeds, comparing byte outputs) so it's hard to automate in CI without shipping binary fixtures. But each step produces a checkable artifact that proves a specific compatibility claim.
+
+## Already verified: JS WebTorrent ↔ SpawnDev.WebTorrent (2026-04-23)
+
+**Captain manually verified** by round-tripping content between the official JS WebTorrent library and our C# client:
+
+1. Browser A: [`lostbeard.github.io/SpawnDev.BlazorJS.WebTorrents`](https://lostbeard.github.io/SpawnDev.BlazorJS.WebTorrents/) — Captain's Blazor WASM wrapper around the official JS WebTorrent library.
+2. Tracker: `https://hub.spawndev.com:44365/announce` configured as the only tracker on the seed.
+3. Seeded a batch of image files, copied the JS-WebTorrent-generated magnet URI.
+4. Pasted into `SpawnDev.WebTorrent.Demo` (our C# Blazor WASM client).
+5. Result: metadata fetched, full content downloaded byte-correct, "very fast."
+
+**What this proves:**
+- Our tracker speaks the JS WebTorrent announce protocol correctly.
+- Our C# client parses magnets from the canonical JS library.
+- BEP 9 ut_metadata + BEP 3 piece exchange work against a JS WebTorrent peer.
+- WebRTC signaling through the tracker works end-to-end with the JS WebTorrent stack.
+
+**What this does NOT prove** (not a defect; just scope): v2 peer-wire messages (21/22/23) exchanged with an **external v2-capable** client. JS WebTorrent is predominantly v1, so the above test almost certainly used v1-encoded torrents. libtorrent 2.0+ / qBittorrent v4.4+ remain as separate cross-client v2-peer-wire checks below.
 
 ## Scope
 

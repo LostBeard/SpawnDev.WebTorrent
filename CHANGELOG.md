@@ -21,7 +21,7 @@
 
 ### Dep-bump: SCTP sender throughput fix (via SpawnDev.RTC 1.1.3-rc.1)
 
-- Dep-bump to `SpawnDev.RTC 1.1.3-rc.1` which transitively picks up `SpawnDev.SIPSorcery 10.0.5-rc.1` and its `SctpDataSender` lost-wakeup fix. 60x loopback throughput win measured on the fork's new regression test (89.8 KB/s → 5.4 MB/s). See `SpawnDev.RTC/Docs/sctp-tuning.md` for the full analysis.
+- Dep-bump to `SpawnDev.RTC 1.1.3-rc.1` which transitively picks up `SpawnDev.SIPSorcery 10.0.5-rc.1` and its `SctpDataSender` lost-wakeup fix. **60x on the zero-RTT synthetic benchmark** (89.8 KB/s → 5.4 MB/s). **Real-world end-to-end throughput stays bounded by `MAX_BURST × MTU / RTT`** (~186 KB/s on loopback) until `MAX_BURST` is tunable — Geordi re-measured ~0.15–0.19 MB/s regardless of buffer size through a real DesktopRTCPeerConnection. The fix is correct; the headline 60x number only manifests when SACK RTT is effectively zero. See `SpawnDev.RTC/Docs/sctp-tuning.md` for the full analysis.
 - No SpawnDev.WebTorrent source changes. Pure dep refresh.
 - Full NUnit regression: **255/0/0 in 5s** (same as 3.1.2 stable since the WebTorrent library itself didn't change).
 - Intended for SpawnDev.ILGPU.P2P to consume. Unblocks multi-MB tensor transfers over WebRTC data channels.

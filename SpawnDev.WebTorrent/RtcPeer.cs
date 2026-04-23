@@ -15,6 +15,19 @@ public class RtcPeer : SimplePeer
     private readonly string[] _iceServers;
     private TaskCompletionSource<bool>? _openTcs;
 
+    /// <summary>
+    /// The underlying SpawnDev.RTC <see cref="IRTCPeerConnection"/> for this peer.
+    /// <c>null</c> until <see cref="InitAsync"/> runs. Exposed so consumers (e.g.
+    /// SpawnDev.ILGPU.P2P) can reach platform-specific knobs that aren't surfaced on the
+    /// generic IRTCPeerConnection interface — for example, on desktop cast to
+    /// <c>DesktopRTCPeerConnection</c> to reach the SIPSorcery
+    /// <c>NativeConnection.sctp.RTCSctpAssociation.MaxBurst</c> /
+    /// <c>BurstPeriodMilliseconds</c> tunables added in SpawnDev.SIPSorcery 10.0.5-rc.2.
+    /// Browser-path consumers typically don't need this accessor; browser WebRTC doesn't
+    /// expose per-connection SCTP tunables and libwebrtc's defaults are already tuned.
+    /// </summary>
+    public IRTCPeerConnection? PeerConnection => _pc;
+
     public RtcPeer(bool initiator, string[]? iceServers = null, bool trickle = false)
         : base(initiator, trickle: trickle)
     {

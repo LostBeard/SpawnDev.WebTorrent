@@ -24,6 +24,15 @@ public partial class Torrent : IAsyncDisposable
     /// </summary>
     public string V2InfoHash { get; set; } = "";
 
+    /// <summary>
+    /// BEP 52 torrent meta version (mirror of <see cref="TorrentMetadata.MetaVersion"/>).
+    /// <c>0</c> = v1-only / Phase 1 (piece hashes are flat SHA-1 or flat SHA-256);
+    /// <c>2</c> = BEP 52 v2 (piece hashes are Merkle roots over 16 KiB leaves, requiring
+    /// Merkle-tree verification not a single flat hash). Drives piece verification in
+    /// <see cref="Torrent.Download"/>.
+    /// </summary>
+    public int MetaVersion { get; set; }
+
     public string? PeerIdHex { get; set; }
     public string? Name { get; set; }
     public int PieceLength { get; set; }
@@ -441,6 +450,7 @@ public partial class Torrent : IAsyncDisposable
 
         InfoHash = metadata.InfoHash;
         V2InfoHash = metadata.V2InfoHash;
+        MetaVersion = metadata.MetaVersion;
         OnInfoHash?.Invoke();
         Name = metadata.Name;
         PieceLength = metadata.PieceLength;

@@ -136,22 +136,12 @@ public partial class Torrent
                 return;
             }
 
-            // Piece complete — flush and verify hash
+            // Piece complete — flush and verify hash (v1 SHA-1, Phase 1 flat SHA-256,
+            // or BEP 52 v2 Merkle via MetaVersion-aware VerifyPieceHash).
             var buf = piece.Flush();
             if (buf == null) { UpdateWires(); return; }
 
-            // BEP 52: detect algorithm from stored hash length rather than hashing twice.
-            // 32-byte = SHA-256, 20-byte = SHA-1. Avoids computing the wrong algorithm
-            // on every piece of a SHA-256 torrent.
-            bool hashMatch = false;
-            if (index < _hashes.Length)
-            {
-                var expected = _hashes[index];
-                var actual = expected.Length == 32
-                    ? System.Security.Cryptography.SHA256.HashData(buf)
-                    : System.Security.Cryptography.SHA1.HashData(buf);
-                hashMatch = actual.SequenceEqual(expected);
-            }
+            bool hashMatch = VerifyPieceHash(index, buf);
 
             if (hashMatch)
             {
@@ -543,5 +533,44 @@ public partial class Torrent
             if (bitfield[i])
                 bytes[i / 8] |= (byte)(1 << (7 - (i % 8)));
         return bytes;
+    }
+
+    /// <summary>
+    /// Verify an assembled piece buffer against the expected hash at <paramref name="index"/>.
+    /// Branch matrix:
+    /// <list type="bullet">
+    /// <item><c>MetaVersion = 2</c> (BEP 52 v2 / hybrid): the stored hash is the piece layer
+    /// hash - the Merkle root over the piece's 16 KiB leaves, NOT a flat SHA-256 of the
+    /// whole piece. Recompute via <see cref="MerkleHasher.ComputePieceLayer"/> and compare.
+    /// Required for correctness when <see cref="PieceLength"/> &gt; 16 KiB: a flat SHA-256
+    /// would always mismatch.</item>
+    /// <item><c>MetaVersion = 0</c> (v1 / Phase 1): the stored hash is a flat 20-byte SHA-1
+    /// (v1) or flat 32-byte SHA-256 (Phase 1 "BEP 52 Phase 1" torrents). Pick the algorithm
+    /// from the stored hash length, matching the original Phase 1 behavior.</item>
+    /// </list>
+    /// Returns false on any out-of-range index, mismatched hash, or malformed piece data.
+    /// Internal for test visibility; the production caller is the piece-arrival path in
+    /// <c>_onPiece</c>.
+    /// </summary>
+    internal bool VerifyPieceHash(int index, byte[] buf)
+    {
+        if (index < 0 || index >= _hashes.Length) return false;
+        var expected = _hashes[index];
+
+        if (MetaVersion == 2)
+        {
+            // BEP 52 Merkle piece-layer hash.
+            if (expected.Length != MerkleHasher.HashSize) return false;
+            if (PieceLength < MerkleHasher.LeafSize || PieceLength % MerkleHasher.LeafSize != 0) return false;
+            var pieceLayer = MerkleHasher.ComputePieceLayer(buf, PieceLength);
+            if (pieceLayer.Length != 1) return false;
+            return pieceLayer[0].AsSpan().SequenceEqual(expected);
+        }
+
+        // v1 / Phase 1: flat SHA-1 (20B) or SHA-256 (32B) per stored hash length.
+        var actual = expected.Length == 32
+            ? System.Security.Cryptography.SHA256.HashData(buf)
+            : System.Security.Cryptography.SHA1.HashData(buf);
+        return actual.SequenceEqual(expected);
     }
 }

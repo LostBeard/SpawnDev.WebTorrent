@@ -428,6 +428,19 @@ public partial class Torrent
         // When peer unchokes us, start requesting
         wire.OnUnchoke += () => UpdateWire(wire);
 
+        // BEP 52 v2 peer-wire extensions (msg ids 21/22/23). We forward the peer's hashes
+        // and hash_reject messages into the per-torrent coordinator so the outstanding
+        // RequestAsync task resolves correctly, regardless of which wire in the swarm we
+        // originally sent the matching hash_request through. OnHashRequest is the inbound
+        // seed path - handled in OnV2HashRequest.
+        if (MetaVersion == 2 && V2HashCoord != null)
+        {
+            var coord = V2HashCoord;
+            wire.OnHashes += msg => coord.HandleHashes(msg);
+            wire.OnHashReject += msg => coord.HandleReject(msg);
+            wire.OnHashRequest += msg => OnV2HashRequest(wire, msg);
+        }
+
         // BEP 11: Wire PEX discovered peers into TCP connection pipeline
         var pex = wire.GetExtension<UtPexExtension>();
         if (pex != null)
@@ -533,6 +546,126 @@ public partial class Torrent
             if (bitfield[i])
                 bytes[i / 8] |= (byte)(1 << (7 - (i % 8)));
         return bytes;
+    }
+
+    /// <summary>
+    /// BEP 52 client path: issue a <c>hash_request</c> for a Merkle-hash range on behalf of
+    /// this torrent and wait for the verified response. Picks a peer wire that supports the
+    /// BEP 52 extension (plain BitTorrent peer-wire messages 21/22/23 - core protocol, not
+    /// BEP 10 extended) to actually send through; the per-torrent
+    /// <see cref="V2HashRequestCoordinator"/> correlates the reply, verifies it against the
+    /// <paramref name="req"/>'s <c>pieces_root</c>, and resolves the returned task.
+    ///
+    /// Intended consumer: magnet-only v2 bootstrap (when we have the info dict but not the
+    /// piece layers dict), and re-verification on a corrupted piece where the cached piece-
+    /// layer hash may itself be suspect.
+    /// </summary>
+    /// <param name="req">The hash_request to issue. PiecesRoot, BaseLayer, Index, Length,
+    /// and ProofLayers must all be consistent with BEP 52's indexing rules.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <param name="wire">Optional specific wire to send through. When null, picks the
+    /// first connected wire that is neither destroyed nor a web seed.</param>
+    /// <returns>The verified hash list (length + proof_layers entries) as delivered by the
+    /// peer, already validated to re-climb to the claimed <c>pieces_root</c>.</returns>
+    public Task<byte[][]> RequestV2HashesAsync(
+        Bep52WireMessages.HashRequest req,
+        CancellationToken ct = default,
+        Wire? wire = null)
+    {
+        if (V2HashCoord == null)
+            throw new InvalidOperationException(
+                "V2HashRequestCoordinator is only allocated for v2 torrents. " +
+                "Check MetaVersion == 2 before calling RequestV2HashesAsync.");
+
+        Wire? target = wire ?? PickV2HashRequestWire();
+        if (target == null)
+            throw new InvalidOperationException(
+                "No peer wire available to serve a BEP 52 hash_request. Connect a peer first.");
+
+        return V2HashCoord.RequestAsync(req, send: target.SendHashRequest, ct: ct);
+    }
+
+    private Wire? PickV2HashRequestWire()
+    {
+        // Web seeds are plain HTTP range servers - they can't speak the BEP 52 peer wire.
+        foreach (var w in Wires.ToArray())
+        {
+            if (w.Destroyed) continue;
+            if (w.Type == "webSeed") continue;
+            return w;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// BEP 52 seed path: a peer asked us for a range of Merkle hashes for a file root we may
+    /// know. If we hold piece-layer hashes for that root (from our parsed metadata), build the
+    /// matching base-layer + proof payload via <see cref="MerkleProofBuilder"/> and reply with
+    /// a <c>hashes</c> message. Otherwise reply with <c>hash_reject</c>.
+    ///
+    /// Only <c>base_layer == pieceLayerLevel</c> requests are served today: a peer asking for
+    /// piece-layer hashes to bootstrap a v2-only magnet or to re-verify after a corrupt piece.
+    /// Leaf-level (base_layer=0) requests would require re-hashing piece data from our chunk
+    /// store, which is doable but deferred - we reject politely rather than stall.
+    /// </summary>
+    private void OnV2HashRequest(Wire wire, Bep52WireMessages.HashRequest req)
+    {
+        var payload = TryBuildV2HashesPayload(req);
+        if (payload != null)
+        {
+            var (baseLayer, proof) = payload.Value;
+            var hashList = new byte[baseLayer.Length + proof.Length][];
+            Array.Copy(baseLayer, 0, hashList, 0, baseLayer.Length);
+            Array.Copy(proof, 0, hashList, baseLayer.Length, proof.Length);
+            _ = wire.SendHashes(new Bep52WireMessages.Hashes(
+                req.PiecesRoot, req.BaseLayer, req.Index, req.Length, req.ProofLayers, hashList));
+        }
+        else
+        {
+            _ = wire.SendHashReject(new Bep52WireMessages.HashReject(
+                req.PiecesRoot, req.BaseLayer, req.Index, req.Length, req.ProofLayers));
+        }
+    }
+
+    /// <summary>
+    /// Internal for tests: attempt to build the hashes-message payload for a hash_request.
+    /// Returns <c>null</c> to signal "I can't serve this - send hash_reject."
+    /// </summary>
+    internal (byte[][] baseLayer, byte[][] proof)? TryBuildV2HashesPayload(Bep52WireMessages.HashRequest req)
+    {
+        if (PieceLength < MerkleHasher.LeafSize || PieceLength % MerkleHasher.LeafSize != 0) return null;
+        int leavesPerPiece = PieceLength / MerkleHasher.LeafSize;
+        if (leavesPerPiece < 1 || (leavesPerPiece & (leavesPerPiece - 1)) != 0) return null;
+        int pieceLayerLevel = IntLog2(leavesPerPiece);
+
+        // Only the piece-layer level is served today. Other levels require file content.
+        if ((int)req.BaseLayer != pieceLayerLevel) return null;
+
+        if (!PieceLayers.TryGetValue(req.PiecesRoot, out var concat)) return null;
+        if (concat == null || concat.Length == 0 || concat.Length % MerkleHasher.HashSize != 0) return null;
+
+        int totalPieces = concat.Length / MerkleHasher.HashSize;
+        var layer = new byte[totalPieces][];
+        for (int i = 0; i < totalPieces; i++)
+        {
+            layer[i] = new byte[MerkleHasher.HashSize];
+            Buffer.BlockCopy(concat, i * MerkleHasher.HashSize, layer[i], 0, MerkleHasher.HashSize);
+        }
+
+        return MerkleProofBuilder.Build(
+            layer,
+            baseLayerLevel: pieceLayerLevel,
+            index: req.Index,
+            length: (int)req.Length,
+            proofLayers: (int)req.ProofLayers,
+            expectedRoot: req.PiecesRoot);
+    }
+
+    private static int IntLog2(int powerOfTwo)
+    {
+        int log = 0;
+        while ((1 << log) < powerOfTwo) log++;
+        return log;
     }
 
     /// <summary>

@@ -33,6 +33,32 @@ public partial class Torrent : IAsyncDisposable
     /// </summary>
     public int MetaVersion { get; set; }
 
+    /// <summary>
+    /// BEP 52 per-file Merkle piece-layer roots: one 32-byte root per file in the same order
+    /// as <see cref="Files"/>. Empty for v1-only torrents. Required for serving BEP 52 peer-
+    /// wire <c>hash_request</c> queries and for issuing our own hash_requests on v2-only
+    /// magnet bootstrap paths.
+    /// </summary>
+    public byte[][] FileRoots { get; set; } = Array.Empty<byte[]>();
+
+    /// <summary>
+    /// BEP 52 piece-layer hashes indexed by per-file root. Each value is the concatenated
+    /// piece-layer hashes for that file (one 32-byte hash per piece). Files whose length is
+    /// less than or equal to <see cref="PieceLength"/> do not appear - their root IS their
+    /// single piece-layer hash. Empty for v1-only torrents. Populated from
+    /// <see cref="TorrentMetadata.PieceLayers"/> by <see cref="SetMetadata"/>.
+    /// </summary>
+    public Dictionary<byte[], byte[]> PieceLayers { get; set; }
+        = new Dictionary<byte[], byte[]>(ByteArrayEqualityComparer.Instance);
+
+    /// <summary>
+    /// BEP 52 peer-wire hash-request/hashes/hash-reject correlation + verification state
+    /// machine. Allocated on demand when a v2 or hybrid torrent parses metadata, shared
+    /// across all peer Wires so the torrent can correlate a response on wire A to a request
+    /// issued through wire B if the first peer times out. <c>null</c> for v1-only torrents.
+    /// </summary>
+    public V2HashRequestCoordinator? V2HashCoord { get; private set; }
+
     public string? PeerIdHex { get; set; }
     public string? Name { get; set; }
     public int PieceLength { get; set; }
@@ -460,6 +486,18 @@ public partial class Torrent : IAsyncDisposable
         if (LastPieceLength == 0) LastPieceLength = PieceLength;
 
         _hashes = metadata.PieceHashes;
+
+        // BEP 52: retain per-file roots and piece-layer map so we can serve peer-wire
+        // hash_request queries (seed path) and correlate any outbound hash_requests we issue
+        // to fetch missing piece layers (magnet bootstrap path).
+        FileRoots = metadata.FileRoots ?? Array.Empty<byte[]>();
+        PieceLayers = metadata.PieceLayers ?? new Dictionary<byte[], byte[]>(ByteArrayEqualityComparer.Instance);
+
+        // Allocate the coordinator exactly once per v2 torrent. It is shared across all peer
+        // wires (requests and responses can be attributed to any peer in the swarm - the
+        // RequestKey is root+baseLayer+index+length, not peer-id).
+        if (metadata.MetaVersion == 2)
+            V2HashCoord ??= new V2HashRequestCoordinator();
 
         // Store optional metadata fields
         TorrentFileBytes = metadata.OriginalTorrentBytes;

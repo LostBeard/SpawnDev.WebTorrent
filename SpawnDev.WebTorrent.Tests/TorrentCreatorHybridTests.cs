@@ -152,6 +152,140 @@ public class TorrentCreatorHybridTests
         Assert.That(asText, Does.Contain("6:length"));
     }
 
+    [Test]
+    public void Hybrid_MultiFile_BothInfoHashesPopulated()
+    {
+        var files = new[]
+        {
+            ("a.bin", RandomBytes(500)),
+            ("b.bin", RandomBytes(2500)),
+            ("c.bin", RandomBytes(1500)),
+        };
+        var opts = new TorrentCreatorOptions { MetaVersion = 2, Hybrid = true, PieceLength = 16384 };
+
+        var (_, meta) = TorrentCreator.CreateFromMultipleFiles("multi", files, opts);
+
+        Assert.That(meta.MetaVersion, Is.EqualTo(2));
+        Assert.That(meta.InfoHash.Length, Is.EqualTo(40), "v1 SHA-1 hex");
+        Assert.That(meta.V2InfoHash.Length, Is.EqualTo(64), "v2 SHA-256 hex");
+        Assert.That(meta.InfoHash, Is.Not.EqualTo(meta.V2InfoHash));
+        Assert.That(meta.FileRoots.Length, Is.EqualTo(3));
+        Assert.That(meta.Files.Length, Is.EqualTo(3), "Metadata Files list contains only real files (pad entries filtered out)");
+    }
+
+    [Test]
+    public void Hybrid_MultiFile_EmitsPadFilesInInfoDict()
+    {
+        // Two files where the first does not end on a piece boundary => the first file
+        // should be followed by a pad file entry with attr=p in the v1 files list.
+        int pieceLen = 16384;
+        var files = new[]
+        {
+            ("first.bin", RandomBytes(1000)),   // 1000 bytes, short of 16384
+            ("second.bin", RandomBytes(500)),
+        };
+        var opts = new TorrentCreatorOptions { MetaVersion = 2, Hybrid = true, PieceLength = pieceLen };
+
+        var (bytes, _) = TorrentCreator.CreateFromMultipleFiles("pad", files, opts);
+        var asText = Encoding.ASCII.GetString(bytes);
+
+        // Pad file path should be present as ".pad" / "<padLen>" where padLen = 16384 - 1000 = 15384.
+        Assert.That(asText, Does.Contain("4:.pad"), "Pad file path[0] must be '.pad'");
+        Assert.That(asText, Does.Contain("5:15384"), "Pad file path[1] must be padLen as decimal string");
+        Assert.That(asText, Does.Contain("4:attrd") | Does.Contain("4:attr1:p"), "Pad file entry carries attr=p");
+    }
+
+    [Test]
+    public void Hybrid_MultiFile_NoPadAfterLastFile()
+    {
+        // Last file ends mid-piece but MUST NOT get a pad file after it (v1 handles the
+        // partial last piece naturally).
+        int pieceLen = 16384;
+        var files = new[]
+        {
+            ("a.bin", RandomBytes(pieceLen)),  // exactly one piece, no pad after
+            ("last.bin", RandomBytes(500)),    // partial last piece, NO pad after this
+        };
+        var opts = new TorrentCreatorOptions { MetaVersion = 2, Hybrid = true, PieceLength = pieceLen };
+
+        var (bytes, _) = TorrentCreator.CreateFromMultipleFiles("lastpart", files, opts);
+        var asText = Encoding.ASCII.GetString(bytes);
+
+        // There should be no ".pad" anywhere (first file is piece-aligned, second is last).
+        Assert.That(asText, Does.Not.Contain("4:.pad"), "No pad file should appear when first file is piece-aligned and second is last");
+    }
+
+    [Test]
+    public void Hybrid_MultiFile_V1PiecesCoverPaddedStream()
+    {
+        // Re-derive expected v1 piece hashes from the padded virtual stream and verify the
+        // pieces concatenation in the info dict matches. This is the end-to-end correctness
+        // check that v1 clients can verify pieces of the hybrid torrent.
+        int pieceLen = 16384;
+        var a = RandomBytes(1000);
+        var b = RandomBytes(500);
+        var opts = new TorrentCreatorOptions { MetaVersion = 2, Hybrid = true, PieceLength = pieceLen };
+
+        var (_, meta) = TorrentCreator.CreateFromMultipleFiles("virt",
+            new[] { ("a.bin", a), ("b.bin", b) }, opts);
+
+        // File a: 1000 bytes padded to 16384 = one piece (1000 real bytes + 15384 zeros).
+        // File b: 500 bytes, last file = partial piece (500 real bytes, no pad).
+        var piece0 = new byte[pieceLen];
+        a.AsSpan().CopyTo(piece0);
+        var expectedA = SHA1.HashData(piece0);
+        var expectedB = SHA1.HashData(b);
+
+        var expectedConcat = new byte[40];
+        Buffer.BlockCopy(expectedA, 0, expectedConcat, 0, 20);
+        Buffer.BlockCopy(expectedB, 0, expectedConcat, 20, 20);
+
+        int idx = IndexOfSequence(meta.InfoDictBytes!, expectedConcat);
+        Assert.That(idx, Is.GreaterThanOrEqualTo(0), "v1 pieces concatenation must match the padded-stream SHA-1s");
+    }
+
+    [Test]
+    public void Hybrid_MultiFile_RoundTripThroughParser()
+    {
+        int pieceLen = 32768;
+        var files = new[]
+        {
+            ("dir/small.bin", RandomBytes(200)),
+            ("dir/big.bin", RandomBytes(pieceLen * 2 + 500)),
+            ("readme.txt", RandomBytes(900)),
+        };
+        var opts = new TorrentCreatorOptions { MetaVersion = 2, Hybrid = true, PieceLength = pieceLen };
+
+        var (bytes, created) = TorrentCreator.CreateFromMultipleFiles("rt", files, opts);
+        var parsed = TorrentParser.Parse(bytes);
+
+        Assert.That(parsed.MetaVersion, Is.EqualTo(2));
+        Assert.That(parsed.InfoHash, Is.EqualTo(created.InfoHash));
+        Assert.That(parsed.V2InfoHash, Is.EqualTo(created.V2InfoHash));
+        Assert.That(parsed.FileRoots.Length, Is.EqualTo(3));
+        // v2 file tree walk orders files alphabetically; verify all 3 real files roundtrip.
+        Assert.That(parsed.Files.Select(f => f.Path).OrderBy(p => p, StringComparer.Ordinal),
+            Is.EqualTo(new[] { "dir/big.bin", "dir/small.bin", "readme.txt" }));
+    }
+
+    [Test]
+    public void Hybrid_MultiFile_PieceAlignedFileNeedsNoPad()
+    {
+        // First file is exactly one piece - no pad before the second. Second is mid-piece but
+        // is also the last file - no pad after it. Info dict should contain zero ".pad" entries.
+        int pieceLen = 16384;
+        var files = new[]
+        {
+            ("aligned.bin", RandomBytes(pieceLen)),
+            ("tail.bin", RandomBytes(500)),
+        };
+        var opts = new TorrentCreatorOptions { MetaVersion = 2, Hybrid = true, PieceLength = pieceLen };
+
+        var (bytes, _) = TorrentCreator.CreateFromMultipleFiles("aligned", files, opts);
+        var asText = Encoding.ASCII.GetString(bytes);
+        Assert.That(asText, Does.Not.Contain("4:.pad"));
+    }
+
     private static byte[] RandomBytes(int n)
     {
         var b = new byte[n];

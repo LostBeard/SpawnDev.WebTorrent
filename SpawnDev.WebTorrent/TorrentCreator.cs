@@ -154,7 +154,9 @@ public static class TorrentCreator
         options ??= new TorrentCreatorOptions();
         if (options.MetaVersion == 2)
         {
-            return BuildV2MultiFile(torrentName, files, options);
+            return options.Hybrid
+                ? BuildHybridMultiFile(torrentName, files, options)
+                : BuildV2MultiFile(torrentName, files, options);
         }
 
         long totalLength = files.Sum(f => (long)f.data.Length);
@@ -703,6 +705,208 @@ public static class TorrentCreator
         };
 
         return (torrentBytes, metadata);
+    }
+
+    /// <summary>
+    /// Build a BEP 52 hybrid v1+v2 multi-file torrent. Each real file is followed in the v1
+    /// files list by a pad-file entry (attr = "p", path = [".pad", "&lt;padLen&gt;"])
+    /// sized to fill out to the next piece boundary - except the last file, which may end
+    /// partially mid-piece as usual for v1. The single info dict carries both the v1 flat
+    /// piece hashes (SHA-1 over piece-aligned chunks of the padded virtual stream) and the
+    /// v2 Merkle tree (per-file roots over the REAL bytes, no padding).
+    /// </summary>
+    private static (byte[] torrentBytes, TorrentMetadata metadata) BuildHybridMultiFile(
+        string torrentName, (string path, byte[] data)[] files, TorrentCreatorOptions options)
+    {
+        if (files.Length == 0)
+            throw new ArgumentException("Hybrid multi-file torrent requires at least one file.", nameof(files));
+
+        long realTotalLength = files.Sum(f => (long)f.data.Length);
+        int pieceLength = options.PieceLength > 0
+            ? options.PieceLength
+            : CalculatePieceLength(realTotalLength);
+        ValidateV2PieceSize(pieceLength);
+
+        // Build v1 files list with pad entries between real files.
+        var v1FilesList = new List<object>();
+        long paddedOffset = 0;
+        var realFileOffsets = new long[files.Length];
+        for (int i = 0; i < files.Length; i++)
+        {
+            realFileOffsets[i] = paddedOffset;
+            v1FilesList.Add(new Dictionary<string, object>
+            {
+                ["length"] = (long)files[i].data.Length,
+                ["path"] = SplitPathForBencode(files[i].path),
+            });
+            paddedOffset += files[i].data.Length;
+
+            bool isLast = i == files.Length - 1;
+            if (!isLast && files[i].data.Length % pieceLength != 0)
+            {
+                long padLen = pieceLength - (files[i].data.Length % pieceLength);
+                v1FilesList.Add(new Dictionary<string, object>
+                {
+                    ["attr"] = Encoding.UTF8.GetBytes("p"),
+                    ["length"] = padLen,
+                    ["path"] = new List<object>
+                    {
+                        Encoding.UTF8.GetBytes(".pad"),
+                        Encoding.UTF8.GetBytes(padLen.ToString()),
+                    },
+                });
+                paddedOffset += padLen;
+            }
+        }
+
+        // Compute v1 pieces over the padded virtual stream. Because each real file starts
+        // at a piece boundary and pad bytes are zeros, each piece contains content from
+        // EXACTLY ONE real file (possibly with zero-pad tail on the last piece of that file).
+        var v1PieceHashes = new List<byte[]>();
+        for (int i = 0; i < files.Length; i++)
+        {
+            var data = files[i].data;
+            bool isLast = i == files.Length - 1;
+            for (int offset = 0; offset < data.Length; offset += pieceLength)
+            {
+                int actualLen = Math.Min(pieceLength, data.Length - offset);
+                if (actualLen == pieceLength)
+                {
+                    v1PieceHashes.Add(SHA1.HashData(data.AsSpan(offset, pieceLength)));
+                }
+                else
+                {
+                    // Partial piece - last piece of this file.
+                    // If not the last file, pad file fills it to piece boundary. If this IS
+                    // the last file, last piece is genuinely partial (v1 behavior).
+                    if (!isLast)
+                    {
+                        var padded = new byte[pieceLength];
+                        data.AsSpan(offset, actualLen).CopyTo(padded);
+                        v1PieceHashes.Add(SHA1.HashData(padded));
+                    }
+                    else
+                    {
+                        v1PieceHashes.Add(SHA1.HashData(data.AsSpan(offset, actualLen)));
+                    }
+                }
+            }
+        }
+
+        var v1PiecesConcat = new byte[v1PieceHashes.Count * 20];
+        for (int i = 0; i < v1PieceHashes.Count; i++)
+            Buffer.BlockCopy(v1PieceHashes[i], 0, v1PiecesConcat, i * 20, 20);
+
+        // v2 per-file Merkle (over REAL bytes, no padding).
+        var fileRoots = new byte[files.Length][];
+        var filePieceLayers = new byte[files.Length][][];
+        for (int i = 0; i < files.Length; i++)
+        {
+            fileRoots[i] = MerkleHasher.ComputeFileRoot(files[i].data, pieceLength);
+            filePieceLayers[i] = files[i].data.Length > pieceLength
+                ? MerkleHasher.ComputePieceLayer(files[i].data, pieceLength)
+                : Array.Empty<byte[]>();
+        }
+        var v2FileTree = BuildV2FileTree(files, fileRoots);
+
+        // Combined hybrid info dict: v1 keys (files, name, piece length, pieces) + v2 keys
+        // (file tree, meta version, name, piece length). 'name' and 'piece length' are
+        // shared; BEP 52 requires they appear once.
+        var infoDict = new Dictionary<string, object>
+        {
+            ["file tree"] = v2FileTree,
+            ["files"] = v1FilesList,
+            ["meta version"] = 2L,
+            ["name"] = Encoding.UTF8.GetBytes(torrentName),
+            ["piece length"] = (long)pieceLength,
+            ["pieces"] = v1PiecesConcat,
+        };
+        if (options.IsPrivate) infoDict["private"] = 1L;
+
+        var infoBytes = BencodeEncoder.Encode(infoDict);
+        var v1InfoHashBytes = SHA1.HashData(infoBytes);
+        var v1InfoHashHex = Convert.ToHexString(v1InfoHashBytes).ToLowerInvariant();
+        var v2InfoHashBytes = SHA256.HashData(infoBytes);
+        var v2InfoHashHex = Convert.ToHexString(v2InfoHashBytes).ToLowerInvariant();
+
+        // Sorted piece layers.
+        var layersCollector = new List<(byte[] key, byte[] value)>();
+        var pieceLayersMap = new Dictionary<byte[], byte[]>(ByteArrayEqualityComparer.Instance);
+        for (int i = 0; i < files.Length; i++)
+        {
+            if (filePieceLayers[i].Length > 0)
+            {
+                var concat = ConcatPieceLayerHashes(filePieceLayers[i]);
+                layersCollector.Add((fileRoots[i], concat));
+                pieceLayersMap[fileRoots[i]] = concat;
+            }
+        }
+        var sortedLayers = SortPieceLayers(layersCollector);
+
+        var torrentBytes = BuildV2TopLevelBytes(infoBytes, sortedLayers, options);
+
+        // TorrentMetadata Files[] holds the REAL files (pad files are internal v1 bookkeeping).
+        // Offsets reflect the padded virtual stream layout so piece-verification math works.
+        var torrentFiles = new TorrentFileInfo[files.Length];
+        for (int i = 0; i < files.Length; i++)
+        {
+            torrentFiles[i] = new TorrentFileInfo
+            {
+                Path = files[i].path,
+                Name = System.IO.Path.GetFileName(files[i].path),
+                Length = files[i].data.Length,
+                Offset = realFileOffsets[i],
+            };
+        }
+
+        // PieceHashes: prefer v2 layer for consistency across v2-aware paths. Consumers that
+        // want the v1 pieces stream can re-decode from InfoDictBytes.
+        var flatHashes = new List<byte[]>();
+        for (int i = 0; i < files.Length; i++)
+        {
+            if (filePieceLayers[i].Length > 0)
+                flatHashes.AddRange(filePieceLayers[i]);
+            else if (files[i].data.Length > 0)
+                flatHashes.Add(fileRoots[i]);
+        }
+
+        var metadata = new TorrentMetadata
+        {
+            InfoHash = v1InfoHashHex,
+            V2InfoHash = v2InfoHashHex,
+            MetaVersion = 2,
+            InfoDictBytes = infoBytes,
+            Name = torrentName,
+            TotalLength = realTotalLength,
+            PieceLength = pieceLength,
+            PieceCount = flatHashes.Count,
+            PieceHashes = flatHashes.ToArray(),
+            FileRoots = fileRoots,
+            PieceLayers = pieceLayersMap,
+            Files = torrentFiles,
+            AnnounceUrls = options.Trackers,
+            UrlList = options.WebSeeds,
+            CreatedBy = options.CreatedBy,
+            CreationDate = DateTimeOffset.UtcNow,
+            Comment = options.Comment,
+            IsPrivate = options.IsPrivate,
+            OriginalTorrentBytes = torrentBytes,
+        };
+
+        return (torrentBytes, metadata);
+    }
+
+    /// <summary>
+    /// Splits a file path on / and \\ into a bencode-ready path component list, suitable for
+    /// assigning as the "path" value in a v1 files entry.
+    /// </summary>
+    private static List<object> SplitPathForBencode(string path)
+    {
+        var parts = path.Split(new[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries);
+        var list = new List<object>(parts.Length);
+        foreach (var p in parts)
+            list.Add(Encoding.UTF8.GetBytes(p));
+        return list;
     }
 
     /// <summary>

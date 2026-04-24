@@ -201,6 +201,38 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
+    public async Task PureV2_TorrentMetadata_WireInfoHashHex_FallsBackToV2()
+    {
+        // Pure-v2 TorrentMetadata's WireInfoHashHex mirrors Torrent's: first 20 bytes of
+        // V2InfoHash when v1 InfoHash is empty. Used by RestoreFromStorageAsync to build
+        // the state filename for pure-v2 torrents.
+        var metadata = new TorrentMetadata
+        {
+            InfoHash = "",
+            V2InfoHash = PureV2MagnetHash,
+        };
+        var expected = PureV2MagnetHash[..40].ToLowerInvariant();
+        if (metadata.WireInfoHashHex != expected)
+            throw new Exception($"TorrentMetadata.WireInfoHashHex={metadata.WireInfoHashHex}, expected {expected}");
+
+        // Hybrid: v1 wins (BEP 52 upgrade contract).
+        var hybridMeta = new TorrentMetadata
+        {
+            InfoHash = "aaaabbbbccccddddeeeeffff1111222233334444",
+            V2InfoHash = PureV2MagnetHash,
+        };
+        if (hybridMeta.WireInfoHashHex != "aaaabbbbccccddddeeeeffff1111222233334444")
+            throw new Exception($"Hybrid TorrentMetadata.WireInfoHashHex wrong: {hybridMeta.WireInfoHashHex}");
+
+        // Both empty → empty.
+        var empty = new TorrentMetadata();
+        if (empty.WireInfoHashHex != "")
+            throw new Exception($"Empty TorrentMetadata should yield empty WireInfoHashHex, got '{empty.WireInfoHashHex}'");
+
+        await Task.CompletedTask;
+    }
+
+    [TestMethod]
     public async Task V1Only_Client_UtMetadataFactory_StaysOnV1()
     {
         // Mirror: v1-only magnet → factory produces a default (v1) UtMetadataExtension.

@@ -613,8 +613,12 @@ public partial class Torrent : IAsyncDisposable
         // Initialize chunk store if not already set (e.g., by SeedAsync)
         if (_store == null)
         {
-            if (_client?.AsyncFileSystem != null && !string.IsNullOrEmpty(InfoHash))
-                _store = new Storage.AsyncFSChunkStore(_client.AsyncFileSystem, $"webtorrent/{InfoHash}", PieceLength);
+            // Use WireInfoHashHex so pure-v2 torrents get a stable non-empty OPFS dir
+            // (first 20 bytes of v2 hash). v1 / hybrid torrents keep their v1 hash dir
+            // unchanged, so existing persisted data restores without relocation.
+            var storeHash = WireInfoHashHex;
+            if (_client?.AsyncFileSystem != null && !string.IsNullOrEmpty(storeHash))
+                _store = new Storage.AsyncFSChunkStore(_client.AsyncFileSystem, $"webtorrent/{storeHash}", PieceLength);
             else
                 _store = new Storage.MemoryChunkStore(PieceLength);
         }
@@ -666,7 +670,7 @@ public partial class Torrent : IAsyncDisposable
         StartNoPeersTimer();
 
         // Persist .torrent metadata for restore after page reload
-        if (_client?.AsyncFileSystem != null && TorrentFileBytes != null && !string.IsNullOrEmpty(InfoHash))
+        if (_client?.AsyncFileSystem != null && TorrentFileBytes != null && !string.IsNullOrEmpty(WireInfoHashHex))
             _ = PersistMetadataAsync();
 
         Ready = true;
@@ -676,14 +680,15 @@ public partial class Torrent : IAsyncDisposable
 
     private async Task PersistMetadataAsync()
     {
-        if (_client?.AsyncFileSystem == null || TorrentFileBytes == null || string.IsNullOrEmpty(InfoHash)) return;
+        var key = WireInfoHashHex;
+        if (_client?.AsyncFileSystem == null || TorrentFileBytes == null || string.IsNullOrEmpty(key)) return;
         try
         {
             var fs = _client.AsyncFileSystem;
             var dir = "webtorrent/_state";
             if (!await fs.DirectoryExists(dir))
                 await fs.CreateDirectory(dir);
-            await fs.Write($"{dir}/{InfoHash}.torrent", TorrentFileBytes);
+            await fs.Write($"{dir}/{key}.torrent", TorrentFileBytes);
             await PersistStateAsync();
         }
         catch { /* Best-effort persistence */ }
@@ -692,7 +697,8 @@ public partial class Torrent : IAsyncDisposable
     /// <summary>Persist torrent state (paused, selected files) to companion JSON file.</summary>
     internal async Task PersistStateAsync()
     {
-        if (_client?.AsyncFileSystem == null || string.IsNullOrEmpty(InfoHash)) return;
+        var key = WireInfoHashHex;
+        if (_client?.AsyncFileSystem == null || string.IsNullOrEmpty(key)) return;
         try
         {
             var fs = _client.AsyncFileSystem;
@@ -702,7 +708,7 @@ public partial class Torrent : IAsyncDisposable
             var state = new Dictionary<string, object>();
             if (Paused) state["paused"] = true;
             var json = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(state);
-            await fs.Write($"{dir}/{InfoHash}.state.json", json);
+            await fs.Write($"{dir}/{key}.state.json", json);
         }
         catch { }
     }
@@ -1618,6 +1624,23 @@ public class TorrentMetadata
     /// the same order as <see cref="Files"/>. Empty for v1-only torrents.
     /// </summary>
     public byte[][] FileRoots { get; set; } = Array.Empty<byte[]>();
+
+    /// <summary>
+    /// Same semantics as <see cref="Torrent.WireInfoHashHex"/>: v1 hash when present
+    /// (v1-only or hybrid), else the first 20 bytes of the v2 SHA-256 hash (pure v2).
+    /// Used as the canonical 40-char hex identity for OPFS persistence paths so that
+    /// pure-v2 torrents get a stable non-empty directory.
+    /// </summary>
+    public string WireInfoHashHex
+    {
+        get
+        {
+            if (!string.IsNullOrEmpty(InfoHash)) return InfoHash;
+            if (!string.IsNullOrEmpty(V2InfoHash) && V2InfoHash.Length >= 40)
+                return V2InfoHash[..40].ToLowerInvariant();
+            return "";
+        }
+    }
 
     /// <summary>
     /// BEP 52 <c>piece layers</c> dict. Keys are per-file root hashes (32 bytes) for

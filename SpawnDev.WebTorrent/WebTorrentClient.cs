@@ -450,14 +450,17 @@ public class WebTorrentClient : IAsyncDisposable
                     var metadata = TorrentParser.Parse(torrentBytes);
                     metadata.OriginalTorrentBytes = torrentBytes;
 
-                    // Skip if already loaded
-                    if (Torrents.Any(t => t.InfoHash == metadata.InfoHash)) continue;
+                    // Skip if already loaded (compare on wire hash so pure-v2 torrents don't
+                    // collide on empty v1 InfoHash)
+                    var metaKey = metadata.WireInfoHashHex;
+                    if (string.IsNullOrEmpty(metaKey)) continue;
+                    if (Torrents.Any(t => t.WireInfoHashHex == metaKey)) continue;
 
                     // Read state BEFORE initializing so Paused is set before discovery starts
                     var restoreOpts = new AddTorrentOptions();
                     try
                     {
-                        var stateFile = $"{stateDir}/{metadata.InfoHash}.state.json";
+                        var stateFile = $"{stateDir}/{metaKey}.state.json";
                         if (await AsyncFileSystem.FileExists(stateFile))
                         {
                             var stateBytes = await AsyncFileSystem.ReadBytes(stateFile);
@@ -644,7 +647,9 @@ public class WebTorrentClient : IAsyncDisposable
     public async Task RemoveAsync(Torrent torrent)
     {
         Torrents.Remove(torrent);
-        var infoHash = torrent.InfoHash;
+        // WireInfoHashHex so pure-v2 torrents hit the correct OPFS path
+        // (v1 hash for v1/hybrid, first 20 bytes of v2 hash for pure-v2).
+        var infoHash = torrent.WireInfoHashHex;
 
         // Delete persisted files FIRST (before dispose which might throw on WebSocket teardown)
         if (AsyncFileSystem != null && !string.IsNullOrEmpty(infoHash))
@@ -675,7 +680,8 @@ public class WebTorrentClient : IAsyncDisposable
     /// <summary>Remove a torrent and delete all associated data from storage.</summary>
     public async Task RemoveWithDataAsync(Torrent torrent)
     {
-        var infoHash = torrent.InfoHash;
+        // WireInfoHashHex so pure-v2 data dir (webtorrent/<v2-prefix>) is actually removed
+        var infoHash = torrent.WireInfoHashHex;
         await RemoveAsync(torrent);
         if (AsyncFileSystem != null && !string.IsNullOrEmpty(infoHash))
         {

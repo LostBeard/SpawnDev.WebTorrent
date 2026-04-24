@@ -142,16 +142,36 @@ public class Peer
             wire.SendRaw = async (data) =>
             {
                 try { await simplePeer.Send(data); }
-                catch { Destroy(null); }
+                catch (Exception ex)
+                {
+                    if (WebTorrentClient.VerboseLogging)
+                        Console.WriteLine($"[Peer] SendRaw failed ({data.Length} bytes): {ex.GetType().Name}: {ex.Message}");
+                    Destroy(null);
+                }
             };
 
             // Connection close → destroy peer
-            simplePeer.OnClose += () => Destroy(null);
-            simplePeer.OnError += (err) => Destroy(err);
+            simplePeer.OnClose += () =>
+            {
+                if (WebTorrentClient.VerboseLogging)
+                    Console.WriteLine($"[Peer] SimplePeer OnClose fired → Destroy");
+                Destroy(null);
+            };
+            simplePeer.OnError += (err) =>
+            {
+                if (WebTorrentClient.VerboseLogging)
+                    Console.WriteLine($"[Peer] SimplePeer OnError: {err?.Message ?? "null"} → Destroy");
+                Destroy(err);
+            };
         }
 
         // Wire lifecycle
-        wire.OnClose += () => Destroy(null);
+        wire.OnClose += () =>
+        {
+            if (WebTorrentClient.VerboseLogging)
+                Console.WriteLine($"[Peer] Wire OnClose fired → Destroy");
+            Destroy(null);
+        };
 
         // Wire handshake handler
         wire.OnHandshake += (infoHash, peerId, extensions) =>
@@ -246,6 +266,12 @@ public class Peer
         if (Destroyed) return;
         Destroyed = true;
         Connected = false;
+
+        if (WebTorrentClient.VerboseLogging)
+        {
+            var reason = err != null ? $"{err.GetType().Name}: {err.Message}" : "null";
+            Console.WriteLine($"[Peer] Destroy(Id={Id}, err={reason})\n{new System.Diagnostics.StackTrace(1, false)}");
+        }
 
         CancelConnectTimeout();
         CancelHandshakeTimeout();

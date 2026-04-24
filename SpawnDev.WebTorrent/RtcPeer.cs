@@ -184,15 +184,25 @@ public class RtcPeer : SimplePeer
             EmitError(new Exception(err));
         };
 
-        // Defensive: if the channel is already open at subscription time
-        // (edge case on responder if SipSorcery fires onopen synchronously),
-        // fire connect immediately. Otherwise OnOpen fires later normally.
+        // Defensive: if the channel is already open at subscription time (edge case
+        // on responder if the browser RTCDataChannel arrives from OnDataChannel
+        // already in readyState="open", or SipSorcery fires onopen synchronously),
+        // schedule EmitConnect for the NEXT event-loop tick rather than firing
+        // synchronously. Synchronous firing means the event goes out before the
+        // Torrent layer has subscribed simplePeer.OnConnect to the new Peer — the
+        // event is lost, peer.OnConnected never runs, SendHandshake never fires,
+        // and the peerCount stays at 0 forever. Deferring one tick gives the
+        // Torrent._onAddPeer → `simplePeer.OnConnect += ...` chain a chance to
+        // run first so the event has an actual subscriber when it fires.
         if (channel.ReadyState == "open")
         {
             if (WebTorrentClient.VerboseLogging)
-                Console.WriteLine($"[RtcPeer] DataChannel was already OPEN at subscribe time");
-            EmitConnect();
-            _openTcs?.TrySetResult(true);
+                Console.WriteLine($"[RtcPeer] DataChannel was already OPEN at subscribe time — deferring EmitConnect");
+            _ = Task.Run(() =>
+            {
+                EmitConnect();
+                _openTcs?.TrySetResult(true);
+            });
         }
     }
 

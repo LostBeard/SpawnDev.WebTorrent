@@ -23,7 +23,12 @@ Description="SpawnDev.WebTorrent Hub - Torrent Tracker + HuggingFace Proxy"
 # sudo journalctl -u spawndev_hub.service
 
 [Service]
-ExecStart=/usr/bin/dotnet /srv/spawndev_hub/SpawnDev.WebTorrent.ServerApp.dll
+# Self-contained publish produces a native binary at /srv/spawndev_hub/SpawnDev.WebTorrent.ServerApp
+# (no `dotnet` runtime required on the VM). Matches deploy-hub.bat's `--self-contained true` +
+# the `chmod +x` step. The legacy `dotnet <name>.dll` form only works for framework-dependent
+# publishes, which this project does not use - attempting it on a self-contained publish fails
+# at systemd exec time with status 203/EXEC.
+ExecStart=/srv/spawndev_hub/SpawnDev.WebTorrent.ServerApp
 WorkingDirectory=/srv/spawndev_hub
 Restart=always
 RestartSec=10

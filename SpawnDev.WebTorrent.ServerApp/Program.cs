@@ -91,11 +91,28 @@ app.UseForwardedHeaders();
 app.UseWebSockets();
 app.UseCors();
 
-// Server info
+// Server info. Built-time version string gets bumped alongside each deploy so
+// the `/` endpoint can verify "the new code is actually running" (the old
+// hardcoded "2.0.0" was static across all builds and useless for that).
+var serverVersion = typeof(SpawnDev.WebTorrent.WebTorrentClient).Assembly.GetName().Version?.ToString(3) ?? "unknown";
+var stunTurnPort = config.GetValue("RTC:StunTurn:Port", 3478);
+var stunTurnEnabledView = config.GetValue("RTC:StunTurn:Enabled", false);
+var ephemeralCredsSet = !string.IsNullOrEmpty(config.GetValue<string?>("RTC:StunTurn:EphemeralCredentialSharedSecret"));
+var trackerGatedView = config.GetValue("RTC:StunTurn:TrackerGated", false);
+
 app.MapGet("/", () => new
 {
     name = "SpawnDev.WebTorrent.Server",
-    version = "2.0.0",
+    version = serverVersion,
+    stunTurn = new
+    {
+        enabled = stunTurnEnabledView,
+        port = stunTurnEnabledView ? (int?)stunTurnPort : null,
+        authMode = stunTurnEnabledView
+            ? (ephemeralCredsSet ? (trackerGatedView ? "ephemeral + tracker-gated" : "ephemeral") : "long-term")
+            : null,
+    },
+    originAllowlistEnabled = trackerOptions.AllowedOrigins is { Count: > 0 },
     endpoints = new
     {
         tracker = "/announce (WebSocket)",

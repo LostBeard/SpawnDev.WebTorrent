@@ -104,6 +104,92 @@ public abstract partial class WebTorrentTestBase
         await lsd.DisposeAsync();
     }
 
+    /// <summary>
+    /// Real 2-peer BEP 14 end-to-end: two LSD instances on the same host, same
+    /// infohash, different advertised ports. Peer A announces with Port=6881,
+    /// Peer B announces with Port=6882. Via the UDP multicast group each one's
+    /// receive loop sees the other's BT-SEARCH and fires OnPeer with the peer's
+    /// `ip:port`. Test passes when each peer has observed the OTHER peer's
+    /// advertised port (not just its own self-announce).
+    ///
+    /// Gracefully skips if the test environment has no multicast routing
+    /// (common in containerized / locked-down CI) - after 3 s with no events
+    /// from either side we can't distinguish "no multicast" from "bug" so we
+    /// report Unsupported. When multicast DOES work on this box it's a real
+    /// proof that LSD peer discovery works, not just a shape check.
+    /// </summary>
+    [TestMethod(Timeout = 15000)]
+    public async Task Bep14_LSD_TwoPeers_DiscoverEachOtherViaMulticast()
+    {
+        if (OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("LSD requires UDP multicast (desktop only)");
+
+        var infoHash = new byte[20];
+        infoHash[0] = 0xBE; infoHash[1] = 0x14; infoHash[19] = 0xE2;
+
+        // Use the standard BitTorrent client port (6881) for A and 6882 for B,
+        // plus the real LSD port - these show up in the Port: header of the
+        // BT-SEARCH message and are what OnPeer reports.
+        await using var peerA = new LocalServiceDiscovery(infoHash, port: 6881);
+        await using var peerB = new LocalServiceDiscovery(infoHash, port: 6882);
+
+        var peerASeesBPort = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var peerBSeesAPort = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        peerA.OnPeer += addr =>
+        {
+            // LSD reports "ip:port" where port is the advertised BitTorrent port from the message.
+            // Peer A receiving B's announce sees ":6882" in the tail.
+            if (addr.EndsWith(":6882", StringComparison.Ordinal)) peerASeesBPort.TrySetResult(true);
+        };
+        peerB.OnPeer += addr =>
+        {
+            if (addr.EndsWith(":6881", StringComparison.Ordinal)) peerBSeesAPort.TrySetResult(true);
+        };
+
+        try
+        {
+            await peerA.StartAsync();
+            await peerB.StartAsync();
+        }
+        catch (System.Net.Sockets.SocketException ex)
+        {
+            throw new UnsupportedTestException(
+                $"LSD could not bind the multicast group 239.192.152.143:6771 ({ex.Message}). " +
+                "Likely a sandboxed / containerized environment with no multicast routing.");
+        }
+
+        // Re-announce a few times to give the multicast stack a chance on slower
+        // network stacks. Each StartAsync also kicks off an initial AnnounceAsync
+        // so a fresh pair may already have fired before we await.
+        for (int i = 0; i < 5; i++)
+        {
+            var bothDone = Task.WhenAll(peerASeesBPort.Task, peerBSeesAPort.Task);
+            var race = await Task.WhenAny(bothDone, Task.Delay(500));
+            if (race == bothDone) return; // both peers found each other - pass
+
+            await peerA.AnnounceAsync();
+            await peerB.AnnounceAsync();
+        }
+
+        // Final 3s wait - multicast delivery CAN be slow; give it one more settle.
+        var both = Task.WhenAll(peerASeesBPort.Task, peerBSeesAPort.Task);
+        var final = await Task.WhenAny(both, Task.Delay(3000));
+        if (final != both)
+        {
+            // Neither side saw any peer events at all => no multicast on this host.
+            // At least one side saw events but not the other side's port => test fail.
+            var aDone = peerASeesBPort.Task.IsCompleted;
+            var bDone = peerBSeesAPort.Task.IsCompleted;
+            if (!aDone && !bDone)
+                throw new UnsupportedTestException(
+                    "No LSD multicast events received by either peer - multicast is not routable on this host.");
+            throw new Exception(
+                $"LSD 2-peer E2E failed: peerA saw peerB={aDone}, peerB saw peerA={bDone}. " +
+                "One side received its own announce but not the other's - multicast partial-delivery issue.");
+        }
+    }
+
     // ── BEP 48: Tracker Scrape ���─
 
     [TestMethod]

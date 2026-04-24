@@ -3,7 +3,7 @@
 [![NuGet](https://img.shields.io/nuget/v/SpawnDev.WebTorrent.svg)](https://www.nuget.org/packages/SpawnDev.WebTorrent)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Runs on desktop (.NET) and browser (Blazor WASM). 17 BEPs implemented, including **BEP 52** - SHA-256 piece hashes and Merkle-tree v2 torrents with hybrid v1+v2 output for universal client compatibility.
+Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Runs on desktop (.NET) and browser (Blazor WASM). 18 BEPs implemented, including **BEP 52** - SHA-256 piece hashes and Merkle-tree v2 torrents with hybrid v1+v2 output for universal client compatibility.
 
 ## Features
 
@@ -229,7 +229,7 @@ Both demos connect to the same trackers and can P2P with each other.
 
 ## BEP Support
 
-15 BitTorrent Enhancement Proposals implemented:
+18 BitTorrent Enhancement Proposals implemented:
 
 | BEP | Title | Desktop | Browser |
 |-----|-------|---------|---------|
@@ -239,13 +239,17 @@ Both demos connect to the same trackers and can P2P with each other.
 | 9 | Magnet Links / ut_metadata | Yes | Yes |
 | 10 | Extension Protocol | Yes | Yes |
 | 11 | Peer Exchange (ut_pex) | Yes | Yes |
+| 14 | Local Service Discovery (LSD) | Yes | Desktop only (UDP multicast) |
 | 15 | UDP Tracker | Yes | N/A |
-| 17/19 | Web Seeds | Yes | Yes |
+| 17 | HTTP Seeding | Yes | Yes |
+| 19 | WebSeed | Yes | Yes |
 | 20 | Peer ID Conventions | Yes | Yes |
 | 23 | Compact Peer Lists | Yes | Yes |
 | 27 | Private Torrents | Yes | Yes |
 | 44 | DHT Storage | Yes | Desktop only |
 | 46 | Mutable Items (AI Agents) | Yes | Yes |
+| 48 | Tracker Scrape | Yes | Yes |
+| 52 | v2 Torrents (SHA-256 / Merkle / hybrid) | Yes | Yes |
 | 53 | Magnet File Selection | Yes | Yes |
 
 See [Docs/bep-support.md](Docs/bep-support.md) for full details.

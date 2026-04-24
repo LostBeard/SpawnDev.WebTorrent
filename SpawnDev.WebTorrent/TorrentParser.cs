@@ -293,12 +293,31 @@ public static class TorrentParser
         }
     }
 
-    /// <summary>Parse raw info dict bytes (from ut_metadata) with hash verification.</summary>
+    /// <summary>
+    /// Parse raw info dict bytes (from ut_metadata) with SHA-1 v1 hash verification.
+    /// Use <see cref="ParseInfoDictV2"/> for v2 (SHA-256 against urn:btmh hash).
+    /// </summary>
     public static TorrentMetadata? ParseInfoDict(byte[] infoDictBytes, byte[] expectedInfoHash)
     {
         var hash = SHA1.HashData(infoDictBytes);
         if (!hash.SequenceEqual(expectedInfoHash)) return null;
+        return WrapAndParseInfoDict(infoDictBytes);
+    }
 
+    /// <summary>
+    /// Parse raw v2 info dict bytes (from ut_metadata v2) with SHA-256 verification
+    /// against the expected v2 info hash. Returns null if the hash doesn't match.
+    /// </summary>
+    public static TorrentMetadata? ParseInfoDictV2(byte[] infoDictBytes, byte[] expectedV2InfoHash)
+    {
+        var hash = SHA256.HashData(infoDictBytes);
+        if (!hash.SequenceEqual(expectedV2InfoHash)) return null;
+        return WrapAndParseInfoDict(infoDictBytes);
+    }
+
+    /// <summary>Wraps bare info-dict bytes in `d4:info...e` and feeds through Parse.</summary>
+    private static TorrentMetadata? WrapAndParseInfoDict(byte[] infoDictBytes)
+    {
         var prefix = "d4:info"u8.ToArray();
         var suffix = "e"u8.ToArray();
         var torrentBytes = new byte[prefix.Length + infoDictBytes.Length + suffix.Length];

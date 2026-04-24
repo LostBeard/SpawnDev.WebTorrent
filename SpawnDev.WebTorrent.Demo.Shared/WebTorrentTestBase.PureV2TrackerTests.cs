@@ -123,4 +123,67 @@ public abstract partial class WebTorrentTestBase
         }
         finally { await client.DisposeAsync(); }
     }
+
+    [TestMethod]
+    public async Task PureV2_Client_UtMetadataFactory_WiresV2Mode()
+    {
+        // End-to-end: client.Add(pureV2Magnet) registers the ut_metadata factory. When a
+        // wire is created and ApplyExtensions runs, the factory should produce a
+        // UtMetadataExtension with MetadataVersion=2 and V2InfoHashHex populated from
+        // the torrent's state. rc.17 wired this so pure-v2 magnets actually advertise
+        // metadata_version=2 in their BEP 10 extended handshake.
+        var client = CreateIsolatedClient();
+        try
+        {
+            var torrent = client.Add($"magnet:?xt=urn:btmh:1220{PureV2MagnetHash}&dn=v2only");
+
+            // Use a Wire directly to fire the extension factory. ApplyExtensions is
+            // internal but the Wire.Use API is what matters — we can invoke the factory
+            // manually to inspect what it produces.
+            var wire = new SpawnDev.WebTorrent.Wire();
+            wire.SendRaw = _ => Task.CompletedTask;
+            client.ApplyExtensions(wire);
+
+            var utm = wire.GetExtension<SpawnDev.WebTorrent.UtMetadataExtension>();
+            if (utm is null) throw new Exception("ApplyExtensions didn't register UtMetadataExtension on wire");
+            if (utm.MetadataVersion != 2)
+                throw new Exception($"pure-v2 torrent should set UtMetadataExtension.MetadataVersion=2, got {utm.MetadataVersion}");
+            if (utm.V2InfoHashHex != PureV2MagnetHash)
+                throw new Exception($"UtMetadataExtension.V2InfoHashHex should be {PureV2MagnetHash}, got {utm.V2InfoHashHex}");
+
+            // Extended handshake dict should carry the metadata_version=2 key.
+            if (!wire.ExtendedHandshake.TryGetValue("metadata_version", out var mv))
+                throw new Exception("wire.ExtendedHandshake should contain metadata_version key");
+            var mvInt = mv switch { long l => (int)l, int i => i, _ => 0 };
+            if (mvInt != 2) throw new Exception($"metadata_version={mvInt}, expected 2");
+        }
+        finally { await client.DisposeAsync(); }
+    }
+
+    [TestMethod]
+    public async Task V1Only_Client_UtMetadataFactory_StaysOnV1()
+    {
+        // Mirror: v1-only magnet → factory produces a default (v1) UtMetadataExtension.
+        var v1Hex = "aaaabbbbccccddddeeeeffff1111222233334444";
+        var client = CreateIsolatedClient();
+        try
+        {
+            var torrent = client.Add($"magnet:?xt=urn:btih:{v1Hex}&dn=v1only");
+
+            var wire = new SpawnDev.WebTorrent.Wire();
+            wire.SendRaw = _ => Task.CompletedTask;
+            client.ApplyExtensions(wire);
+
+            var utm = wire.GetExtension<SpawnDev.WebTorrent.UtMetadataExtension>();
+            if (utm is null) throw new Exception("ApplyExtensions didn't register UtMetadataExtension");
+            if (utm.MetadataVersion != 1)
+                throw new Exception($"v1-only torrent should keep UtMetadataExtension.MetadataVersion=1, got {utm.MetadataVersion}");
+            if (!string.IsNullOrEmpty(utm.V2InfoHashHex))
+                throw new Exception($"v1-only torrent should have empty V2InfoHashHex, got {utm.V2InfoHashHex}");
+
+            if (wire.ExtendedHandshake.ContainsKey("metadata_version"))
+                throw new Exception("v1-only torrent must NOT advertise metadata_version in its extended handshake");
+        }
+        finally { await client.DisposeAsync(); }
+    }
 }

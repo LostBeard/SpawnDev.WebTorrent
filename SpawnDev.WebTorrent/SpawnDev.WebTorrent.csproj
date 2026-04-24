@@ -9,8 +9,8 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-		<Version>3.1.4</Version>
-		<PackageReleaseNotes>v3.1.4 stable: Transitive dep-bump to SpawnDev.RTC 1.1.4 to force the browser `BrowserRtpSender.SetParameters` codecs-required-present fix through the chain for consumers with lock files or explicit version pins. No source changes in SpawnDev.WebTorrent itself. See SpawnDev.RTC 1.1.4 release notes for the fix, and 3.1.3 notes for the big BEP 44/46 + pure-v2 + EnsureDhtAsync feature bundle (unchanged in content). See CHANGELOG.md for per-rc breakdown.</PackageReleaseNotes>
+		<Version>3.1.5</Version>
+		<PackageReleaseNotes>v3.1.5: Bug fix + interop test additions. (1) `Torrent.AddPeer(SimplePeer)` now fast-paths an already-connected peer - previously only subscribed to OnConnect, so if the underlying SimplePeer transitioned to Connected before AddPeer ran (which is every TcpPeer since its ConnectAsync fires EmitConnect synchronously), Peer.OnConnected was never invoked and no BT handshake happened. Affects every direct-add caller including the production Torrent.ConnectTcpPeer path funneled from Discovery's OnTcpPeer. Impact was masked because most consumer paths use WebRTC peers where OnConnect fires later. (2) New `Bep14_LSD_TwoPeers_DiscoverEachOtherViaMulticast` proves real UDP multicast LSD peer discovery end-to-end. (3) New `interop_test/qbittorrent_liveswarm.cs` - full live-swarm interop with qBittorrent: qBT seeds, SpawnDev.WebTorrent downloads via TCP BitTorrent peer-wire, SHA-256 byte-identical on 1 MiB hybrid torrent in under 3 seconds (localhost). See Docs/qbittorrent-interop.md.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>

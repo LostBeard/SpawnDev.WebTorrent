@@ -15,4 +15,9 @@
 		<ProjectReference Include="..\SpawnDev.WebTorrent.Server\SpawnDev.WebTorrent.Server.csproj" />
 	</ItemGroup>
 
+	<ItemGroup>
+		<EmbeddedResource Include="InteropFixtures\*.torrent" />
+		<EmbeddedResource Include="InteropFixtures\libtorrent_reference_manifest.json" />
+	</ItemGroup>
+
 </Project>

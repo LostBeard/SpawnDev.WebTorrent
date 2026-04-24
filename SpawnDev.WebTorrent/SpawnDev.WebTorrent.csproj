@@ -9,8 +9,8 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-		<Version>3.1.3-rc.28</Version>
-		<PackageReleaseNotes>v3.1.3-rc.28: Two additions. (1) New `WebTorrentClient.EnsureDhtAsync(DhtOptions?)` - eagerly initializes the DHT with optional custom port/bootstrap config. Unblocks multi-client loopback (two clients on one host previously collided on the hardcoded 6881 lazy-init port). Idempotent + browser-safe. (2) `WebTorrentClient.DisposeAsync` now disposes the DHT - previously the UDP socket leaked across disposals, causing port-bind failures in tests that reused an instance. 2 new tests in `WebTorrentTestBase.DhtTests`. Requested by Geordi for end-to-end `P2PCompute` BEP 46 propagation tests. Additive only; zero regression risk.</PackageReleaseNotes>
+		<Version>3.1.3</Version>
+		<PackageReleaseNotes>v3.1.3 stable: Big bundle since 3.1.1. BEP 44/46 server-side completeness (DhtDiscovery serves get/put queries; DhtMutableItems wires to local storage + Ed25519 signature verification; Ed25519Signer.VerifyAsync accepts raw 32-byte BEP 44 wire-format pubkeys which was a real production bug). Pure-v2 torrent parity through tracker + wire handshake + dedup + OPFS persistence + remove + service-worker streaming + HTTP file browser + UI (BEP 52 hashes). `WebTorrentClient.EnsureDhtAsync(DhtOptions?)` for multi-client loopback + custom port/bootstrap. `WebTorrentClient.DisposeAsync` now disposes the DHT (was leaking UDP socket). Dep-bump SpawnDev.RTC 1.1.1 -> 1.1.3 pulls in the new embedded STUN/TURN server, simulcast DTOs, SCTP burst tunables, and production TURN features via the companion SpawnDev.RTC.Server 1.0.3. Validated at hub.spawndev.com. See CHANGELOG.md for per-rc breakdown.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>
@@ -42,7 +42,7 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="SpawnDev.BlazorJS" Version="3.5.3" />
+		<PackageReference Include="SpawnDev.BlazorJS" Version="3.5.6" />
 		<PackageReference Include="SpawnDev.AsyncFileSystem" Version="1.2.0" />
 		<PackageReference Include="SpawnDev.BlazorJS.Cryptography" Version="3.2.0" />
 		<!-- SpawnDev.RTC replaces direct SipSorcery dependency - provides cross-platform WebRTC
@@ -51,7 +51,7 @@
 		     standalone SpawnDev.WebTorrent checkout - they don't have the sibling RTC repo.
 		     1.1.1 is the minimum version: 1.1.0 declared a dep on public SIPSorcery 10.0.4-pre
 		     which doesn't exist on nuget.org; 1.1.1 bundles the fork DLLs inline (ILGPU pattern). -->
-		<PackageReference Include="SpawnDev.RTC" Version="1.1.3-rc.6" />
+		<PackageReference Include="SpawnDev.RTC" Version="1.1.3" />
 	</ItemGroup>
 
 	<ItemGroup>

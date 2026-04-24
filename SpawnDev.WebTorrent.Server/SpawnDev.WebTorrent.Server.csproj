@@ -5,8 +5,8 @@
 		<LangVersion>latest</LangVersion>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
-		<Version>3.1.3-rc.1</Version>
-		<PackageReleaseNotes>v3.1.3-rc.1: Dep-bump transitive `SpawnDev.WebTorrent` 3.1.2 → 3.1.3-rc.25 so consumers get the pure-v2 feature-parity work (tracker + wire handshake + dedup + OPFS persistence + service-worker streaming + HTTP file browser + `Torrent.DisplayName`/`DisplayNameShort`/`WireInfoHashHex` helpers) + `PerfectNegotiator` via SpawnDev.RTC 1.1.3-rc.6 + SCTP throughput tunables via SpawnDev.SIPSorcery 10.0.5-rc.2. No server source changes.</PackageReleaseNotes>
+		<Version>3.1.3</Version>
+		<PackageReleaseNotes>v3.1.3 stable: Version-sync with SpawnDev.WebTorrent 3.1.3. Consumers get pure-v2 BEP 52 feature parity (tracker + wire handshake + dedup + OPFS persistence + service-worker streaming + HTTP file browser + Torrent.DisplayName / DisplayNameShort / WireInfoHashHex helpers), BEP 44/46 server-side completeness, PerfectNegotiator from the RTC 1.1.3 chain, SCTP throughput tunables from SIPSorcery 10.0.5. No server source changes since 3.1.1 - pure transitive dep promotion. See SpawnDev.WebTorrent 3.1.3 release notes for the full feature set.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>

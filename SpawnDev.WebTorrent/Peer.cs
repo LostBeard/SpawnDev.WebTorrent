@@ -195,7 +195,10 @@ public class Peer
         if (SentHandshake) return;
         SentHandshake = true;
 
-        var infoHash = HexToBytes(Swarm.InfoHash ?? "");
+        // Use the wire info hash — v1 when present, else first 20 bytes of v2 per the
+        // cross-client pure-v2 wire convention. Covers v1-only, hybrid, and pure-v2
+        // torrents uniformly.
+        var infoHash = HexToBytes(Swarm.WireInfoHashHex);
         var peerId = HexToBytes(Swarm.PeerIdHex ?? "");
         await WireInstance.Handshake(infoHash, peerId, dht: true, fast: true);
     }

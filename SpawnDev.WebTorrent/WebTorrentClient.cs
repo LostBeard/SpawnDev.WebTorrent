@@ -524,11 +524,20 @@ public class WebTorrentClient : IAsyncDisposable
         return Add(torrentFileBytes, opts);
     }
 
-    /// <summary>Get a torrent by info hash hex.</summary>
+    /// <summary>
+    /// Get a torrent by info hash hex. Matches on v1 InfoHash when present; for pure-v2
+    /// torrents (v1 empty) matches against the first 20 bytes of V2InfoHash — the wire-
+    /// compat convention used by incoming BT handshakes and tracker announce routing.
+    /// Also matches exact V2InfoHash (64 hex chars) so callers with only the v2 hash can
+    /// look up their pure-v2 torrent.
+    /// </summary>
     public Torrent? Get(string infoHash)
     {
+        if (string.IsNullOrEmpty(infoHash)) return null;
         return Torrents.FirstOrDefault(t =>
-            string.Equals(t.InfoHash, infoHash, StringComparison.OrdinalIgnoreCase));
+            string.Equals(t.InfoHash, infoHash, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(t.V2InfoHash, infoHash, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(t.WireInfoHashHex, infoHash, StringComparison.OrdinalIgnoreCase));
     }
 
     private async Task<Torrent> SeedFromMetadataAsync(TorrentMetadata metadata, byte[][] dataChunks, AddTorrentOptions addOpts)

@@ -25,6 +25,25 @@ public partial class Torrent : IAsyncDisposable
     public string V2InfoHash { get; set; } = "";
 
     /// <summary>
+    /// The 20-byte info-hash value used on the BitTorrent wire (handshake bytes 28..47) and
+    /// in tracker announce <c>info_hash</c> parameters. For v1-only and hybrid torrents this
+    /// is the v1 SHA-1 infohash. For pure-v2 torrents (InfoHash empty, V2InfoHash set) this
+    /// is the FIRST 20 bytes of the v2 SHA-256 infohash — the cross-client convention used
+    /// by libtorrent / qBittorrent / rqbit for wire-compat with the 20-byte-wide BitTorrent
+    /// handshake. Returns an empty string if neither hash is set.
+    /// </summary>
+    public string WireInfoHashHex
+    {
+        get
+        {
+            if (!string.IsNullOrEmpty(InfoHash)) return InfoHash;
+            if (!string.IsNullOrEmpty(V2InfoHash) && V2InfoHash.Length >= 40)
+                return V2InfoHash[..40].ToLowerInvariant();
+            return "";
+        }
+    }
+
+    /// <summary>
     /// BEP 52 torrent meta version (mirror of <see cref="TorrentMetadata.MetaVersion"/>).
     /// <c>0</c> = v1-only / Phase 1 (piece hashes are flat SHA-1 or flat SHA-256);
     /// <c>2</c> = BEP 52 v2 (piece hashes are Merkle roots over 16 KiB leaves, requiring
@@ -353,11 +372,15 @@ public partial class Torrent : IAsyncDisposable
         ParseMagnet(magnetUri);
         if (string.IsNullOrEmpty(InfoHash) && string.IsNullOrEmpty(V2InfoHash))
             throw new Exception("Malformed magnet: no info hash");
-        if (string.IsNullOrEmpty(InfoHash) && !string.IsNullOrEmpty(V2InfoHash))
-            throw new NotSupportedException(
-                "v2-only magnet URIs (urn:btmh:) require the BEP 52 wire extension (ut_hash_request) " +
-                "for metadata and piece verification, which is a Phase 2c item not yet implemented. " +
-                "Hybrid magnets (urn:btih + urn:btmh) work today via the v1 signaling path.");
+        // Pure-v2 magnet URIs (urn:btmh: only) are supported as of 3.1.3-rc.13:
+        // the tracker announce + BT wire handshake use the first 20 bytes of the v2
+        // SHA-256 hash (cross-client convention, see WireInfoHashHex). Metadata
+        // retrieval for v2-only magnets still relies on peers running an extension
+        // that can serve the v2 info dict — BEP 9 ut_metadata is v1-only; v2
+        // metadata discovery is peer-to-peer via BEP 52 hash_request messages once
+        // at least one peer already has the torrent file. If no such peer is
+        // reachable the swarm will stall on metadata exchange, but the tracker
+        // connection + WebRTC signaling layer now works for pure-v2 swarms.
 
         // Merge client's default trackers for maximum peer discovery
         if (_client?.DefaultTrackers?.Length > 0)
@@ -690,9 +713,13 @@ public partial class Torrent : IAsyncDisposable
 
     private void StartDiscovery()
     {
-        if (_discovery != null || Destroyed || _client == null || string.IsNullOrEmpty(InfoHash)) return;
+        // Discovery uses the 20-byte wire info hash — v1 hash if present, else first
+        // 20 bytes of the v2 SHA-256 hash for pure-v2 torrents. WireInfoHashHex handles
+        // the fallback.
+        var wireHex = WireInfoHashHex;
+        if (_discovery != null || Destroyed || _client == null || string.IsNullOrEmpty(wireHex)) return;
 
-        var infoHashBytes = Convert.FromHexString(InfoHash!);
+        var infoHashBytes = Convert.FromHexString(wireHex);
 
         // Tracker-based discovery (always allowed, even for private torrents per BEP 27)
         _discovery = new Discovery(

@@ -32,7 +32,7 @@ Credit: Gemini flagged this during a conversation with TJ on 2026-03-27.
 ### Phase 3: Ecosystem — PARTIALLY SHIPPED 2026-04-23
 - [x] Magnet URI v2 format (`urn:btmh:` multihash) — `Torrent.ParseMagnet` accepts `urn:btmh:1220<sha256-hex>`; `ComputedMagnetUri` emits hybrid magnets with both `urn:btih:` + `urn:btmh:` when both infohashes are available.
 - [x] JS WebTorrent interop verified — Captain manually round-tripped content between his Blazor-WASM JS-WebTorrent wrapper and SpawnDev.WebTorrent.Demo via `hub.spawndev.com:44365/announce`; full download end-to-end (see `reference_webtorrent_js_interop_proof.md`).
-- [ ] libtorrent / qBittorrent v2-peer-wire interop — plan + runbook ready in `Plans/PLAN-BEP52-External-Interop.md`; largely manual (needs external tools). Not blocking any production consumer today.
+- [x] libtorrent / qBittorrent v2-peer-wire interop — **AUTOMATED 2026-04-24** via `interop_test/qbittorrent_interop.cs` Web UI REST driver. v1 + pure-v2 + hybrid all PASS against qBittorrent 5.1.4 (libtorrent 2.0.11). Hash matches, 100% piece verification via force-recheck. See `PLAN-BEP52-External-Interop.md` for full result.
 
 ## Who Supports BEP 52
 - **libtorrent** (rasterbar) — full v2 support since 2.0

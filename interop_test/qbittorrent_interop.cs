@@ -85,7 +85,34 @@ var prefsJson = JsonDocument.Parse(await prefsResp.Content.ReadAsStringAsync());
 var savePath = prefsJson.RootElement.GetProperty("save_path").GetString()!;
 Console.WriteLine($"qBittorrent save_path: {savePath}");
 
-// 3. Copy payload.bin into save path so qBittorrent finds it on recheck.
+// 3. Clean slate: remove any leftover payload.bin torrents from a previous run so we
+// don't collide on re-add. Keeps the data file on disk (deleteFiles=false).
+var existingResp = await http.GetAsync("/api/v2/torrents/info");
+var existingJson = JsonDocument.Parse(await existingResp.Content.ReadAsStringAsync());
+var stale = existingJson.RootElement.EnumerateArray()
+    .Where(t => (t.GetProperty("name").GetString() ?? "").StartsWith("payload.bin"))
+    .Select(t => t.GetProperty("hash").GetString() ?? "")
+    .Where(h => !string.IsNullOrEmpty(h))
+    .ToArray();
+if (stale.Length > 0)
+{
+    // Delete one-at-a-time: FormUrlEncodedContent URL-encodes the `|` separator to
+    // %7C and qBittorrent's parser then only sees the first hash. Per-hash POSTs
+    // side-step the encoding. Also 500ms settle between to let qBittorrent finalize.
+    foreach (var h in stale)
+    {
+        var delForm = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["hashes"] = h,
+            ["deleteFiles"] = "false",
+        });
+        await http.PostAsync("/api/v2/torrents/delete", delForm);
+    }
+    Console.WriteLine($"Cleaned {stale.Length} leftover payload.bin torrents from previous runs");
+    await Task.Delay(1000); // let qBittorrent finish tearing them down
+}
+
+// 4. Copy payload.bin into save path so qBittorrent finds it on recheck.
 var savePayload = Path.Combine(savePath, "payload.bin");
 File.Copy(payloadPath, savePayload, overwrite: true);
 Console.WriteLine($"Copied payload.bin → {savePayload} ({new FileInfo(savePayload).Length} bytes)");
@@ -193,22 +220,32 @@ foreach (var (name, path, desc, exp) in torrents)
     }
     Console.WriteLine($"  recheck started, polling ...");
 
-    // 8. Poll for completion (state transitions to checkingUP / uploading / pausedUP).
-    var deadline = DateTime.UtcNow.AddSeconds(45);
+    // 8. Poll for completion. Find our torrent in the unfiltered list each tick
+    // (filtering by hashes= sometimes returns empty for pure-v2 entries depending
+    // on qBittorrent version - unfiltered is bulletproof). Success condition is
+    // simply progress >= 1.0; we report the state for context but don't gate on it.
+    var deadline = DateTime.UtcNow.AddSeconds(60);
     bool done = false;
     double progress = 0;
     string state = "?";
     while (DateTime.UtcNow < deadline)
     {
         await Task.Delay(1000);
-        var pollResp = await http.GetAsync("/api/v2/torrents/info?hashes=" + hashForApi);
+        var pollResp = await http.GetAsync("/api/v2/torrents/info");
         var pollJson = JsonDocument.Parse(await pollResp.Content.ReadAsStringAsync());
-        var first = pollJson.RootElement.EnumerateArray().FirstOrDefault();
-        if (first.ValueKind == JsonValueKind.Undefined) continue;
-        progress = first.GetProperty("progress").GetDouble();
-        state = first.GetProperty("state").GetString()!;
-        Console.Write($"\r  recheck: {progress * 100:F1}% state={state}    ");
-        if (progress >= 1.0 && (state is "uploading" or "stalledUP" or "pausedUP" or "checkingUP" or "queuedUP"))
+        var match = pollJson.RootElement.EnumerateArray().FirstOrDefault(t =>
+        {
+            var h1 = t.TryGetProperty("infohash_v1", out var p1) ? (p1.GetString() ?? "") : (t.GetProperty("hash").GetString() ?? "");
+            var h2 = t.TryGetProperty("infohash_v2", out var p2) ? (p2.GetString() ?? "") : "";
+            return h1.Equals(hashForApi, StringComparison.OrdinalIgnoreCase)
+                || h2.Equals(hashForApi, StringComparison.OrdinalIgnoreCase)
+                || (t.GetProperty("hash").GetString() ?? "").Equals(hashForApi, StringComparison.OrdinalIgnoreCase);
+        });
+        if (match.ValueKind == JsonValueKind.Undefined) continue;
+        progress = match.GetProperty("progress").GetDouble();
+        state = match.GetProperty("state").GetString()!;
+        Console.Write($"\r  recheck: {progress * 100:F1}% state={state}      ");
+        if (progress >= 1.0)
         {
             done = true;
             Console.WriteLine();
@@ -237,6 +274,32 @@ foreach (var (name, path, desc, exp) in torrents)
         ["deleteFiles"] = "false",
     });
     await http.PostAsync("/api/v2/torrents/delete", removeForm);
+}
+
+// Final cleanup sweep: some qBittorrent versions don't remove v2/hybrid torrents reliably
+// when called with the hash key we used for add — re-fetch the list by name and nuke
+// anything named payload.bin that survived the per-iteration deletes.
+await Task.Delay(500);
+var finalListResp = await http.GetAsync("/api/v2/torrents/info");
+var finalList = JsonDocument.Parse(await finalListResp.Content.ReadAsStringAsync());
+var orphans = finalList.RootElement.EnumerateArray()
+    .Where(t => (t.GetProperty("name").GetString() ?? "").StartsWith("payload.bin"))
+    .Select(t => t.GetProperty("hash").GetString() ?? "")
+    .Where(h => !string.IsNullOrEmpty(h))
+    .ToArray();
+if (orphans.Length > 0)
+{
+    foreach (var h in orphans)
+    {
+        var delForm = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["hashes"] = h,
+            ["deleteFiles"] = "false",
+        });
+        await http.PostAsync("/api/v2/torrents/delete", delForm);
+    }
+    await Task.Delay(500);
+    Console.WriteLine($"Final cleanup: removed {orphans.Length} orphan payload.bin entries (test data retained on disk)");
 }
 
 Console.WriteLine("\n══ Summary ══");

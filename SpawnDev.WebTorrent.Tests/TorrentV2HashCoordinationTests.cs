@@ -87,10 +87,13 @@ public class TorrentV2HashCoordinationTests
     }
 
     [Test]
-    public void SeedPath_Rejects_LeafLevelRequest()
+    public void SeedPath_Rejects_LeafLevelRequest_WhenPiecesAreMissing()
     {
-        // Level-0 (leaf) requests need raw file re-hashing which we don't support in this
-        // Phase 2c integration - reject them politely.
+        // base_layer = 0 leaf-level requests CAN be served (shipped 2026-04-23) when we
+        // have every piece of the requested file in the chunk store. When we don't (as
+        // here - fresh torrent with Bitfield still all false), CanPossiblyServeLeafLevel
+        // rejects synchronously on the wire thread - no race against a fire-and-forget
+        // async reply.
         var torrent = MakeV2Torrent(fileSize: 8 * 65536, pieceSize: 65536);
         var fileRoot = torrent.FileRoots[0];
         var wire = AttachHandshakedWire(torrent, capturedSent: out var sentFrames);
@@ -99,7 +102,8 @@ public class TorrentV2HashCoordinationTests
         wire.DataReceived(MakeMessage(Bep52WireMessages.MessageIdHashRequest, Bep52WireMessages.Encode(req)));
 
         var rejectFrame = sentFrames.FirstOrDefault(f => f.Length > 4 && f[4] == Bep52WireMessages.MessageIdHashReject);
-        Assert.That(rejectFrame, Is.Not.Null);
+        Assert.That(rejectFrame, Is.Not.Null,
+            "Leaf-level request without stored pieces must be refused synchronously (not race-pending behind a fire-and-forget Task).");
     }
 
     [Test]
@@ -193,6 +197,88 @@ public class TorrentV2HashCoordinationTests
         var req = new Bep52WireMessages.HashRequest(fileRoot, 0, 0, 4, 0);
         var payload = torrent.TryBuildV2HashesPayload(req);
         Assert.That(payload, Is.Not.Null);
+    }
+
+    [Test]
+    public async Task TryBuildV2HashesPayloadAsync_ServesLeafLevelFromStore()
+    {
+        // Leaf-level seed path: a peer asks for base_layer=0 hashes (16 KiB leaf hashes).
+        // Requires reading piece content from the chunk store and re-hashing. Previously
+        // refused; shipped 2026-04-23 as the final Phase 2c completion item.
+        // 64 KiB piece = 4 leaves per piece. 4-piece file = 16 leaves. Request 4 leaves
+        // starting at index 0 with proof_layers that climb from leaf layer to root.
+        int pieceSize = 65536;
+        int pieceCount = 4;
+        var data = new byte[pieceSize * pieceCount];
+        new Random(91).NextBytes(data);
+        var opts = new TorrentCreatorOptions { MetaVersion = 2, PieceLength = pieceSize };
+        var (bytes, _) = TorrentCreator.CreateFromBytes("leaf-probe.bin", data, opts);
+        var parsed = TorrentParser.Parse(bytes);
+
+        var t = new Torrent();
+        t.SetMetadata(parsed);
+
+        // Populate the chunk store with every piece so the seed path can re-hash.
+        var storeField = typeof(Torrent).GetField("_store",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var store = (SpawnDev.WebTorrent.Storage.IChunkStore)storeField!.GetValue(t)!;
+        for (int i = 0; i < pieceCount; i++)
+        {
+            var pieceData = new byte[pieceSize];
+            Array.Copy(data, i * pieceSize, pieceData, 0, pieceSize);
+            await store.PutAsync(i, pieceData);
+            t.Bitfield[i] = true;
+        }
+
+        var fileRoot = t.FileRoots[0];
+        // 16 leaves in the file; ask for the first 4 at level 0. log2(16) = 4 internal
+        // levels from full leaf layer to root; length=4 consumes 2 of those internally
+        // (log2(4)=2), leaving 2 proof layers.
+        var req = new Bep52WireMessages.HashRequest(fileRoot, BaseLayer: 0, Index: 0, Length: 4, ProofLayers: 2);
+
+        var payload = await t.TryBuildV2HashesPayloadAsync(req);
+        Assert.That(payload, Is.Not.Null, "Leaf-level request must be served when we hold all pieces of the file.");
+        var (baseLayer, proof) = payload!.Value;
+        Assert.That(baseLayer.Length, Is.EqualTo(4));
+        Assert.That(proof.Length, Is.EqualTo(2));
+
+        // Round-trip through the verifier - proves the leaves we emitted climb to the
+        // advertised pieces_root exactly.
+        Assert.That(MerkleProofVerifier.Verify(fileRoot, 0, baseLayer, proof), Is.True,
+            "Leaf-level seed output must pass MerkleProofVerifier round-trip.");
+    }
+
+    [Test]
+    public async Task TryBuildV2HashesPayloadAsync_ReturnsNull_WhenPiecesMissing()
+    {
+        // Same 4-piece 64 KiB layout, but this time we DON'T populate pieces 2 and 3.
+        // Leaf-level can't be served without the raw piece content; expected to return null.
+        int pieceSize = 65536;
+        var data = new byte[pieceSize * 4];
+        new Random(92).NextBytes(data);
+        var opts = new TorrentCreatorOptions { MetaVersion = 2, PieceLength = pieceSize };
+        var (bytes, _) = TorrentCreator.CreateFromBytes("incomplete.bin", data, opts);
+
+        var t = new Torrent();
+        t.SetMetadata(TorrentParser.Parse(bytes));
+
+        // Populate only pieces 0-1; leave 2-3 missing (Bitfield stays false).
+        var storeField = typeof(Torrent).GetField("_store",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var store = (SpawnDev.WebTorrent.Storage.IChunkStore)storeField!.GetValue(t)!;
+        for (int i = 0; i < 2; i++)
+        {
+            var pieceData = new byte[pieceSize];
+            Array.Copy(data, i * pieceSize, pieceData, 0, pieceSize);
+            await store.PutAsync(i, pieceData);
+            t.Bitfield[i] = true;
+        }
+
+        var fileRoot = t.FileRoots[0];
+        var req = new Bep52WireMessages.HashRequest(fileRoot, BaseLayer: 0, Index: 0, Length: 4, ProofLayers: 2);
+        var payload = await t.TryBuildV2HashesPayloadAsync(req);
+        Assert.That(payload, Is.Null,
+            "Leaf-level request must be refused when we don't have every piece of the file - can't re-hash what we don't have.");
     }
 
     // ── Helpers ──

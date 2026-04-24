@@ -620,21 +620,96 @@ public partial class Torrent
     /// </summary>
     private void OnV2HashRequest(Wire wire, Bep52WireMessages.HashRequest req)
     {
-        var payload = TryBuildV2HashesPayload(req);
-        if (payload != null)
+        // Try the sync piece-layer path first (zero I/O; fast-path for the common case).
+        var syncPayload = TryBuildV2HashesPayload(req);
+        if (syncPayload != null)
         {
-            var (baseLayer, proof) = payload.Value;
-            var hashList = new byte[baseLayer.Length + proof.Length][];
-            Array.Copy(baseLayer, 0, hashList, 0, baseLayer.Length);
-            Array.Copy(proof, 0, hashList, baseLayer.Length, proof.Length);
-            _ = wire.SendHashes(new Bep52WireMessages.Hashes(
-                req.PiecesRoot, req.BaseLayer, req.Index, req.Length, req.ProofLayers, hashList));
+            SendHashesReply(wire, req, syncPayload.Value);
+            return;
         }
-        else
+
+        // Sync returned null. Either the request is definitely refusable (wrong base_layer,
+        // unknown root, malformed params, bitfield shows we don't have the pieces needed)
+        // or it's a leaf-level request we might be able to serve by re-hashing from the
+        // store. Precheck SYNC conditions that would guarantee the leaf-level async path
+        // also fails - reject immediately rather than race-pending a fire-and-forget reject.
+        if (!CanPossiblyServeLeafLevel(req))
         {
             _ = wire.SendHashReject(new Bep52WireMessages.HashReject(
                 req.PiecesRoot, req.BaseLayer, req.Index, req.Length, req.ProofLayers));
+            return;
         }
+
+        // Leaf-level path: need store I/O. Fire-and-forget so we don't block the wire
+        // event thread.
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var asyncPayload = await TryBuildV2HashesPayloadAsync(req);
+                if (asyncPayload != null)
+                {
+                    SendHashesReply(wire, req, asyncPayload.Value);
+                }
+                else
+                {
+                    _ = wire.SendHashReject(new Bep52WireMessages.HashReject(
+                        req.PiecesRoot, req.BaseLayer, req.Index, req.Length, req.ProofLayers));
+                }
+            }
+            catch
+            {
+                _ = wire.SendHashReject(new Bep52WireMessages.HashReject(
+                    req.PiecesRoot, req.BaseLayer, req.Index, req.Length, req.ProofLayers));
+            }
+        });
+    }
+
+    /// <summary>
+    /// Sync gate for whether the async leaf-level path might succeed. Returns false when
+    /// any precondition visible in sync state is already unmet - so the wire thread sends
+    /// hash_reject immediately instead of race-pending it behind a fire-and-forget Task.
+    /// </summary>
+    private bool CanPossiblyServeLeafLevel(Bep52WireMessages.HashRequest req)
+    {
+        if (req.BaseLayer != 0) return false;
+        if (_store == null) return false;
+        if (PieceLength < MerkleHasher.LeafSize || PieceLength % MerkleHasher.LeafSize != 0) return false;
+        if (Files == null || FileRoots == null || FileRoots.Length == 0) return false;
+
+        int fileIndex = -1;
+        for (int i = 0; i < FileRoots.Length; i++)
+        {
+            if (FileRoots[i].AsSpan().SequenceEqual(req.PiecesRoot))
+            {
+                fileIndex = i;
+                break;
+            }
+        }
+        if (fileIndex < 0 || fileIndex >= Files.Length) return false;
+
+        var file = Files[fileIndex];
+        if (file.Length == 0) return false;
+
+        // We must have every piece of this file (can't re-hash what we don't have).
+        int fileStartGlobalPiece = (int)(file.Offset / PieceLength);
+        int filePieceCount = (int)((file.Length + PieceLength - 1) / PieceLength);
+        for (int pi = 0; pi < filePieceCount; pi++)
+        {
+            int gp = fileStartGlobalPiece + pi;
+            if (gp < 0 || gp >= Bitfield.Length || !Bitfield[gp]) return false;
+        }
+        return true;
+    }
+
+    private static void SendHashesReply(Wire wire, Bep52WireMessages.HashRequest req, (byte[][] baseLayer, byte[][] proof) payload)
+    {
+        var (baseLayer, proof) = payload;
+        var hashList = new byte[baseLayer.Length + proof.Length][];
+        Array.Copy(baseLayer, 0, hashList, 0, baseLayer.Length);
+        Array.Copy(proof, 0, hashList, baseLayer.Length, proof.Length);
+        _ = wire.SendHashes(new Bep52WireMessages.Hashes(
+            req.PiecesRoot, req.BaseLayer, req.Index, req.Length, req.ProofLayers, hashList));
     }
 
     /// <summary>
@@ -676,6 +751,100 @@ public partial class Torrent
         int log = 0;
         while ((1 << log) < powerOfTwo) log++;
         return log;
+    }
+
+    /// <summary>
+    /// Async companion to <see cref="TryBuildV2HashesPayload"/>. Handles base_layer == 0
+    /// (leaf-level) requests by re-hashing 16 KiB leaves from the chunk store, building
+    /// the file's full leaf layer, and delegating to <see cref="MerkleProofBuilder"/>.
+    /// Also handles the piece-layer case (so callers can use this single async method
+    /// uniformly if they don't need the sync fast-path).
+    ///
+    /// Returns <c>null</c> when the request is malformed, the file root is unknown, the
+    /// level is neither 0 nor the piece-layer level, or any of the pieces needed for the
+    /// requested leaf range haven't been downloaded yet (can't re-hash what we don't have).
+    /// </summary>
+    internal async Task<(byte[][] baseLayer, byte[][] proof)?> TryBuildV2HashesPayloadAsync(
+        Bep52WireMessages.HashRequest req)
+    {
+        if (PieceLength < MerkleHasher.LeafSize || PieceLength % MerkleHasher.LeafSize != 0) return null;
+        int leavesPerPiece = PieceLength / MerkleHasher.LeafSize;
+        if (leavesPerPiece < 1 || (leavesPerPiece & (leavesPerPiece - 1)) != 0) return null;
+        int pieceLayerLevel = IntLog2(leavesPerPiece);
+
+        if ((int)req.BaseLayer == pieceLayerLevel)
+        {
+            // Piece-layer path: zero I/O, delegate straight through.
+            return TryBuildV2HashesPayload(req);
+        }
+        if ((int)req.BaseLayer != 0)
+        {
+            // Levels between 0 and pieceLayerLevel require re-combining leaves internally;
+            // valid in principle but not requested in practice. Refuse politely.
+            return null;
+        }
+
+        // Leaf-level: find the file whose root matches the request, read every piece we
+        // need, hash each 16 KiB leaf, and build the full leaf layer.
+        if (_store == null) return null;
+        if (Files == null || FileRoots == null || FileRoots.Length == 0) return null;
+
+        int fileIndex = -1;
+        for (int i = 0; i < FileRoots.Length; i++)
+        {
+            if (FileRoots[i].AsSpan().SequenceEqual(req.PiecesRoot))
+            {
+                fileIndex = i;
+                break;
+            }
+        }
+        if (fileIndex < 0 || fileIndex >= Files.Length) return null;
+
+        var file = Files[fileIndex];
+        if (file.Length == 0) return null; // empty file has no leaves
+
+        int fileLeafCount = (int)((file.Length + MerkleHasher.LeafSize - 1) / MerkleHasher.LeafSize);
+        if (fileLeafCount == 0) return null;
+
+        // File's first piece in the (possibly padded) global piece stream.
+        int fileStartGlobalPiece = (int)(file.Offset / PieceLength);
+        int filePieceCount = (int)((file.Length + PieceLength - 1) / PieceLength);
+
+        // Must have every piece of this file to serve leaf hashes - can't re-hash what
+        // we don't have. Shortcut: verify up-front before doing any I/O.
+        for (int pi = 0; pi < filePieceCount; pi++)
+        {
+            int gp = fileStartGlobalPiece + pi;
+            if (gp < 0 || gp >= Bitfield.Length || !Bitfield[gp]) return null;
+        }
+
+        // Read each piece and hash its 16 KiB leaves. Leaves 0..fileLeafCount-1 are REAL;
+        // MerkleProofBuilder handles padding to next-pow-2 at level 0 with PadHashAtLevel(0).
+        var leafLayer = new byte[fileLeafCount][];
+        for (int pi = 0; pi < filePieceCount; pi++)
+        {
+            int gp = fileStartGlobalPiece + pi;
+            var pieceData = await _store.GetAsync(gp);
+            if (pieceData == null) return null;
+
+            int pieceStartLeaf = pi * leavesPerPiece;
+            int pieceEndLeaf = Math.Min(pieceStartLeaf + leavesPerPiece, fileLeafCount);
+            for (int lj = pieceStartLeaf; lj < pieceEndLeaf; lj++)
+            {
+                int offsetInPiece = (lj - pieceStartLeaf) * MerkleHasher.LeafSize;
+                int leafBytes = Math.Min(MerkleHasher.LeafSize, pieceData.Length - offsetInPiece);
+                if (leafBytes <= 0) break;
+                leafLayer[lj] = MerkleHasher.HashLeaf(pieceData.AsSpan(offsetInPiece, leafBytes));
+            }
+        }
+
+        return MerkleProofBuilder.Build(
+            leafLayer,
+            baseLayerLevel: 0,
+            index: req.Index,
+            length: (int)req.Length,
+            proofLayers: (int)req.ProofLayers,
+            expectedRoot: req.PiecesRoot);
     }
 
     /// <summary>

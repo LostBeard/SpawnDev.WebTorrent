@@ -377,6 +377,43 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
+    public async Task Bep52_SeedPath_LeafLevelRequest_ServedFromStoredPieces()
+    {
+        // Phase 2c completion (2026-04-23): leaf-level (base_layer=0) hash_request is
+        // served by re-hashing 16 KiB leaves from the chunk store. Previously refused.
+        // Mirrors the desktop NUnit test through SpawnDev.UnitTesting so the path is
+        // proven on Blazor WASM's SHA-256 + bencode + Merkle stack too.
+        int pieceSize = 65536;
+        var data = MakeDeterministicData(pieceSize * 4, seed: 401);
+        var opts = new TorrentCreatorOptions { MetaVersion = 2, PieceLength = pieceSize };
+        var (bytes, _) = TorrentCreator.CreateFromBytes("leaf.bin", data, opts);
+        var parsed = TorrentParser.Parse(bytes);
+
+        var t = new Torrent();
+        t.SetMetadata(parsed);
+
+        // Populate store with every piece so leaf re-hashing can succeed.
+        var storeField = typeof(Torrent).GetField("_store",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var store = (SpawnDev.WebTorrent.Storage.IChunkStore)storeField!.GetValue(t)!;
+        for (int i = 0; i < 4; i++)
+        {
+            var pieceData = new byte[pieceSize];
+            Array.Copy(data, i * pieceSize, pieceData, 0, pieceSize);
+            await store.PutAsync(i, pieceData);
+            t.Bitfield[i] = true;
+        }
+
+        var req = new Bep52WireMessages.HashRequest(t.FileRoots[0], BaseLayer: 0, Index: 0, Length: 4, ProofLayers: 2);
+        var payload = await t.TryBuildV2HashesPayloadAsync(req);
+        if (payload is null) throw new Exception("Leaf-level seed path must serve a request when all pieces are in the store");
+        var (baseLayer, proof) = payload.Value;
+
+        if (!MerkleProofVerifier.Verify(t.FileRoots[0], 0, baseLayer, proof))
+            throw new Exception("Leaf-level seed output must round-trip through MerkleProofVerifier");
+    }
+
+    [TestMethod]
     public async Task Bep52_PureV2MultiFile_AllPiecesVerify_PastFile0()
     {
         // Mirrors the desktop NUnit VerifyPieceHashTests.V2_PureMultiFile_AllPiecesVerify_PastFile0

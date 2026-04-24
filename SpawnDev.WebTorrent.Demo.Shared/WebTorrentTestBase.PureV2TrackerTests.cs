@@ -201,6 +201,27 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
+    public async Task PureV2_RemoveWithDataAsyncByHash_ResolvesV2Hash()
+    {
+        // rc.20/rc.21: RemoveWithDataAsync(string) also routes through Get() so the full
+        // v2 hash and the wire-truncated form both resolve to the same torrent instance.
+        var client = CreateIsolatedClient();
+        try
+        {
+            var magnet = $"magnet:?xt=urn:btmh:1220{PureV2MagnetHash}&dn=remove-with-data-test";
+            var torrent = client.Add(magnet);
+            if (client.Torrents.Count != 1) throw new Exception("setup: expected 1 torrent");
+
+            // Remove by wire-truncated v2 hash (40 chars)
+            var wireHex = PureV2MagnetHash[..40].ToLowerInvariant();
+            await client.RemoveWithDataAsync(wireHex);
+            if (client.Torrents.Count != 0)
+                throw new Exception($"RemoveWithDataAsync(wireHex) failed; Torrents.Count={client.Torrents.Count}");
+        }
+        finally { await client.DisposeAsync(); }
+    }
+
+    [TestMethod]
     public async Task PureV2_TorrentMetadata_WireInfoHashHex_FallsBackToV2()
     {
         // Pure-v2 TorrentMetadata's WireInfoHashHex mirrors Torrent's: first 20 bytes of

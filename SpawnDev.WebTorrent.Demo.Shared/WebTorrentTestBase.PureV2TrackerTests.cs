@@ -201,6 +201,32 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
+    public async Task PureV2_StreamUrl_UsesWireInfoHashHex()
+    {
+        // rc.23: pure-v2 torrent's service-worker StreamURL must use WireInfoHashHex,
+        // not the empty InfoHashHex. Pre-rc.23 this was breaking service-worker media
+        // streaming for pure-v2 torrents (URL became /webtorrent//{fileIdx}).
+        var client = CreateIsolatedClient();
+        try
+        {
+            var torrent = client.Add($"magnet:?xt=urn:btmh:1220{PureV2MagnetHash}&dn=v2stream-test");
+
+            // Build the URL directly via the static helper - doesn't require metadata.
+            var url = SpawnDev.WebTorrent.ServiceWorkerStreamHandler.GetStreamUrl(torrent, 0);
+            var wireHex = PureV2MagnetHash[..40].ToLowerInvariant();
+
+            var expected = $"/webtorrent/{wireHex}/0";
+            if (url != expected)
+                throw new Exception($"pure-v2 GetStreamUrl={url}, expected {expected}");
+
+            // Also verify the URL does NOT have an empty path segment (the pre-rc.23 bug)
+            if (url.Contains("//0") || url.Contains("webtorrent//"))
+                throw new Exception($"pure-v2 StreamURL has empty path segment: {url}");
+        }
+        finally { await client.DisposeAsync(); }
+    }
+
+    [TestMethod]
     public async Task PureV2_Torrent_DisplayName_FallsBackThroughNameThenWireHash()
     {
         // rc.22: Torrent.DisplayName is the UI-safe name -> hash -> "unknown" fallback.

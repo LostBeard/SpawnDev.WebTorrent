@@ -44,6 +44,23 @@ public partial class Torrent : IAsyncDisposable
     }
 
     /// <summary>
+    /// Human-friendly display label for this torrent. Returns <see cref="Name"/> if set,
+    /// otherwise falls back to <see cref="WireInfoHashHex"/>. Never returns null or
+    /// empty so UI code can consume it directly without <c>??</c> chains that miss
+    /// pure-v2 torrents (which have an empty <see cref="InfoHash"/> before metadata
+    /// arrives).
+    /// </summary>
+    public string DisplayName
+    {
+        get
+        {
+            if (!string.IsNullOrEmpty(Name)) return Name!;
+            var w = WireInfoHashHex;
+            return !string.IsNullOrEmpty(w) ? w : "unknown";
+        }
+    }
+
+    /// <summary>
     /// BEP 52 torrent meta version (mirror of <see cref="TorrentMetadata.MetaVersion"/>).
     /// <c>0</c> = v1-only / Phase 1 (piece hashes are flat SHA-1 or flat SHA-256);
     /// <c>2</c> = BEP 52 v2 (piece hashes are Merkle roots over 16 KiB leaves, requiring

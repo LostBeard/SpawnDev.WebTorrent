@@ -104,8 +104,8 @@
                                     <td class="qb-col-status">
                                         <span class="qb-status-dot @(GetStatusDotClass(torrent))" title="@GetStatusText(torrent)"></span>
                                     </td>
-                                    <td class="qb-col-name" title="@(torrent.Name ?? torrent.InfoHash)">
-                                        @(torrent.Name ?? torrent.InfoHash?[..Math.Min(12, torrent.InfoHash?.Length ?? 0)] ?? "unknown")
+                                    <td class="qb-col-name" title="@torrent.DisplayName">
+                                        @(torrent.Name ?? (torrent.WireInfoHashHex.Length >= 12 ? torrent.WireInfoHashHex[..12] : (torrent.WireInfoHashHex.Length > 0 ? torrent.WireInfoHashHex : "unknown")))
                                     </td>
                                     <td class="qb-col-size qb-mono">@(torrent.HasMetadata ? FormatSize(torrent.Length) : "---")</td>
                                     <td class="qb-col-progress">
@@ -185,7 +185,18 @@
                                     <div class="qb-info-row"><span class="qb-label">Created</span><span>@sel.CreationDate.Value.LocalDateTime.ToString("g")</span></div>
                                 }
                             </div>
-                            <div class="qb-info-row" style="margin-top:4px;"><span class="qb-label">Info Hash</span><span class="qb-hash qb-mono">@(sel.InfoHash ?? "---")</span></div>
+                            @if (!string.IsNullOrEmpty(sel.InfoHash))
+                            {
+                                <div class="qb-info-row" style="margin-top:4px;"><span class="qb-label">Info Hash</span><span class="qb-hash qb-mono">@sel.InfoHash</span></div>
+                            }
+                            @if (!string.IsNullOrEmpty(sel.V2InfoHash))
+                            {
+                                <div class="qb-info-row"><span class="qb-label">V2 Info Hash</span><span class="qb-hash qb-mono">@sel.V2InfoHash</span></div>
+                            }
+                            @if (string.IsNullOrEmpty(sel.InfoHash) && string.IsNullOrEmpty(sel.V2InfoHash))
+                            {
+                                <div class="qb-info-row" style="margin-top:4px;"><span class="qb-label">Info Hash</span><span class="qb-hash qb-mono">---</span></div>
+                            }
 
                             <div class="qb-magnet-row">
                                 <span class="qb-label" style="white-space:nowrap;">Magnet</span>
@@ -468,7 +479,7 @@
             </div>
             <div class="qb-modal-body">
                 <p style="color:#e2e8f0;font-size:13px;margin:0 0 12px;">
-                    Remove <strong>@(_removeTorrent.Name ?? _removeTorrent.InfoHash)</strong>?
+                    Remove <strong>@_removeTorrent.DisplayName</strong>?
                 </p>
                 <div style="display:flex;gap:8px;justify-content:flex-end;">
                     <button class="qb-btn" @onclick="() => RemoveTorrent(false)">Keep Data</button>
@@ -770,14 +781,14 @@
     private void OnTorrentAdded(Torrent torrent)
     {
         WireTorrentEvents(torrent);
-        AddLog($"Torrent added: {torrent.Name ?? torrent.InfoHash ?? "unknown"}", "");
+        AddLog($"Torrent added: {torrent.DisplayName}", "");
         _ = InvokeAsync(StateHasChanged);
     }
 
     private void OnTorrentRemoved(Torrent torrent)
     {
         if (_selected == torrent) _selected = null;
-        AddLog($"Torrent removed: {torrent.Name ?? torrent.InfoHash ?? "unknown"}", "");
+        AddLog($"Torrent removed: {torrent.DisplayName}", "");
         _ = InvokeAsync(StateHasChanged);
     }
 
@@ -793,7 +804,7 @@
             var torrent = Client.Add(input);
             _selected = torrent;
             _magnetInput = "";
-            AddLog($"Added: {torrent.Name ?? torrent.InfoHash ?? "unknown"}", "qb-log-tracker");
+            AddLog($"Added: {torrent.DisplayName}", "qb-log-tracker");
         }
         catch (Exception ex)
         {
@@ -807,7 +818,7 @@
         {
             var torrent = Client.Add(magnet);
             _selected = torrent;
-            AddLog($"Quick-added: {torrent.Name ?? torrent.InfoHash ?? "unknown"}", "qb-log-tracker");
+            AddLog($"Quick-added: {torrent.DisplayName}", "qb-log-tracker");
         }
         catch (Exception ex)
         {
@@ -875,7 +886,7 @@
             var torrentBytes = ms.ToArray();
             var torrent = Client.Add(torrentBytes);
             _selected = torrent;
-            AddLog($"Opened .torrent: {torrent.Name ?? torrent.InfoHash ?? "unknown"}", "qb-log-tracker");
+            AddLog($"Opened .torrent: {torrent.DisplayName}", "qb-log-tracker");
             StateHasChanged();
         }
         catch (Exception ex)
@@ -944,7 +955,7 @@
     private async Task RemoveTorrent(bool deleteData)
     {
         if (_removeTorrent == null) return;
-        var name = _removeTorrent.Name ?? _removeTorrent.InfoHash ?? "unknown";
+        var name = _removeTorrent.DisplayName;
         if (deleteData)
             await Client.RemoveWithDataAsync(_removeTorrent);
         else
@@ -969,7 +980,7 @@
         try
         {
             var base64 = Convert.ToBase64String(torrent.TorrentFileBytes);
-            var fileName = $"{torrent.Name ?? torrent.InfoHash ?? "torrent"}.torrent";
+            var fileName = $"{torrent.DisplayName}.torrent";
             await JS.CallVoidAsync("eval", $@"
                 var a = document.createElement('a');
                 a.href = 'data:application/x-bittorrent;base64,{base64}';

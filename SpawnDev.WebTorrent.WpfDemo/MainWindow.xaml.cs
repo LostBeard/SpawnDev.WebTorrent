@@ -101,7 +101,9 @@ public partial class MainWindow : Window
     private void AddFromTorrentBytes(byte[] torrentBytes)
     {
         var torrent = _client.Add(torrentBytes);
-        var hash = torrent.InfoHash ?? "";
+        // WireInfoHashHex so pure-v2 torrents show their 20-byte wire prefix in the UI
+        // (v1 InfoHash when present, else first 40 chars of v2 SHA-256).
+        var hash = torrent.WireInfoHashHex;
         if (_torrents.Any(t => t.HashFull == hash)) return;
 
         var vm = new TorrentViewModel
@@ -138,7 +140,9 @@ public partial class MainWindow : Window
                 {
                     foreach (var torrent in _client.Torrents)
                     {
-                        var hash = torrent.InfoHash ?? "";
+                        // WireInfoHashHex so pure-v2 torrents show their 20-byte wire prefix in the UI
+        // (v1 InfoHash when present, else first 40 chars of v2 SHA-256).
+        var hash = torrent.WireInfoHashHex;
                         if (_torrents.Any(t => t.HashFull == hash)) continue;
                         var vm = new TorrentViewModel
                         {
@@ -238,7 +242,9 @@ public partial class MainWindow : Window
         try
         {
             var torrent = _client.Add(magnetUri);
-            var hash = torrent.InfoHash ?? "";
+            // WireInfoHashHex so pure-v2 torrents show their 20-byte wire prefix in the UI
+        // (v1 InfoHash when present, else first 40 chars of v2 SHA-256).
+        var hash = torrent.WireInfoHashHex;
             if (_torrents.Any(t => t.HashFull == hash)) { Log($"Already added: {displayName ?? (hash.Length >= 8 ? hash[..8] : hash)}"); return; }
 
             var vm = new TorrentViewModel
@@ -520,7 +526,9 @@ public partial class MainWindow : Window
                 Comment = "Test torrent from SpawnDev.WebTorrent WPF demo",
             });
 
-        var hash = torrent.InfoHash ?? "";
+        // WireInfoHashHex so pure-v2 torrents show their 20-byte wire prefix in the UI
+        // (v1 InfoHash when present, else first 40 chars of v2 SHA-256).
+        var hash = torrent.WireInfoHashHex;
         var vm = new TorrentViewModel
         {
             Torrent = torrent, Name = name, HashFull = hash,
@@ -703,7 +711,9 @@ public partial class MainWindow : Window
                 Trackers = new[] { "wss://hub.spawndev.com:44365/announce", "wss://tracker.openwebtorrent.com" },
             });
 
-        var hash = torrent.InfoHash ?? "";
+        // WireInfoHashHex so pure-v2 torrents show their 20-byte wire prefix in the UI
+        // (v1 InfoHash when present, else first 40 chars of v2 SHA-256).
+        var hash = torrent.WireInfoHashHex;
         var vm = new TorrentViewModel
         {
             Torrent = torrent, Name = name, HashFull = hash,

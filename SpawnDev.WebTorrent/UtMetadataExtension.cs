@@ -31,6 +31,39 @@ public class UtMetadataExtension : IWireExtension
     // Pre-existing metadata (if we already have it — e.g., from .torrent file)
     private byte[]? _existingMetadata;
 
+    /// <summary>
+    /// Metadata version being exchanged: 1 = legacy BEP 9 (info dict is v1, verified
+    /// against SHA-1 InfoHash); 2 = BEP 52 v2 extension (info dict is v2, verified
+    /// against SHA-256 <see cref="V2InfoHashHex"/>). Set by the consumer before
+    /// <see cref="SetWire"/> is called. Default is 1 to preserve legacy behavior.
+    ///
+    /// The community-standard "metadata_version" key in the extended handshake is
+    /// bumped to 2 when this is 2, telling peers they should expect the v2 info dict.
+    /// If both peers advertise version 2, the exchanged bytes are the v2 info dict;
+    /// if either side is still version 1, both fall back to v1.
+    /// </summary>
+    public int MetadataVersion { get; set; } = 1;
+
+    /// <summary>
+    /// Full v2 SHA-256 info hash hex (64 chars) used for SHA-256 verification of
+    /// received v2 metadata. Required when <see cref="MetadataVersion"/> is 2; ignored
+    /// otherwise. Typically sourced from a parsed v2 magnet (<c>xt=urn:btmh:</c>).
+    /// </summary>
+    public string? V2InfoHashHex { get; set; }
+
+    /// <summary>Peer's advertised metadata version (from their extended handshake).</summary>
+    public int PeerMetadataVersion { get; private set; } = 1;
+
+    /// <summary>
+    /// When <c>true</c> (default, matches historical behavior), receiving the peer's
+    /// extended handshake with a valid <c>metadata_size</c> automatically starts
+    /// requesting metadata pieces. Tests with synchronous loopback transport may want
+    /// to set this to <c>false</c> and call <see cref="Fetch"/> explicitly after both
+    /// sides' extended handshakes have completed, to avoid a timing race where the
+    /// responder hasn't yet sent its own extended handshake.
+    /// </summary>
+    public bool AutoFetchOnHandshake { get; set; } = true;
+
     /// <summary>Fired when complete metadata is received and verified.</summary>
     public event Action<byte[]>? OnMetadata;
 
@@ -68,6 +101,26 @@ public class UtMetadataExtension : IWireExtension
             return;
         }
 
+        // BEP 52-extended: peer may advertise "metadata_version": 2 to indicate it will
+        // serve the v2 info dict (SHA-256-verified). Absent → peer is legacy v1.
+        if (handshake.TryGetValue("metadata_version", out var mvObj))
+        {
+            PeerMetadataVersion = mvObj switch
+            {
+                long l => (int)l,
+                int i => i,
+                _ => 1
+            };
+        }
+
+        // If our side is v2 but peer is only v1, we can't do v2 metadata exchange with
+        // this peer. Don't request; let the consumer pick a different peer.
+        if (MetadataVersion == 2 && PeerMetadataVersion != 2)
+        {
+            OnWarning?.Invoke("Peer is v1-only ut_metadata; we are v2 — skipping");
+            return;
+        }
+
         // Get metadata_size from peer
         if (!handshake.TryGetValue("metadata_size", out var sizeObj))
         {
@@ -92,8 +145,10 @@ public class UtMetadataExtension : IWireExtension
         _numPieces = (int)Math.Ceiling((double)_metadataSize / PieceLength);
         _remainingRejects = _numPieces * 2;
 
-        // Start fetching if we don't have metadata yet
-        if (!_metadataComplete)
+        // Start fetching if we don't have metadata yet. Opt-outable via
+        // AutoFetchOnHandshake so sync-loopback tests can defer requesting until both
+        // sides' extended handshakes have completed.
+        if (!_metadataComplete && AutoFetchOnHandshake)
         {
             _fetching = true;
             RequestPieces();
@@ -169,8 +224,18 @@ public class UtMetadataExtension : IWireExtension
     {
         if (_metadataComplete) return true;
 
-        // Verify hash
-        if (_infoHash != null)
+        // Verify hash — branch on MetadataVersion. v1: SHA-1 against _infoHash (wire
+        // info hash hex, 40 chars). v2: SHA-256 against V2InfoHashHex (full 64-char
+        // v2 hash).
+        if (MetadataVersion == 2)
+        {
+            if (string.IsNullOrEmpty(V2InfoHashHex))
+                return false; // v2 mode requires a v2 hash target
+            var v2Hash = Convert.ToHexString(SHA256.HashData(metadata)).ToLowerInvariant();
+            if (v2Hash != V2InfoHashHex.ToLowerInvariant())
+                return false;
+        }
+        else if (_infoHash != null)
         {
             var hash = Convert.ToHexString(SHA1.HashData(metadata)).ToLowerInvariant();
             if (hash != _infoHash)
@@ -194,6 +259,11 @@ public class UtMetadataExtension : IWireExtension
         // Advertise metadata_size in our extended handshake if we have metadata
         if (_metadataComplete && _metadataSize > 0)
             wire.ExtendedHandshake["metadata_size"] = _metadataSize;
+
+        // BEP 52-extended: advertise "metadata_version": 2 when serving the v2 info
+        // dict. Peers compare and decide whether to request from us.
+        if (MetadataVersion == 2)
+            wire.ExtendedHandshake["metadata_version"] = 2L;
     }
 
     // ========================

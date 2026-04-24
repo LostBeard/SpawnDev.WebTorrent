@@ -840,8 +840,30 @@ public partial class Torrent : IAsyncDisposable
                             Console.WriteLine($"[Torrent.OnHandshake] SELF-CONNECTION detected: remote peerId={peerId} == client.PeerId → Destroy peer {peer.Id}");
                         peer.Destroy(); return;
                     }
-                    // Duplicate peer detection (same remote peerId already connected)
-                    var existingWire = Wires.ToArray().FirstOrDefault(w => w != peer.WireInstance && w.PeerId == peerId);
+                    // Duplicate peer detection (same remote peerId already connected).
+                    //
+                    // Phantom-wire filter: rc.19 per Geordi's DUP-DIAG finding on rc.15.
+                    // `Peer.Destroy` triggers `Wire.Destroy` → wire.OnClose → the
+                    // `Wires.Remove` subscription, BUT in certain destroy-race paths the
+                    // wire stays in `Wires` while `_peers` has already been cleaned.
+                    // Examples: the `simplePeer.OnClose` handler at line 914 fires
+                    // independently and only removes from `_peers`, leaving the wire in
+                    // `Wires` with `PeerId` still set. Matching these phantoms makes the
+                    // tiebreaker see empty `existingLabel` (no backing Peer → no Conn →
+                    // no ChannelName), and every real wire gets destroyed against the
+                    // phantom's empty string. Cause of the two-popup peerCount=0 bug.
+                    //
+                    // Belt-and-suspenders filter:
+                    //   !w.Destroyed — skip wires that already tore down cleanly but
+                    //     stayed in the collection.
+                    //   _peers.Values.Any(p => p.WireInstance == w) — require a live
+                    //     Peer backing this wire; otherwise it's an orphan from a
+                    //     destroy-race and matching it is always wrong.
+                    var existingWire = Wires.ToArray().FirstOrDefault(w =>
+                        w != peer.WireInstance
+                        && w.PeerId == peerId
+                        && !w.Destroyed
+                        && _peers.Values.Any(p => p.WireInstance == w));
                     if (existingWire != null)
                     {
                         // Cross-side-stable tiebreaker: channel Label.

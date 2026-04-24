@@ -19,7 +19,6 @@ set PROJECT=SpawnDev.WebTorrent.ServerApp\SpawnDev.WebTorrent.ServerApp.csproj
 set PUBLISH_DIR=SpawnDev.WebTorrent.ServerApp\bin\publish
 set UNIT_SRC=deploy\spawndev_hub\spawndev_hub.service
 set UNIT_DEST_REMOTE=/etc/systemd/system/spawndev_hub.service
-set UNIT_TMP_REMOTE=/tmp/spawndev_hub.service
 
 echo -----------------------------------------------------------
 echo   Deploy SpawnDev.WebTorrent.ServerApp
@@ -45,19 +44,29 @@ echo       Service stopped.
 echo.
 
 REM -- Step 3: Sync systemd unit file + daemon-reload --
-REM     scp to /tmp, then sudo-cp into /etc/systemd/system (the .service
-REM     file path typically isn't writable by the SSH user directly).
-REM     daemon-reload picks up any Environment= changes without needing a
-REM     manual step on the VM.
+REM     Direct scp to /etc/systemd/system (user 'zed' must own that specific
+REM     file - one-time setup on the VM: `sudo chown zed:zed %UNIT_DEST_REMOTE%`).
+REM     daemon-reload is NOPASSWD-sudo for systemctl, matching the stop/start
+REM     commands below. systemd does not care about unit-file ownership.
 echo [3/5] Syncing systemd unit file...
-scp "%UNIT_SRC%" %HOST%:%UNIT_TMP_REMOTE%
+scp "%UNIT_SRC%" %HOST%:%UNIT_DEST_REMOTE%
 if errorlevel 1 (
+    echo.
     echo UNIT FILE COPY FAILED
+    echo ---------------------------------------------------------
+    echo If "Permission denied", the unit file is not owned by the
+    echo SSH user. One-time setup on the VM:
+    echo.
+    echo     ssh %HOST% "sudo chown zed:zed %UNIT_DEST_REMOTE%"
+    echo.
+    echo Then re-run this bat. systemd does not care about unit-file
+    echo ownership - it only reads the content.
+    echo ---------------------------------------------------------
     exit /b 1
 )
-ssh %HOST% "sudo cp %UNIT_TMP_REMOTE% %UNIT_DEST_REMOTE% && sudo systemctl daemon-reload && rm %UNIT_TMP_REMOTE%"
+ssh %HOST% "sudo /usr/bin/systemctl daemon-reload"
 if errorlevel 1 (
-    echo UNIT FILE INSTALL FAILED
+    echo DAEMON-RELOAD FAILED
     exit /b 1
 )
 echo       Unit file synced + daemon reloaded.

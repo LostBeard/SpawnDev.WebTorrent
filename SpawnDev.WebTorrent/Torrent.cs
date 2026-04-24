@@ -61,6 +61,23 @@ public partial class Torrent : IAsyncDisposable
     }
 
     /// <summary>
+    /// Compact (&lt;= 12-char) label for narrow UI cells. Returns <see cref="Name"/>
+    /// unmodified if set (name text is left alone even when long), otherwise the first
+    /// 12 chars of the wire hash, otherwise <c>"unknown"</c>. Use when table columns
+    /// are width-limited; for full labels use <see cref="DisplayName"/>.
+    /// </summary>
+    public string DisplayNameShort
+    {
+        get
+        {
+            if (!string.IsNullOrEmpty(Name)) return Name!;
+            var w = WireInfoHashHex;
+            if (string.IsNullOrEmpty(w)) return "unknown";
+            return w.Length >= 12 ? w[..12] : w;
+        }
+    }
+
+    /// <summary>
     /// BEP 52 torrent meta version (mirror of <see cref="TorrentMetadata.MetaVersion"/>).
     /// <c>0</c> = v1-only / Phase 1 (piece hashes are flat SHA-1 or flat SHA-256);
     /// <c>2</c> = BEP 52 v2 (piece hashes are Merkle roots over 16 KiB leaves, requiring

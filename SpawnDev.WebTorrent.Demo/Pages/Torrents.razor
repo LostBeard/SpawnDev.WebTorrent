@@ -105,7 +105,7 @@
                                         <span class="qb-status-dot @(GetStatusDotClass(torrent))" title="@GetStatusText(torrent)"></span>
                                     </td>
                                     <td class="qb-col-name" title="@torrent.DisplayName">
-                                        @(torrent.Name ?? (torrent.WireInfoHashHex.Length >= 12 ? torrent.WireInfoHashHex[..12] : (torrent.WireInfoHashHex.Length > 0 ? torrent.WireInfoHashHex : "unknown")))
+                                        @torrent.DisplayNameShort
                                     </td>
                                     <td class="qb-col-size qb-mono">@(torrent.HasMetadata ? FormatSize(torrent.Length) : "---")</td>
                                     <td class="qb-col-progress">

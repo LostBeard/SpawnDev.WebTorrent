@@ -79,11 +79,15 @@ This plan scopes the remaining Phase 2 work into sub-phases so each lands as a w
 
 ## Remaining Phase 2 work
 
-1. **Phase 2c step 3: external-client interop tests.** Generate a hybrid torrent with SpawnDev.WebTorrent, load it in `libtorrent` / qBittorrent, seed both ways and verify both v1 and v2 peers transfer correctly. Reverse: parse a libtorrent-generated v2 torrent and verify pieces. Largely manual / integration-tool work, hard to automate in CI without shipping test fixtures. Full 5-step execution plan in `PLAN-BEP52-External-Interop.md`.
+1. **Phase 2c step 3: external-client interop tests.** Split-complete:
+   - ~~**Parse-level interop against libtorrent-generated v2 torrents.**~~ **SHIPPED 2026-04-23** (`a73b68c`, refined `07d27c3`). 4 reference fixtures pulled from `github.com/arvidn/libtorrent/tree/RC_2_0/test/test_torrents` (v2, v2_multipiece_file, v2_only, v2_hybrid), embedded as assembly resources in `SpawnDev.WebTorrent.Demo.Shared/InteropFixtures/`, exercised by `WebTorrentTestBase.LibtorrentInteropTests.cs` under PlaywrightMultiTest. Each test asserts meta_version, piece_length, name, V2 info hash (SHA-256 of info-dict slice), PieceHashAlgorithm, file count, and re-hashes InfoDictBytes as a defense-in-depth check on slice boundaries. `SpawnDev.WebTorrent.Demo.Shared/InteropFixtures/regenerate_fixtures.cs` is a zero-dep .NET 10 single-file script (`dotnet run` directly) that re-fetches the fixtures from libtorrent's GitHub corpus and regenerates the manifest — byte-identical reproduction verified.
+   - **Still pending:** qBittorrent manual drag-drop test + end-to-end cross-seeding with external clients. Runbook in `PLAN-BEP52-External-Interop.md`.
 
 2. ~~**`Docs/bep52.md` walkthrough.**~~ **SHIPPED** (`29a6fe9`). One-page guide covering hybrid creation, magnet URIs, piece verification branching, peer-wire extension, interop with v1-only peers, and full file-reference map.
 
 3. ~~**PlaywrightMultiTest coverage for Phase 2c step 2.**~~ **SHIPPED** (`29a6fe9`). 10 new tests in `WebTorrentTestBase.Bep52V2Tests.cs` cover peer-wire codec round-trips, Merkle proof verifier / builder round-trip, coordinator state machine happy + reject paths, Torrent ↔ coordinator allocation, v2 piece verification via Merkle path, and seed-path payload building.
+
+4. ~~**All BEP 52 tests run under PlaywrightMultiTest (browser + desktop), not just desktop NUnit.**~~ **SHIPPED 2026-04-23** (commits `a50d1d9`, `66487f6`, `77b61d2`). The entire `SpawnDev.WebTorrent.Tests` NUnit project (258 tests across 20 files) retired and migrated into `WebTorrentTestBase.*.cs` partial files. Per-topic naming prefixes (MerkleHasher_, Bep52Wire_, CreatorV2_, V2HashCoord_, etc.) to avoid cross-partial collisions. Duplicate coverage de-duplicated against existing shared partials (PieceTests, ReadFileTests, TorrentCreatorTests had 100% overlap and were removed). 435 tests now enumerate through PlaywrightMultiTest for both runtime matrices; prior state was 258 desktop-only NUnit + 168 shared Playwright.
 
 ## Known limitations / followups
 

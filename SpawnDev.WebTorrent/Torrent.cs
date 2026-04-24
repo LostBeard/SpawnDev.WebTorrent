@@ -848,6 +848,24 @@ public partial class Torrent : IAsyncDisposable
                         var existingPeer = _peers.Values.FirstOrDefault(p => p.WireInstance == existingWire);
                         string newLabel = (peer.Conn as SimplePeer)?.ChannelName ?? peer.Id;
                         string existingLabel = (existingPeer?.Conn as SimplePeer)?.ChannelName ?? existingPeer?.Id ?? "";
+                        if (WebTorrentClient.VerboseLogging)
+                        {
+                            // Dump full state so we can diagnose the phantom-existing-wire
+                            // scenario Geordi hit (rc.12 two-popup test: existing wire has
+                            // PeerId set but its SimplePeer.ChannelName is empty, suggesting
+                            // the wire is in Wires but its Peer isn't in _peers anymore).
+                            var wiresDump = string.Join(" | ", Wires.ToArray().Select(w =>
+                            {
+                                var wp = _peers.Values.FirstOrDefault(p => p.WireInstance == w);
+                                var wlab = (wp?.Conn as SimplePeer)?.ChannelName ?? "<noConn>";
+                                return $"PeerId={w.PeerId ?? "<null>"}|peerInMap={(wp != null)}|label={wlab}";
+                            }));
+                            Console.WriteLine(
+                                $"[Torrent.OnHandshake] DUP-DIAG: incomingPeerId={peerId} newPeer.Id={peer.Id} newLabel='{newLabel}' " +
+                                $"existingPeer.Id={existingPeer?.Id ?? "<null>"} existingPeer.Conn={(existingPeer?.Conn?.GetType().Name ?? "<null>")} " +
+                                $"existingLabel='{existingLabel}' Wires.Count={Wires.Count} _peers.Count={_peers.Count} " +
+                                $"Wires=[{wiresDump}]");
+                        }
 
                         // Keep the wire with lexicographically SMALLER channel label.
                         // Both sides see the same labels on both wires → both agree.

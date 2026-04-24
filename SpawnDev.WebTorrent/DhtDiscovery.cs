@@ -30,6 +30,20 @@ public class DhtDiscovery : IAsyncDisposable
     /// <summary>Fires when a BEP 44 mutable item GET response is received.</summary>
     public event Action<Dictionary<string, object>, IPEndPoint>? OnGetResponse;
 
+    /// <summary>
+    /// BEP 44 incoming "get" query. Handlers return the response bytes to send back
+    /// (built via <see cref="BuildGetResponse(byte[], byte[], byte[], long, byte[], byte[])"/>)
+    /// or null to fall through to the default empty-nodes+token response.
+    /// </summary>
+    public event Func<Dictionary<string, object>, IPEndPoint, byte[]?>? OnGetQuery;
+
+    /// <summary>
+    /// BEP 44 incoming "put" query. Handlers return the response bytes to send back
+    /// (ping-shaped ack for success; error per RFC). Return null to fall through to
+    /// the default ping-shaped ack (stateless relay).
+    /// </summary>
+    public event Func<Dictionary<string, object>, IPEndPoint, byte[]?>? OnPutQuery;
+
     public int NodeCount => _routingTable.NodeCount;
     public bool IsReady { get; private set; }
 
@@ -245,8 +259,12 @@ public class DhtDiscovery : IAsyncDisposable
             }
         }
 
-        // BEP 44: Forward mutable item GET responses to subscribers
-        if (r.ContainsKey("v") || r.ContainsKey("k") || r.ContainsKey("sig"))
+        // BEP 44: Forward mutable item GET responses to subscribers. Fire on ANY
+        // response that carries a token (which identifies it as a get reply, even
+        // when the node has no stored value to return) OR that carries mutable
+        // fields (v/k/sig). Token-only replies matter because the subsequent PUT
+        // needs that token - without firing here, token caching never happens.
+        if (r.ContainsKey("token") || r.ContainsKey("v") || r.ContainsKey("k") || r.ContainsKey("sig"))
             OnGetResponse?.Invoke(r, from);
     }
 
@@ -255,6 +273,24 @@ public class DhtDiscovery : IAsyncDisposable
         if (!msg.TryGetValue("q", out var qObj) || qObj is not byte[] qBytes) return;
         var method = Encoding.ASCII.GetString(qBytes);
         var txId = msg.TryGetValue("t", out var t) && t is byte[] tid ? tid : new byte[] { 0, 0 };
+
+        // BEP 5: on receiving any KRPC query, learn the sender's NodeId from the
+        // "a" args dict and add the sender to our routing table. Mirrors the
+        // response-path logic in HandleResponse - without this, we never learn
+        // about peers who initiate contact with us (only peers we query first),
+        // which breaks small-swarm / bootstrap scenarios where one side has no
+        // prior knowledge of the other.
+        if (msg.TryGetValue("a", out var aObj) && aObj is Dictionary<string, object> args
+            && args.TryGetValue("id", out var senderIdObj) && senderIdObj is byte[] senderId
+            && senderId.Length == 20)
+        {
+            _routingTable.AddNode(new DhtNode
+            {
+                NodeId = senderId,
+                EndPoint = from,
+                LastSeen = DateTime.UtcNow,
+            });
+        }
 
         switch (method)
         {
@@ -268,6 +304,39 @@ public class DhtDiscovery : IAsyncDisposable
             case "announce_peer":
                 _ = SendKrpcAsync(from, BuildPingResponse(txId), CancellationToken.None);
                 break;
+            case "get":
+            {
+                // BEP 44 get. Defer to a handler (typically DhtMutableItems) if one is
+                // subscribed; otherwise respond with empty-nodes + fresh token so the
+                // follow-up put can proceed.
+                byte[]? custom = null;
+                if (OnGetQuery != null)
+                {
+                    foreach (Func<Dictionary<string, object>, IPEndPoint, byte[]?> h in OnGetQuery.GetInvocationList())
+                    {
+                        custom = h(msg, from);
+                        if (custom != null) break;
+                    }
+                }
+                var response = custom ?? BuildGetResponse(txId, NodeId, value: null, seq: -1, signature: null, publicKey: null);
+                _ = SendKrpcAsync(from, response, CancellationToken.None);
+                break;
+            }
+            case "put":
+            {
+                byte[]? custom = null;
+                if (OnPutQuery != null)
+                {
+                    foreach (Func<Dictionary<string, object>, IPEndPoint, byte[]?> h in OnPutQuery.GetInvocationList())
+                    {
+                        custom = h(msg, from);
+                        if (custom != null) break;
+                    }
+                }
+                // Default: ping-shaped ack (stateless accept).
+                _ = SendKrpcAsync(from, custom ?? BuildPingResponse(txId), CancellationToken.None);
+                break;
+            }
         }
     }
 
@@ -374,6 +443,91 @@ public class DhtDiscovery : IAsyncDisposable
         if (_udp == null) return;
         await _udp.SendAsync(data, data.Length, ep);
     }
+
+    /// <summary>
+    /// Send a KRPC ping to a specific endpoint. The response will populate our
+    /// routing table with that node, making it a known peer for future queries.
+    /// Useful for manually introducing peers (e.g. LAN discovery, unit tests,
+    /// cases where the user has an out-of-band endpoint but no bootstrap node).
+    /// </summary>
+    public Task PingAsync(IPEndPoint ep, CancellationToken ct = default) =>
+        SendKrpcAsync(ep, BuildPing(), ct);
+
+    /// <summary>
+    /// Send a KRPC find_node query to a specific endpoint, targeting this node's
+    /// own ID. Triggers a response that populates our routing table plus primes
+    /// the remote end's routing table with us (via <see cref="HandleQuery"/>'s
+    /// BEP 5 learn-from-query logic).
+    /// </summary>
+    public Task FindNodeAsync(IPEndPoint ep, CancellationToken ct = default) =>
+        SendKrpcAsync(ep, BuildFindNode(NodeId), ct);
+
+    private byte[] BuildPing() =>
+        EncodeKrpc(NextTxId(), "ping", new Dictionary<string, object> { ["id"] = NodeId });
+
+    /// <summary>
+    /// Build a BEP 44 "get" response. When a value is known for the queried target,
+    /// include <paramref name="value"/> + <paramref name="publicKey"/> +
+    /// <paramref name="seq"/> + <paramref name="signature"/> so the querier can verify
+    /// and cache it. When there's nothing stored, pass <c>null</c>/<c>-1</c> for those
+    /// and the response carries only the token (+ closest-node hints for Kademlia
+    /// iteration). The token is freshly generated for each response - callers that
+    /// care about replay prevention must add nonce tracking themselves.
+    /// </summary>
+    public byte[] BuildGetResponse(byte[] txId, byte[] responderNodeId, byte[]? value,
+        long seq, byte[]? signature, byte[]? publicKey)
+    {
+        var closest = _routingTable.GetClosest(responderNodeId, 8);
+        var nodesBytes = new List<byte>();
+        foreach (var n in closest)
+        {
+            nodesBytes.AddRange(n.NodeId);
+            var addr = n.EndPoint.Address.GetAddressBytes();
+            nodesBytes.AddRange(addr.Length == 4 ? addr : new byte[4]);
+            nodesBytes.Add((byte)(n.EndPoint.Port >> 8));
+            nodesBytes.Add((byte)(n.EndPoint.Port & 0xFF));
+        }
+
+        var token = new byte[4];
+        RandomNumberGenerator.Fill(token);
+
+        // Bencode dict: keys must be sorted. Sorted order inside "r": id, k?, nodes,
+        // seq?, sig?, token, v? (alphabetical).
+        var buf = new List<byte>();
+        buf.AddRange(Encoding.ASCII.GetBytes("d1:rd"));
+        buf.AddRange(Encoding.ASCII.GetBytes("2:id20:"));
+        buf.AddRange(responderNodeId);
+        if (publicKey != null && publicKey.Length > 0)
+        {
+            buf.AddRange(Encoding.ASCII.GetBytes($"1:k{publicKey.Length}:"));
+            buf.AddRange(publicKey);
+        }
+        buf.AddRange(Encoding.ASCII.GetBytes($"5:nodes{nodesBytes.Count}:"));
+        buf.AddRange(nodesBytes);
+        if (seq >= 0)
+        {
+            buf.AddRange(Encoding.ASCII.GetBytes($"3:seqi{seq}e"));
+        }
+        if (signature != null && signature.Length > 0)
+        {
+            buf.AddRange(Encoding.ASCII.GetBytes($"3:sig{signature.Length}:"));
+            buf.AddRange(signature);
+        }
+        buf.AddRange(Encoding.ASCII.GetBytes($"5:token{token.Length}:"));
+        buf.AddRange(token);
+        if (value != null && value.Length > 0)
+        {
+            buf.AddRange(Encoding.ASCII.GetBytes($"1:v{value.Length}:"));
+            buf.AddRange(value);
+        }
+        buf.AddRange(Encoding.ASCII.GetBytes($"e1:t{txId.Length}:"));
+        buf.AddRange(txId);
+        buf.AddRange(Encoding.ASCII.GetBytes("1:y1:re"));
+        return buf.ToArray();
+    }
+
+    /// <summary>Build a generic response with just the responder id + txId (used for put ack).</summary>
+    public byte[] BuildPingResponsePublic(byte[] txId) => BuildPingResponse(txId);
 
     /// <summary>Create a BEP 46 mutable items handler with the given signer.</summary>
     public DhtMutableItems CreateMutableItems(IDhtSigner signer) => new DhtMutableItems(this, signer);

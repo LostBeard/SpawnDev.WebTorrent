@@ -78,13 +78,28 @@ public class Ed25519Signer : IDhtSigner
     {
         try
         {
-            var peerKey = await _crypto.ImportEd25519Key(publicKey, extractable: false);
+            // BEP 44 transmits the 32-byte raw Ed25519 pubkey on the wire; BlazorJS.Cryptography's
+            // ImportEd25519Key expects 44-byte SPKI. Wrap raw keys in the SPKI prefix so verify
+            // works for both formats transparently.
+            var spki = publicKey.Length == 32 ? BuildSpkiFromRaw(publicKey) : publicKey;
+            var peerKey = await _crypto.ImportEd25519Key(spki, extractable: false);
             return await _crypto.Verify(peerKey, message, signature);
         }
         catch
         {
             return false;
         }
+    }
+
+    // Ed25519 SPKI prefix (12 bytes): SEQUENCE + AlgorithmIdentifier(id-Ed25519 = 1.3.101.112) + BIT STRING header.
+    // Same constant used by the SPKI decoder side in BlazorJS.Cryptography.
+    private static byte[] BuildSpkiFromRaw(byte[] raw32)
+    {
+        var prefix = new byte[] { 0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00 };
+        var spki = new byte[prefix.Length + 32];
+        Buffer.BlockCopy(prefix, 0, spki, 0, prefix.Length);
+        Buffer.BlockCopy(raw32, 0, spki, prefix.Length, 32);
+        return spki;
     }
 
     public async Task<(byte[] publicKey, byte[] privateKey)> ExportKeyPairAsync()

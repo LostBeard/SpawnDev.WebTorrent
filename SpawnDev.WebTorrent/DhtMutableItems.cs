@@ -25,6 +25,20 @@ public class DhtMutableItems : IDisposable
     private readonly ConcurrentDictionary<string, byte[]> _tokenCache = new();
     private readonly ConcurrentDictionary<string, (byte[] value, long seq)> _valueCache = new();
 
+    // Server-side storage for BEP 44 put queries we've received + are now serving to
+    // other peers on subsequent get queries. Key: hex(target) where target = SHA-1(k + salt).
+    // Value: full stored item payload so we can reconstruct the get response.
+    private readonly ConcurrentDictionary<string, StoredMutableItem> _storedItems = new();
+
+    private sealed class StoredMutableItem
+    {
+        public byte[] Value = Array.Empty<byte>();
+        public byte[] PublicKey = Array.Empty<byte>();
+        public byte[] Signature = Array.Empty<byte>();
+        public long Seq;
+        public byte[]? Salt;
+    }
+
     /// <summary>Async file system for persisting sequence numbers across restarts.</summary>
     public SpawnDev.AsyncFileSystem.IAsyncFS? AsyncFileSystem { get; set; }
 
@@ -43,6 +57,81 @@ public class DhtMutableItems : IDisposable
 
         // Wire GET response handling - this is the key fix from the original
         _dht.OnGetResponse += HandleGetResponse;
+
+        // Serve inbound BEP 44 get/put queries so we participate as a DHT server,
+        // not just a client. Required for 2-node loopback (nothing else on the wire
+        // to store/relay on our behalf) and for real-network cases where this node
+        // is one of the closest to a target.
+        _dht.OnGetQuery += HandleIncomingGet;
+        _dht.OnPutQuery += HandleIncomingPut;
+    }
+
+    // BEP 44 target = SHA1(k || salt). Static so tests can verify without an instance.
+    private static string TargetHex(byte[] publicKey, byte[]? salt)
+    {
+        var input = salt != null && salt.Length > 0
+            ? publicKey.Concat(salt).ToArray()
+            : publicKey;
+        return Convert.ToHexString(SHA1.HashData(input));
+    }
+
+    private byte[]? HandleIncomingGet(Dictionary<string, object> msg, IPEndPoint from)
+    {
+        try
+        {
+            if (!msg.TryGetValue("t", out var tObj) || tObj is not byte[] txId) return null;
+            if (!msg.TryGetValue("a", out var aObj) || aObj is not Dictionary<string, object> args) return null;
+            if (!args.TryGetValue("target", out var targetObj) || targetObj is not byte[] target) return null;
+
+            var targetKey = Convert.ToHexString(target);
+            if (_storedItems.TryGetValue(targetKey, out var item))
+            {
+                return _dht.BuildGetResponse(txId, _dht.NodeId,
+                    value: item.Value, seq: item.Seq, signature: item.Signature, publicKey: item.PublicKey);
+            }
+            // No stored value for this target - let DhtDiscovery emit the default
+            // empty-nodes + fresh-token response.
+            return null;
+        }
+        catch { return null; }
+    }
+
+    private byte[]? HandleIncomingPut(Dictionary<string, object> msg, IPEndPoint from)
+    {
+        try
+        {
+            if (!msg.TryGetValue("a", out var aObj) || aObj is not Dictionary<string, object> args) return null;
+            if (!args.TryGetValue("k", out var kObj) || kObj is not byte[] publicKey || publicKey.Length != 32) return null;
+            if (!args.TryGetValue("v", out var vObj) || vObj is not byte[] value) return null;
+            if (!args.TryGetValue("sig", out var sigObj) || sigObj is not byte[] signature || signature.Length != 64) return null;
+            if (!args.TryGetValue("seq", out var seqObj)) return null;
+            long seq = seqObj is long l ? l : seqObj is int i ? i : -1;
+            if (seq < 0) return null;
+            byte[]? salt = args.TryGetValue("salt", out var saltObj) && saltObj is byte[] s ? s : null;
+
+            // Verify Ed25519 signature per BEP 44: sign over "3:seqi{seq}e1:v{len}:{value}"
+            // (salt prefix if present). Reject forged writes rather than storing.
+            var signData = BuildSignData(value, salt, seq);
+            var verifyTask = _signer.VerifyAsync(publicKey, signData, signature);
+            if (!verifyTask.GetAwaiter().GetResult()) return null;
+
+            var target = TargetHex(publicKey, salt);
+
+            // Monotonic sequence per BEP 44 section "updating": only accept if seq > stored.
+            if (_storedItems.TryGetValue(target, out var existing) && existing.Seq >= seq) return null;
+
+            _storedItems[target] = new StoredMutableItem
+            {
+                Value = value,
+                PublicKey = publicKey,
+                Signature = signature,
+                Seq = seq,
+                Salt = salt,
+            };
+            // Default ack from DhtDiscovery is fine.
+            return null;
+        }
+        catch { return null; }
     }
 
     /// <summary>Restore the last published sequence number from persistent storage.</summary>
@@ -140,6 +229,25 @@ public class DhtMutableItems : IDisposable
         var signData = BuildSignData(value, salt, _sequence);
         var signature = await _signer.SignAsync(signData);
 
+        // Self-store: the publisher is one of the K nodes closest to the target
+        // (it's close to anything not by definition, but in small swarms this is
+        // load-bearing: a subscriber querying the publisher directly needs the
+        // value served locally). Mirrors what coturn/libtorrent do for their own
+        // puts. Safe in large swarms too - just means one extra node has the
+        // value, which is the redundancy model anyway.
+        var targetHex = Convert.ToHexString(target);
+        _storedItems[targetHex] = new StoredMutableItem
+        {
+            Value = value,
+            PublicKey = _signer.PublicKey,
+            Signature = signature,
+            Seq = _sequence,
+            Salt = salt,
+        };
+        // Also surface via the normal received-value path so local consumers
+        // (e.g. local OnValueUpdated subscribers on the same process) see it.
+        _valueCache[Convert.ToHexString(_signer.PublicKey)] = (value, _sequence);
+
         int putCount = 0;
         for (int attempt = 0; attempt < 5 && !ct.IsCancellationRequested; attempt++)
         {
@@ -203,7 +311,15 @@ public class DhtMutableItems : IDisposable
     {
         while (!ct.IsCancellationRequested)
         {
-            try { await GetAsync(publicKey, salt, ct); }
+            // Always force a live DHT lookup rather than the cache-first GetAsync path,
+            // otherwise once the cache is warm we stop polling for newer sequences and
+            // miss republishes. BEP 46's value proposition IS mutation, so polling must
+            // keep reaching out.
+            try
+            {
+                var target = ComputeTarget(publicKey, salt);
+                await _dht.GetAsync(target, ct);
+            }
             catch { }
             await Task.Delay(pollIntervalMs, ct);
         }
@@ -292,5 +408,7 @@ public class DhtMutableItems : IDisposable
         if (_disposed) return;
         _disposed = true;
         _dht.OnGetResponse -= HandleGetResponse;
+        _dht.OnGetQuery -= HandleIncomingGet;
+        _dht.OnPutQuery -= HandleIncomingPut;
     }
 }

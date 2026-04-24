@@ -161,6 +161,85 @@ public static class TorrentCreator
                 : BuildV2MultiFile(torrentName, files, options);
         }
 
+        return CreateFromMultipleFilesV1(torrentName, files, options);
+    }
+
+    /// <summary>
+    /// Streaming v2 multi-file torrent creator. Per-file IncrementalMerkleHasher so each
+    /// file is hashed without being fully materialized — memory footprint is bounded at
+    /// roughly <c>pieceLength / 16 KiB</c> leaf hashes in flight per file + 32 bytes per
+    /// completed piece root, regardless of the actual file size. Intended for seeding
+    /// HuggingFace-style multi-file model torrents where individual shards can be
+    /// multi-GB each.
+    ///
+    /// V2-only (no hybrid): hybrid multi-file requires deterministic pad-file alignment
+    /// across the v1 flat-concatenation and v2 per-file Merkle paths. Two-pass friction
+    /// for streams (know each file length before you start hashing the next one) makes
+    /// that a separate feature; for now, streaming is v2-only, which is sufficient for
+    /// the HF use case where we have no v1 interop requirement.
+    /// </summary>
+    public static async Task<(byte[] torrentBytes, TorrentMetadata metadata)> CreateFromMultipleStreamsAsync(
+        string torrentName,
+        (string path, Stream stream, long length)[] files,
+        TorrentCreatorOptions? options = null,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(torrentName))
+            throw new ArgumentException("torrentName is required", nameof(torrentName));
+        if (files == null || files.Length == 0)
+            throw new ArgumentException("Multi-file torrent requires at least one file.", nameof(files));
+
+        options ??= new TorrentCreatorOptions();
+        if (options.MetaVersion != 2)
+            throw new ArgumentException(
+                "CreateFromMultipleStreamsAsync currently supports v2 only. Use CreateFromMultipleFiles for v1.",
+                nameof(options));
+        if (options.Hybrid)
+            throw new ArgumentException(
+                "Hybrid multi-file streaming is not supported — hybrid v1+v2 needs deterministic pad-file alignment across both hash paths, which requires all bytes present at create time. Use the in-memory CreateFromMultipleFiles for hybrid.",
+                nameof(options));
+
+        long totalLength = files.Sum(f => f.length);
+        int pieceLength = options.PieceLength > 0
+            ? options.PieceLength
+            : CalculatePieceLength(totalLength);
+        ValidateV2PieceSize(pieceLength);
+
+        // Same ordering rule as BuildV2MultiFile so a create/parse round-trip sees the
+        // same file sequence. BEP 52 file-tree walk is bytewise path order.
+        var sorted = files.OrderBy(f => f.path, StringComparer.Ordinal).ToArray();
+
+        // Stream each file through the incremental hasher to produce its root + piece layer.
+        var fileRoots = new byte[sorted.Length][];
+        var filePieceLayers = new byte[sorted.Length][][];
+        int bufferSize = Math.Max(pieceLength, 64 * 1024);
+        var buffer = new byte[bufferSize];
+        for (int i = 0; i < sorted.Length; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var hasher = MerkleHasher.CreateIncremental(pieceLength);
+            int bytesRead;
+            while ((bytesRead = await sorted[i].stream.ReadAsync(buffer.AsMemory(0, bufferSize), ct).ConfigureAwait(false)) > 0)
+            {
+                hasher.Update(buffer.AsSpan(0, bytesRead));
+            }
+            var (fileRoot, pieceLayer) = hasher.Finish();
+            if (hasher.TotalBytesHashed != sorted[i].length)
+                throw new InvalidOperationException(
+                    $"File '{sorted[i].path}' declared length={sorted[i].length} but stream produced {hasher.TotalBytesHashed} bytes. " +
+                    $"Streaming multi-file cannot rewrite the declared length mid-flight because it feeds straight into the file-tree dict.");
+            fileRoots[i] = fileRoot;
+            filePieceLayers[i] = pieceLayer;
+        }
+
+        var descriptors = sorted.Select(f => (path: f.path, length: f.length)).ToArray();
+        return AssembleV2MultiFile(torrentName, descriptors, fileRoots, filePieceLayers, pieceLength, options);
+    }
+
+    private static (byte[], TorrentMetadata) CreateFromMultipleFilesV1(
+        string torrentName, (string path, byte[] data)[] files, TorrentCreatorOptions options)
+    {
+
         long totalLength = files.Sum(f => (long)f.data.Length);
         int pieceLength = options.PieceLength > 0
             ? options.PieceLength
@@ -998,11 +1077,7 @@ public static class TorrentCreator
 
         // Sort input files into BEP 52 file-tree walk order (bytewise path ordering) so every
         // downstream per-file structure - fileRoots[], filePieceLayers[], flatHashes[],
-        // torrentFiles[] - is in the SAME order a parse round-trip sees. Prevents a subtle
-        // bug where a creator built from input order ["b", "a"] produces a TorrentMetadata
-        // with PieceHashes in input order while TorrentParser.Parse(bytes) of the same torrent
-        // reads them back in alphabetical order, making globalPieceIndex ambiguous between
-        // the two sides.
+        // torrentFiles[] - is in the SAME order a parse round-trip sees.
         files = files.OrderBy(f => f.path, StringComparer.Ordinal).ToArray();
 
         // Hash each file independently, collecting file roots and piece layers.
@@ -1016,8 +1091,29 @@ public static class TorrentCreator
                 : Array.Empty<byte[]>();
         }
 
+        var descriptors = files.Select(f => (path: f.path, length: (long)f.data.Length)).ToArray();
+        return AssembleV2MultiFile(torrentName, descriptors, fileRoots, filePieceLayers, pieceLength, options);
+    }
+
+    /// <summary>
+    /// Shared assembly of a v2 multi-file torrent from precomputed per-file Merkle results.
+    /// Used by both the in-memory <see cref="BuildV2MultiFile"/> path and the streaming
+    /// <see cref="CreateFromMultipleStreamsAsync"/> path. Takes only file path + length +
+    /// fileRoot + pieceLayer — never byte buffers — so it works whether the source was
+    /// byte[] input or a Stream consumed through an incremental hasher.
+    /// </summary>
+    private static (byte[] torrentBytes, TorrentMetadata metadata) AssembleV2MultiFile(
+        string torrentName,
+        (string path, long length)[] files,
+        byte[][] fileRoots,
+        byte[][][] filePieceLayers,
+        int pieceLength,
+        TorrentCreatorOptions options)
+    {
+        long totalLength = files.Sum(f => f.length);
+
         // Build the nested file tree from the path list.
-        var fileTree = BuildV2FileTree(files, fileRoots);
+        var fileTree = BuildV2FileTreeFromDescriptors(files, fileRoots);
 
         var infoDict = new Dictionary<string, object>
         {
@@ -1050,9 +1146,7 @@ public static class TorrentCreator
 
         // Build TorrentFileInfo array with PADDED offsets. BEP 52 §"File tree" defines the
         // piece index as the logical concatenation of files with implicit zero-padding so
-        // each file starts on a piece boundary in the virtual stream. Offsets reflect the
-        // padded virtual layout (consumer-facing math for piece-to-file mapping), NOT the
-        // raw per-file byte counts.
+        // each file starts on a piece boundary in the virtual stream.
         var torrentFiles = new TorrentFileInfo[files.Length];
         long offset = 0;
         for (int i = 0; i < files.Length; i++)
@@ -1061,29 +1155,25 @@ public static class TorrentCreator
             {
                 Path = files[i].path,
                 Name = System.IO.Path.GetFileName(files[i].path),
-                Length = files[i].data.Length,
+                Length = files[i].length,
                 Offset = offset,
             };
-            offset += files[i].data.Length;
-            // Pad each file's tail up to the next piece boundary (implicit - no actual bytes
-            // are emitted; this only shifts the virtual offset of the next file).
-            if (files[i].data.Length > 0)
+            offset += files[i].length;
+            if (files[i].length > 0)
             {
-                long rem = files[i].data.Length % pieceLength;
+                long rem = files[i].length % pieceLength;
                 if (rem != 0) offset += (pieceLength - rem);
             }
         }
 
-        // Flatten piece hashes across all files for PieceHashes. Order matches file-tree walk
-        // (input already sorted above) so a parse round-trip produces the same sequence.
-        // Single-piece files (file.Length <= PieceLength) contribute their file root as the
-        // single piece hash.
+        // Flatten piece hashes across all files for PieceHashes. Single-piece files
+        // (length <= pieceLength) contribute their file root as the single piece hash.
         var flatHashes = new List<byte[]>();
         for (int i = 0; i < files.Length; i++)
         {
             if (filePieceLayers[i].Length > 0)
                 flatHashes.AddRange(filePieceLayers[i]);
-            else if (files[i].data.Length > 0)
+            else if (files[i].length > 0)
                 flatHashes.Add(fileRoots[i]);
         }
 
@@ -1120,6 +1210,19 @@ public static class TorrentCreator
     /// </summary>
     private static Dictionary<string, object> BuildV2FileTree(
         (string path, byte[] data)[] files, byte[][] fileRoots)
+    {
+        var descriptors = files.Select(f => (path: f.path, length: (long)f.data.Length)).ToArray();
+        return BuildV2FileTreeFromDescriptors(descriptors, fileRoots);
+    }
+
+    /// <summary>
+    /// Builds the BEP 52 nested file-tree dict from path/length descriptors + per-file
+    /// Merkle roots. Shared between the in-memory <see cref="BuildV2MultiFile"/> path
+    /// (which has byte arrays) and the streaming path (which never materializes full file
+    /// bytes). Only path + length + pieces root are needed at this level.
+    /// </summary>
+    private static Dictionary<string, object> BuildV2FileTreeFromDescriptors(
+        (string path, long length)[] files, byte[][] fileRoots)
     {
         var root = new Dictionary<string, object>();
 
@@ -1160,7 +1263,7 @@ public static class TorrentCreator
             {
                 [""] = new Dictionary<string, object>
                 {
-                    ["length"] = (long)files[i].data.Length,
+                    ["length"] = files[i].length,
                     ["pieces root"] = fileRoots[i],
                 }
             };

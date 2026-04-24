@@ -97,7 +97,13 @@ public class Discovery : IAsyncDisposable
     // ANNOUNCE
     // ========================
 
-    /// <summary>Send announce to all trackers.</summary>
+    /// <summary>
+    /// Send announce to all trackers. Per-tracker failures are isolated — one tracker
+    /// going down (network unreachable, WSS handshake rejected, etc.) does NOT cancel
+    /// announces to the others. Tracker failover: callers get whatever peer information
+    /// is reachable rather than all-or-nothing on a single bad tracker. Failures surface
+    /// via OnWarning for the caller to log / retry.
+    /// </summary>
     public async Task AnnounceAsync(AnnounceOptions? opts = null)
     {
         if (Destroyed) return;
@@ -105,18 +111,31 @@ public class Discovery : IAsyncDisposable
 
         var tasks = new List<Task>();
         foreach (var t in _wsTrackers)
-            tasks.Add(t.AnnounceAsync(InfoHash, opts, PeerId));
+            tasks.Add(AnnounceWithIsolation(() => t.AnnounceAsync(InfoHash, opts, PeerId), $"ws:{t.AnnounceUrl}"));
         foreach (var t in _httpTrackers)
-            tasks.Add(t.AnnounceAsync(opts));
-        // UDP trackers use their own announce format — start them if not already running
+            tasks.Add(AnnounceWithIsolation(() => t.AnnounceAsync(opts), $"http:{t.AnnounceUrl}"));
         foreach (var t in _udpTrackers)
         {
             if (!t.IsConnected)
-                tasks.Add(t.StartAsync(InfoHash, 6881));
+                tasks.Add(AnnounceWithIsolation(() => t.StartAsync(InfoHash, 6881), "udp"));
         }
 
         await Task.WhenAll(tasks);
         OnTrackerAnnounce?.Invoke();
+    }
+
+    /// <summary>
+    /// Runs a tracker announce and catches any failure, surfacing it via OnWarning
+    /// instead of propagating to the caller. Prevents one bad tracker from collapsing
+    /// an `await Task.WhenAll(allTrackers)`.
+    /// </summary>
+    private async Task AnnounceWithIsolation(Func<Task> announce, string trackerLabel)
+    {
+        try { await announce().ConfigureAwait(false); }
+        catch (Exception ex)
+        {
+            OnWarning?.Invoke($"Tracker announce failed [{trackerLabel}]: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     /// <summary>Announce completion to all trackers.</summary>

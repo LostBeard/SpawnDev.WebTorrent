@@ -1,0 +1,66 @@
+[Unit]
+Description="SpawnDev.WebTorrent Hub - Torrent Tracker + HuggingFace Proxy"
+#
+# copy this file to the location below
+# /etc/systemd/system/spawndev_hub.service
+# sudo cp spawndev_hub.service /etc/systemd/system/spawndev_hub.service
+#
+# start, stop, status commands
+# sudo systemctl start spawndev_hub.service
+# sudo systemctl stop spawndev_hub.service
+# sudo systemctl status spawndev_hub.service
+#
+# list running
+# sudo systemctl --type=service --state=running
+#
+# enable start at boot
+# sudo systemctl enable spawndev_hub.service
+#
+# disable start at boot
+# sudo systemctl disable spawndev_hub.service
+#
+# view log
+# sudo journalctl -u spawndev_hub.service
+
+[Service]
+ExecStart=/usr/bin/dotnet /srv/spawndev_hub/SpawnDev.WebTorrent.ServerApp.dll
+WorkingDirectory=/srv/spawndev_hub
+Restart=always
+RestartSec=10
+User=zed
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=spawndev_hub
+Environment=ASPNETCORE_URLS=http://0.0.0.0:5561
+Environment=ASPNETCORE_ENVIRONMENT=Production
+Environment=DOTNET_CLI_HOME=/tmp
+
+# --- Origin allowlist (basic abuse protection on /announce) ---
+Environment=RTC__AllowedOrigins=https://hub.spawndev.com;https://*.spawndev.com
+
+# --- Embedded STUN/TURN server (RFC 5766) ---
+Environment=RTC__StunTurn__Enabled=true
+Environment=RTC__StunTurn__Port=3478
+Environment=RTC__StunTurn__ListenAddress=0.0.0.0
+# Public IP advertised in XOR-RELAYED-ADDRESS. Must be the hub's public IP,
+# not the LAN address - clients need to reach this from outside the NAT.
+Environment=RTC__StunTurn__RelayAddress=64.246.234.108
+Environment=RTC__StunTurn__Realm=spawndev-rtc
+
+# Ephemeral credentials (TURN REST API pattern). 32 bytes of random base64.
+# Anyone with this can mint valid TURN credentials - rotate on leak, but
+# it's relay bandwidth, not a bank account. TrackerGated below adds a second
+# gate requiring an active WebSocket session with the tracker.
+Environment=RTC__StunTurn__EphemeralCredentialSharedSecret=HqcRxoWPnLwo2p5pxke3ca6xim4PL/MQvehuhmxfPH4=
+
+# Only peers currently announced to the signaling tracker can obtain a
+# TURN allocation (gates out scraping attackers even with the secret).
+Environment=RTC__StunTurn__TrackerGated=true
+
+# Per-allocation relay socket port range. Must match the UDP range
+# forwarded on the router (192.168.1.113, UDP 49200:49299).
+Environment=RTC__StunTurn__RelayPortRangeStart=49200
+Environment=RTC__StunTurn__RelayPortRangeEnd=49299
+
+[Install]
+WantedBy=multi-user.target

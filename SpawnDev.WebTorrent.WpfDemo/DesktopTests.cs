@@ -1,8 +1,14 @@
+using SpawnDev.WebTorrent;
+using SpawnDev.WebTorrent.Demo.Shared;
+
 namespace SpawnDev.WebTorrent.WpfDemo;
 
 /// <summary>
-/// Desktop-side tests. Will inherit shared test base once Demo.Shared is populated.
+/// WPF concrete subclass of <see cref="WebTorrentTestBase"/>. Inherits every
+/// [TestMethod] so the WPF client's "Tests" button runs the full shared suite
+/// (same tests as DemoConsole + browser demo, 480+ and growing).
 /// </summary>
-public class DesktopTests
+public class DesktopTests : WebTorrentTestBase
 {
+    public DesktopTests(WebTorrentClient client) : base(client) { }
 }

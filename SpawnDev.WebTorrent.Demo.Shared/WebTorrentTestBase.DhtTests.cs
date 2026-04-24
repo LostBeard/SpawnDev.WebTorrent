@@ -120,4 +120,66 @@ public abstract partial class WebTorrentTestBase
                 throw new Exception($"Round-trip failed: expected {addresses[i]}, got {decoded}");
         }
     }
+
+    [TestMethod]
+    public async Task Client_EnsureDhtAsync_Idempotent()
+    {
+        if (OperatingSystem.IsBrowser()) throw new UnsupportedTestException("DHT is desktop-only");
+
+        // Unique port per test run to avoid collisions with other test processes.
+        var port = GetFreeUdpPort();
+
+        var client = new WebTorrentClient();
+        try
+        {
+            await client.EnsureDhtAsync(new DhtOptions { Port = port });
+            if (client.Dht == null) throw new Exception("Dht should be non-null after EnsureDhtAsync");
+            var first = client.Dht;
+
+            // Calling again should be a no-op, not rebuild.
+            await client.EnsureDhtAsync(new DhtOptions { Port = port + 1 });
+            if (!ReferenceEquals(first, client.Dht))
+                throw new Exception("Second EnsureDhtAsync call should be idempotent - same instance");
+        }
+        finally
+        {
+            await client.DisposeAsync();
+        }
+    }
+
+    [TestMethod]
+    public async Task Client_EnsureDhtAsync_CustomPort_AllowsMultiClientLoopback()
+    {
+        if (OperatingSystem.IsBrowser()) throw new UnsupportedTestException("DHT is desktop-only");
+
+        // Two clients on distinct DHT ports - the use case that motivated this
+        // API (two P2PCompute instances on loopback for end-to-end BEP 46 tests).
+        var portA = GetFreeUdpPort();
+        var portB = GetFreeUdpPort();
+        while (portB == portA) portB = GetFreeUdpPort();
+
+        var clientA = new WebTorrentClient();
+        var clientB = new WebTorrentClient();
+        try
+        {
+            await clientA.EnsureDhtAsync(new DhtOptions { Port = portA });
+            await clientB.EnsureDhtAsync(new DhtOptions { Port = portB });
+
+            if (clientA.Dht == null || clientB.Dht == null)
+                throw new Exception("Both clients should have Dht set");
+            if (ReferenceEquals(clientA.Dht, clientB.Dht))
+                throw new Exception("Each client should have its own DHT instance");
+        }
+        finally
+        {
+            await clientA.DisposeAsync();
+            await clientB.DisposeAsync();
+        }
+    }
+
+    private static int GetFreeUdpPort()
+    {
+        using var u = new System.Net.Sockets.UdpClient(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 0));
+        return ((System.Net.IPEndPoint)u.Client.LocalEndPoint!).Port;
+    }
 }

@@ -1,8 +1,24 @@
 using Microsoft.AspNetCore.HttpOverrides;
+using SIPSorcery.Net;
 using SpawnDev.RTC.Server;
 using SpawnDev.RTC.Server.Extensions;
 using SpawnDev.WebTorrent.Server;
 using SpawnDev.WebTorrent.Server.HuggingFace;
+using System.Net;
+
+// Optional STUN/TURN + abuse-protection features (all disabled by default):
+//   RTC__AllowedOrigins                         Semicolon-separated Origin allowlist on /announce
+//   RTC__StunTurn__Enabled                      Run an embedded STUN/TURN server
+//   RTC__StunTurn__Port                         UDP port (default 3478)
+//   RTC__StunTurn__ListenAddress                IP to bind (default 0.0.0.0)
+//   RTC__StunTurn__RelayAddress                 Public IP advertised in XOR-RELAYED-ADDRESS (set when NAT'd)
+//   RTC__StunTurn__Realm                        TURN auth realm (default "spawndev-rtc")
+//   RTC__StunTurn__Username                     Long-term credential username
+//   RTC__StunTurn__Password                     Long-term credential password
+//   RTC__StunTurn__EphemeralCredentialSharedSecret  HMAC secret for RFC 8489 §9.2 ephemeral creds
+//   RTC__StunTurn__TrackerGated                 Only tracker-announced peers can allocate (requires shared secret)
+//   RTC__StunTurn__RelayPortRangeStart          Low bound of per-allocation relay ports (inclusive, for NAT)
+//   RTC__StunTurn__RelayPortRangeEnd            High bound. Constrains relay sockets to a forwardable range
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -33,6 +49,18 @@ var trackerOptions = new TrackerServerOptions
     AnnounceIntervalSeconds = config.GetValue("Tracker:AnnounceInterval", 120),
     MaxPeersPerAnnounce = config.GetValue("Tracker:MaxPeersPerAnnounce", 50),
 };
+
+// Optional Origin allowlist for the /announce WebSocket endpoint. When unset,
+// no Origin check runs (backward compatible). Accepts exact match and
+// wildcard subdomain form (`https://*.example.com`). See SpawnDev.RTC.Server
+// TrackerServerOptions.AllowedOrigins for full semantics.
+var allowedOriginsRaw = config.GetValue<string?>("RTC:AllowedOrigins");
+if (!string.IsNullOrWhiteSpace(allowedOriginsRaw))
+{
+    trackerOptions.AllowedOrigins = allowedOriginsRaw
+        .Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .ToArray();
+}
 
 builder.Services.AddSingleton(new WebSeedServer(config.GetValue("WebSeed:Directory", "seed-data")!));
 builder.Services.AddSingleton(new ComputeRequestBoard());
@@ -86,6 +114,56 @@ var tracker = app.UseRtcSignaling("/announce", trackerOptions);
 var webSeed = app.Services.GetRequiredService<WebSeedServer>();
 app.MapWebSeedServer(webSeed);
 
+// Optional embedded STUN/TURN server. Inline (rather than AddRtcStunTurn) so
+// the tracker-gated resolver can close over the tracker instance just created.
+TurnServer? turnServer = null;
+var turnEnabled = config.GetValue("RTC:StunTurn:Enabled", false);
+if (turnEnabled)
+{
+    var turnListen = config.GetValue("RTC:StunTurn:ListenAddress", "0.0.0.0");
+    var turnRelay = config.GetValue<string?>("RTC:StunTurn:RelayAddress");
+    var turnRealm = config.GetValue("RTC:StunTurn:Realm", "spawndev-rtc");
+    var turnConfig = new TurnServerConfig
+    {
+        ListenAddress = IPAddress.Parse(turnListen),
+        Port = config.GetValue("RTC:StunTurn:Port", 3478),
+        EnableTcp = config.GetValue("RTC:StunTurn:EnableTcp", true),
+        EnableUdp = config.GetValue("RTC:StunTurn:EnableUdp", true),
+        RelayAddress = !string.IsNullOrWhiteSpace(turnRelay)
+            ? IPAddress.Parse(turnRelay)
+            : IPAddress.Parse(turnListen),
+        Username = config.GetValue("RTC:StunTurn:Username", "turn-user"),
+        Password = config.GetValue("RTC:StunTurn:Password", "turn-pass"),
+        Realm = turnRealm,
+        DefaultLifetimeSeconds = config.GetValue("RTC:StunTurn:DefaultLifetimeSeconds", 600),
+        RelayPortRangeStart = config.GetValue("RTC:StunTurn:RelayPortRangeStart", 0),
+        RelayPortRangeEnd = config.GetValue("RTC:StunTurn:RelayPortRangeEnd", 0),
+    };
+
+    var sharedSecret = config.GetValue<string?>("RTC:StunTurn:EphemeralCredentialSharedSecret");
+    var trackerGated = config.GetValue("RTC:StunTurn:TrackerGated", false);
+
+    if (!string.IsNullOrEmpty(sharedSecret))
+    {
+        turnConfig.ResolveHmacKey = trackerGated
+            ? EphemeralTurnCredentials.TrackerGatedResolver(sharedSecret, turnRealm, tracker)
+            : username => EphemeralTurnCredentials.ResolveLongTermKey(sharedSecret, turnRealm, username);
+    }
+    else if (trackerGated)
+    {
+        throw new InvalidOperationException(
+            "RTC__StunTurn__TrackerGated=true requires RTC__StunTurn__EphemeralCredentialSharedSecret to also be set.");
+    }
+
+    turnServer = new TurnServer(turnConfig);
+    turnServer.Start();
+    app.Lifetime.ApplicationStopping.Register(() =>
+    {
+        try { turnServer.Stop(); } catch { /* best-effort */ }
+        turnServer.Dispose();
+    });
+}
+
 // /stats now reports from the generic signaling server.
 app.MapGet("/stats", () => new
 {
@@ -138,5 +216,20 @@ Console.WriteLine("  Magnet URI:   https://localhost:5560/magnet/{repoId}/{fileP
 Console.WriteLine("  Stats:        https://localhost:5560/stats");
 Console.WriteLine("  HF Stats:     https://localhost:5560/hf-stats");
 Console.WriteLine("  Compute Board: https://localhost:5560/compute/requests");
+if (trackerOptions.AllowedOrigins is { Count: > 0 } allowList)
+    Console.WriteLine($"  Origin allowlist: {string.Join(", ", allowList)}");
+if (turnEnabled && turnServer != null)
+{
+    var authMode = !string.IsNullOrEmpty(config.GetValue<string?>("RTC:StunTurn:EphemeralCredentialSharedSecret"))
+        ? (config.GetValue("RTC:StunTurn:TrackerGated", false) ? "ephemeral + tracker-gated" : "ephemeral")
+        : "long-term";
+    Console.WriteLine($"  STUN/TURN:    UDP :{config.GetValue("RTC:StunTurn:Port", 3478)} (auth={authMode})");
+    var rangeStart = config.GetValue("RTC:StunTurn:RelayPortRangeStart", 0);
+    var rangeEnd = config.GetValue("RTC:StunTurn:RelayPortRangeEnd", 0);
+    if (rangeStart > 0 && rangeEnd >= rangeStart)
+        Console.WriteLine($"  Relay ports:  UDP {rangeStart}-{rangeEnd} (forward this range at your NAT)");
+    else
+        Console.WriteLine("  Relay ports:  OS ephemeral (set RelayPortRangeStart/End when behind NAT)");
+}
 
 app.Run();

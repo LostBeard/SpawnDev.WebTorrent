@@ -324,15 +324,48 @@ public class WebTorrentClient : IAsyncDisposable
     /// <param name="publicKey">Publisher's Ed25519 public key (32 bytes).</param>
     /// <param name="salt">Optional salt for multi-channel publishers.</param>
     /// <param name="signer">Signer for verifying received items. Required for signature checks.</param>
+    /// <summary>
+    /// Eagerly initialize the DHT with optional custom <see cref="DhtOptions"/>. Without calling this,
+    /// the DHT is lazy-initialized on the first BEP 46 operation using default options (port 6881),
+    /// which blocks running two clients on a single host (port collision). Call this when:
+    /// <list type="bullet">
+    ///   <item>Running multiple clients on one host (tests / local relays / embedded workers) and they
+    ///         need distinct DHT ports.</item>
+    ///   <item>Pre-warming the routing table before the first BEP 46 op so the get/put latency doesn't
+    ///         include bootstrap time.</item>
+    ///   <item>Overriding bootstrap nodes (e.g. private tracker / isolated DHT network).</item>
+    /// </list>
+    /// <para>
+    /// Idempotent: returns immediately if the DHT is already running, or if running in the browser
+    /// where UDP sockets are unavailable (browser DHT is not implemented - BEP 46 over tracker-relay
+    /// is a future item).
+    /// </para>
+    /// </summary>
+    /// <param name="options">Optional DHT configuration. When null, uses defaults (port 6881, standard
+    /// bootstrap nodes). Setting <see cref="DhtOptions.Port"/> to a unique value per instance enables
+    /// multi-client loopback testing.</param>
+    /// <param name="ct">Cancellation token for the initial bind + routing-table bootstrap.</param>
+    public async Task EnsureDhtAsync(DhtOptions? options = null, CancellationToken ct = default)
+    {
+        if (Destroyed) throw new InvalidOperationException("Client is destroyed");
+        if (OperatingSystem.IsBrowser()) return;
+        if (Dht != null) return;
+
+        var opts = options ?? new DhtOptions();
+        Dht = new DhtDiscovery(opts);
+        await Dht.StartAsync(new byte[20], opts.Port, ct);
+    }
+
     public async Task<Torrent?> AddBtpkAsync(byte[] publicKey, byte[]? salt = null,
         IDhtSigner? signer = null, AddTorrentOptions? opts = null, CancellationToken ct = default)
     {
         if (Destroyed) throw new InvalidOperationException("Client is destroyed");
         if (Dht == null && !OperatingSystem.IsBrowser())
         {
-            // Auto-start DHT if not running
-            Dht = new DhtDiscovery();
-            await Dht.StartAsync(new byte[20], ct: ct);
+            // Auto-start DHT if not running. For callers that need a non-default
+            // port (e.g. running multiple clients on one host) call EnsureDhtAsync
+            // with a DhtOptions first - this lazy path uses default port 6881.
+            await EnsureDhtAsync(ct: ct);
         }
 
         if (Dht == null)
@@ -736,6 +769,16 @@ public class WebTorrentClient : IAsyncDisposable
             try { await torrent.DisposeAsync(); } catch { }
         }
         Torrents.Clear();
+
+        // Release the DHT UDP socket + routing-table worker. Without this,
+        // the socket leaks across tests on the same port, and any call to
+        // EnsureDhtAsync from a subsequent client collides on bind.
+        if (Dht != null)
+        {
+            try { await Dht.DisposeAsync(); } catch { }
+            Dht = null;
+        }
+
         _http.Dispose();
     }
 }

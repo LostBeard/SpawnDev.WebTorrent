@@ -108,11 +108,14 @@ public class ServiceWorkerStreamHandler : IAsyncBackgroundService, IDisposable
     }
 
     /// <summary>
-    /// Get the streaming URL for a torrent file by index.
+    /// Get the streaming URL for a torrent file by index. Uses
+    /// <see cref="Torrent.WireInfoHashHex"/> so pure-v2 torrents (empty v1
+    /// <see cref="Torrent.InfoHash"/>) route through their 20-byte wire prefix
+    /// instead of breaking the URL with an empty path segment.
     /// </summary>
     public static string GetStreamUrl(Torrent torrent, int fileIndex)
     {
-        return $"/webtorrent/{torrent.InfoHashHex}/{fileIndex}";
+        return $"/webtorrent/{torrent.WireInfoHashHex}/{fileIndex}";
     }
 
     /// <summary>
@@ -121,7 +124,7 @@ public class ServiceWorkerStreamHandler : IAsyncBackgroundService, IDisposable
     public static string GetStreamUrl(Torrent torrent, TorrentFileInfo file)
     {
         var fileIdx = torrent.Files != null ? System.Array.IndexOf(torrent.Files, file) : -1;
-        return $"/webtorrent/{torrent.InfoHashHex}/{fileIdx}";
+        return $"/webtorrent/{torrent.WireInfoHashHex}/{fileIdx}";
     }
 
     public void Dispose()

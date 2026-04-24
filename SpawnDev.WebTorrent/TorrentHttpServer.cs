@@ -229,9 +229,10 @@ public class TorrentHttpServer : IAsyncDisposable
         sb.AppendLine("<ul>");
         foreach (var torrent in _client.Torrents)
         {
-            var hash = torrent.InfoHashHex;
-            var name = torrent.Name ?? hash[..Math.Min(8, hash.Length)];
-            sb.AppendLine($"<li><a href='/{hash}/' style='color:#10b981'>{name}</a></li>");
+            // WireInfoHashHex so pure-v2 torrents get a non-empty URL prefix
+            var hash = torrent.WireInfoHashHex;
+            var label = torrent.Name ?? (hash.Length >= 8 ? hash[..8] : (hash.Length > 0 ? hash : "unknown"));
+            sb.AppendLine($"<li><a href='/{hash}/' style='color:#10b981'>{label}</a></li>");
         }
         sb.AppendLine("</ul></body></html>");
         await WriteText(res, sb.ToString());
@@ -250,7 +251,7 @@ public class TorrentHttpServer : IAsyncDisposable
         res.ContentType = "text/html";
         var sb = new StringBuilder();
         sb.AppendLine("<html><body style='font-family:monospace;background:#0f172a;color:#f1f5f9'>");
-        sb.AppendLine($"<h2>{torrent.Name ?? torrent.InfoHashHex}</h2>");
+        sb.AppendLine($"<h2>{torrent.DisplayName}</h2>");
         sb.AppendLine("<ul>");
         foreach (var file in torrent.Files)
         {

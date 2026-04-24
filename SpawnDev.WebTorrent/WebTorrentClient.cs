@@ -630,8 +630,10 @@ public class WebTorrentClient : IAsyncDisposable
     {
         if (request.Handled) return;
 
+        // GetStreamUrl emits WireInfoHashHex (v1 when present, first 20 bytes of v2
+        // for pure-v2), so the lookup here must match on WireInfoHashHex too.
         var torrent = Torrents.FirstOrDefault(t =>
-            t.HasMetadata && t.InfoHashHex == request.InfoHash);
+            t.HasMetadata && string.Equals(t.WireInfoHashHex, request.InfoHash, StringComparison.OrdinalIgnoreCase));
 
         if (torrent?.Files == null || request.FileIndex < 0 || request.FileIndex >= torrent.Files.Length)
             return;

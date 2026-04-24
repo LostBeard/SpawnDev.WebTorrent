@@ -1,5 +1,55 @@
 # Changelog
 
+## 3.1.3-rc.26 (2026-04-24)
+
+### BEP 44/46 server-side completeness
+
+- `DhtDiscovery.HandleQuery` now dispatches BEP 44 `get` and `put` queries via new `OnGetQuery` / `OnPutQuery` events. `DhtMutableItems` wires those events to a local `_storedItems` cache: verifies Ed25519 signatures on inbound puts (rejects forgeries), serves stored values on subsequent gets. Previously SpawnDev.WebTorrent could only be a BEP 44 client, never a server, so mutable items never propagated in small swarms.
+- `DhtMutableItems.PublishAsync` now self-stores so a subscriber querying the publisher directly is served the value (required when the publisher is one of the K closest nodes to the target).
+- `DhtMutableItems.SubscribeAsync` bypasses the cache short-circuit - keeps polling for newer sequences instead of returning the first cached value forever.
+- BEP 5 learn-from-query: `DhtDiscovery.HandleQuery` now adds the querier's NodeId to the routing table (previously only query responses populated the table). Fixes small-swarm / bootstrap scenarios.
+- `Ed25519Signer.VerifyAsync` now accepts raw 32-byte BEP 44 wire-format pubkeys and wraps them in SPKI internally. Previously verify silently failed on every incoming put because `ImportEd25519Key` expects SPKI, not raw bytes. **Real production-path bug, not a test-only issue** — any incoming signed mutable item was rejected.
+- New public helpers: `DhtDiscovery.FindNodeAsync(endpoint)` + `PingAsync(endpoint)` for manual-bootstrap / LAN-discovery / unit-test scenarios. New public `BuildGetResponse(txId, nodeId, value, seq, signature, publicKey)` for custom get-query handlers.
+- 2 new real-P2P loopback tests: `Bep46_Loopback_PublishSubscribe_DeliversValue` (~5s) + `Bep46_Loopback_Republish_BumpsSequence` (~14s). Two in-process `DhtDiscovery` instances on loopback UDP exercise the full BEP 44/46 round-trip; the first test is the first end-to-end proof the network path works (existing tests stubbed delivery with `NotifyMutableUpdate`).
+
+SpawnDev.WebTorrent is now among the very few BitTorrent clients with a genuinely working BEP 46 implementation - libtorrent / qBittorrent / Transmission / Deluge / WebTorrent-JS all skip BEP 46 first-class (only RangerMauve's `mutable-webtorrent` JS library ships it).
+
+## 3.1.3-rc.23 - rc.25 (2026-04-24)
+
+### Pure-v2 feature parity across UI + streaming + HTTP browser
+
+- **rc.23**: Pure-v2 torrents now work end-to-end through the service-worker media streaming path and the desktop `TorrentHttpServer` file browser. `ServiceWorkerStreamHandler.GetStreamUrl` was emitting `/webtorrent/{InfoHashHex}/{fileIdx}` which collapses to `/webtorrent//{fileIdx}` for pure-v2 (empty v1 InfoHash). Fixed to use `WireInfoHashHex` (first 20 bytes of v2 hash for pure-v2, v1 hash otherwise). `WebTorrentClient.HandleStreamRequest`'s lookup switched to match `WireInfoHashHex` case-insensitively.
+- **rc.24**: Dep-bump `SpawnDev.RTC` rc.3 → rc.6 (transitively: PerfectNegotiator W3C glare-free renegotiation helper; BrowserRTCSctpTransport live JSRef reads; race fix). No WebTorrent source changes.
+- **rc.25**: `Torrent.DisplayNameShort` narrow-cell helper (Name → first 12 chars of WireInfoHashHex → "unknown"). Blazor demo switches from an inline 3-level ternary to `@torrent.DisplayNameShort`.
+
+## 3.1.3-rc.20 - rc.22 (2026-04-24)
+
+### Pure-v2 in-memory dedup, OPFS persistence, and demo UI polish
+
+- **rc.20**: Duplicate check in `WebTorrentClient.Add(magnet)` / `Add(bytes)` / `SeedFromMetadataAsync` now uses `WireInfoHashHex` instead of raw `InfoHash`. Two calls with the same pure-v2 magnet or bytes previously created two separate Torrent entries (v1 InfoHash is empty for pure-v2 so the dedup check matched everything to everything). Plus `RemoveAsync(string)` and `RemoveWithDataAsync(string)` now delegate to `Get(string)` so callers can remove by v1, full v2, or wire-truncated hash.
+- **rc.21**: Pure-v2 OPFS persistence. `Torrent.PersistMetadataAsync` / `PersistStateAsync` / the chunk-store path + `WebTorrentClient.RestoreFromStorageAsync` / `RemoveAsync(Torrent)` / `RemoveWithDataAsync(Torrent)` all key on `WireInfoHashHex` now. Pure-v2 torrents survive page reloads with pieces under `webtorrent/<v2-prefix>/` and metadata at `webtorrent/_state/<v2-prefix>.torrent`. v1-only / hybrid paths unchanged - byte-compatible with existing OPFS data. New `TorrentMetadata.WireInfoHashHex` computed property.
+- **rc.22**: `Torrent.DisplayName` helper (Name → WireInfoHashHex → "unknown") so UI code can consume directly without `??` chains that silently miss pure-v2 torrents (`??` only triggers on null, not empty). Blazor + WPF demos updated. Blazor details pane now renders both `Info Hash` (v1) and `V2 Info Hash` (BEP 52) rows conditional on which hashes the torrent has.
+
+## 3.1.3-rc.13 - rc.19 (2026-04-23 / 2026-04-24)
+
+### Pure-v2 tracker + wire + ut_metadata + phantom-wire handshake fix
+
+- **rc.13**: Pure-v2 tracker + wire handshake support (`Torrent.WireInfoHashHex` returns first 20 bytes of v2 SHA-256 for pure-v2 torrents, libtorrent / qBittorrent / rqbit convention). Removes the `NotSupportedException` on `magnet:?xt=urn:btmh:` magnets. `WebTorrentClient.Get(hash)` matches v1 / full v2 / wire-truncated forms. `TorrentCreator.CreateFromMultipleStreamsAsync` streaming multi-file creator (bounded memory for multi-GB HF model shards).
+- **rc.14**: ut_metadata BEP 9 extension v2 variant - advertises `metadata_version: 2` in the BEP 10 extended handshake, SHA-256 verifies against the full v2 hash on receipt. Hybrid + v1-only stay on the v1 path unchanged.
+- **rc.15**: Diagnostic build for Geordi's rc.12 two-popup mystery. `RtcPeer.OnDataChannel` responder path logs the ChannelName after assignment; `Torrent.OnHandshake` duplicate branch dumps full Wires state (all PeerIds + matching `_peers` + ChannelNames) before the tiebreaker decision.
+- **rc.16**: `TorrentCreator.CreateFromMultipleStreamsAsync` now supports `Hybrid=true`. Single-pass streaming feeds each read to both the v2 IncrementalMerkleHasher AND the v1 SHA-1 piece buffer. End-of-file emits a zero-padded v1 piece for non-last files (matching pad-file-filled virtual stream) and a genuine partial piece for the last. Byte-identical to the in-memory BuildHybridMultiFile path.
+- **rc.17**: Multi-tracker failover resilience. `Discovery.AnnounceAsync` isolates per-tracker failures - one unreachable WSS host / HTTP 5xx / UDP timeout no longer cancels the aggregate `Task.WhenAll`. Errors surface via `OnWarning`. Closes Gap 6 of Geordi's P2P audit on the WebTorrent side.
+- **rc.18**: `WebTorrentClient.Add` wires the ut_metadata factory into v2 mode automatically when the magnet is pure-v2. New `TorrentParser.ParseInfoDictV2(bytes, expectedV2InfoHash)` helper.
+- **rc.19**: Phantom-wire filter on the duplicate-peer tiebreaker. Geordi's rc.15 DUP-DIAG output identified orphan Wires entries from destroy-race as the two-popup peerCount=0 root cause. rc.19 filter requires `!w.Destroyed` AND a live backing peer in `_peers`. Closes the multi-iteration (rc.10 → rc.12 → rc.15 → rc.19) paired-debug effort with Geordi; verified GREEN by Geordi in 9s end-to-end via `WasmP2PBrowserTests.ComputeSwarm_Benchmark_RoundTrips_BetweenTwoPopups`.
+
+## 3.1.3-rc.3 - rc.12 (2026-04-23)
+
+- **rc.12**: Duplicate-peer tiebreaker on WebRTC channel Label (cross-side-stable). Replaces the rc.10-11 newcomer/existing axis which was per-side timing-dependent.
+- **rc.11**: `RtcPeer` deferred `EmitConnect` when the data channel is already open at subscribe time (responder race).
+- **rc.10**: First iteration of the duplicate-peer handshake tiebreaker (superseded by rc.12's correct axis).
+- **rc.4**: `RtcPeer.PeerConnection` public getter - unblocked Geordi's MaxBurst consumer path for 10 MB WebRTC dispatch.
+- **rc.3**: Dep-bump `SpawnDev.RTC` 1.1.3-rc.1 → 1.1.3-rc.2 (SCTP MaxBurst tunables).
+
 ## 3.1.3-rc.2 (2026-04-23)
 
 ### Pure-v2 multi-file download support

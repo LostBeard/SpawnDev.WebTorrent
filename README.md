@@ -289,6 +289,7 @@ Browser Client                    Desktop Client
 | [API Reference](Docs/api.md) | Full API surface: `WebTorrentClient`, `Torrent`, `File`, `TorrentCreator`, `AgentChannel`, wire extensions |
 | [BEP Support](Docs/bep-support.md) | BitTorrent Enhancement Proposal implementation status |
 | [Protocol Reference](Docs/protocol-reference/) | Deep dives on the wire protocol, DHT, trackers, mutable items |
+| [qBittorrent Interop Testing](Docs/qbittorrent-interop.md) | How to run the `interop_test/` scripts against a local qBittorrent Web UI. Covers static binary-compat (shipped), live-swarm (WIP), and multi-instance setup. |
 
 For WebRTC signaling architecture (tracker wire protocol, `RoomKey`, running your own tracker) see the [SpawnDev.RTC docs](https://github.com/LostBeard/SpawnDev.RTC/tree/master/SpawnDev.RTC/Docs) - tracker signaling lives in that package as of 3.1.0.
 

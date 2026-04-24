@@ -127,4 +127,79 @@ public abstract partial class WebTorrentTestBase
         wire.DataReceived(msg);
         if (receivedPort != 6881) throw new Exception($"Expected port 6881, got {receivedPort}");
     }
+
+    // ---- Migrated from NUnit WireTests.cs — cases not already covered above ----
+
+    [TestMethod]
+    public async Task Wire_Handshake_FastExtension_ParsesCorrectly()
+    {
+        var wire = new Wire();
+        wire.SendRaw = _ => Task.CompletedTask;
+        WireExtensions? exts = null;
+        wire.OnHandshake += (_, _, e) => exts = e;
+
+        var msg = new byte[68];
+        msg[0] = 19;
+        System.Text.Encoding.ASCII.GetBytes("BitTorrent protocol").CopyTo(msg, 1);
+        msg[25] = 0x10; // extended
+        msg[27] = 0x04; // fast
+        wire.DataReceived(msg);
+
+        if (exts is null) throw new Exception("OnHandshake didn't fire");
+        if (!exts.Fast) throw new Exception("Fast bit not parsed from reserved[7]=0x04");
+        if (!exts.Extended) throw new Exception("Extended bit not parsed");
+        if (exts.Dht) throw new Exception("Dht bit unexpectedly set");
+        await Task.CompletedTask;
+    }
+
+    [TestMethod]
+    public async Task Wire_Unchoke_Idempotent()
+    {
+        var wire = new Wire();
+        int sendCount = 0;
+        wire.SendRaw = _ => { sendCount++; return Task.CompletedTask; };
+
+        await wire.Unchoke();
+        await wire.Unchoke();
+
+        if (sendCount != 1) throw new Exception($"sendCount={sendCount}, expected 1 (Unchoke must be idempotent)");
+    }
+
+    [TestMethod]
+    public async Task Wire_Bitfield_SendsCorrectBytes()
+    {
+        var wire = new Wire();
+        var sent = new List<byte>();
+        wire.SendRaw = data => { sent.AddRange(data); return Task.CompletedTask; };
+
+        await wire.Bitfield(new byte[] { 0b11001010 });
+
+        if (!sent.ToArray().SequenceEqual(new byte[] { 0, 0, 0, 2, 5, 0b11001010 }))
+            throw new Exception("Bitfield frame mismatch, expected [0,0,0,2,5,0b11001010]");
+    }
+
+    [TestMethod]
+    public async Task Wire_Handshake_SendsCorrectBytes()
+    {
+        var wire = new Wire();
+        var sent = new List<byte>();
+        wire.SendRaw = data => { sent.AddRange(data); return Task.CompletedTask; };
+
+        var infoHash = new byte[20];
+        var peerId = new byte[20];
+        for (int i = 0; i < 20; i++) { infoHash[i] = (byte)i; peerId[i] = (byte)(i + 0x30); }
+
+        await wire.Handshake(infoHash, peerId, dht: true, fast: false);
+
+        var sentArr = sent.ToArray();
+        if (sentArr.Length != 68) throw new Exception($"handshake length={sentArr.Length}, expected 68");
+        if (sentArr[0] != 19) throw new Exception($"pstrlen={sentArr[0]}, expected 19");
+        if (System.Text.Encoding.ASCII.GetString(sentArr, 1, 19) != "BitTorrent protocol")
+            throw new Exception("protocol string mismatch");
+        if ((sentArr[25] & 0x10) != 0x10) throw new Exception("Extended bit not set in reserved[5]");
+        if ((sentArr[27] & 0x01) != 0x01) throw new Exception("DHT bit not set in reserved[7]");
+        if ((sentArr[27] & 0x04) != 0) throw new Exception("Fast bit unexpectedly set");
+        if (!sentArr[28..48].SequenceEqual(infoHash)) throw new Exception("infoHash bytes mismatch");
+        if (!sentArr[48..68].SequenceEqual(peerId)) throw new Exception("peerId bytes mismatch");
+    }
 }

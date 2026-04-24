@@ -227,6 +227,33 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
+    public async Task PureV2_Torrent_DisplayNameShort_CapsAt12Chars()
+    {
+        // rc.25: DisplayNameShort caps at 12 chars for narrow UI cells.
+        var client = CreateIsolatedClient();
+        try
+        {
+            // Pure-v2 without dn → 12-char wire prefix
+            var t1 = client.Add($"magnet:?xt=urn:btmh:1220{PureV2MagnetHash}");
+            var expected = PureV2MagnetHash[..12].ToLowerInvariant();
+            if (t1.DisplayNameShort != expected)
+                throw new Exception($"pure-v2 no-name DisplayNameShort={t1.DisplayNameShort}, expected {expected}");
+
+            // With dn → full name (DisplayNameShort doesn't truncate names, only hashes)
+            var t2 = client.Add($"magnet:?xt=urn:btmh:1220aaaa789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0&dn=my-model-with-a-long-name");
+            if (t2.DisplayNameShort != "my-model-with-a-long-name")
+                throw new Exception($"with-name DisplayNameShort={t2.DisplayNameShort}, expected full name");
+
+            // v1 hash → 12 chars of v1
+            var v1Hex = "aaaabbbbccccddddeeeeffff1111222233334444";
+            var t3 = client.Add($"magnet:?xt=urn:btih:{v1Hex}");
+            if (t3.DisplayNameShort != "aaaabbbbcccc")
+                throw new Exception($"v1 no-name DisplayNameShort={t3.DisplayNameShort}, expected 'aaaabbbbcccc'");
+        }
+        finally { await client.DisposeAsync(); }
+    }
+
+    [TestMethod]
     public async Task PureV2_Torrent_DisplayName_FallsBackThroughNameThenWireHash()
     {
         // rc.22: Torrent.DisplayName is the UI-safe name -> hash -> "unknown" fallback.

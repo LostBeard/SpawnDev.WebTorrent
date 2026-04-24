@@ -820,7 +820,15 @@ public partial class Torrent : IAsyncDisposable
         peer.Swarm = this;
         if (!_peers.TryAdd(peer.Id, peer)) return;
 
-        simplePeer.OnConnect += () =>
+        // Capture all of the post-connect wire-up in a local delegate so we can
+        // either subscribe it to the OnConnect event OR invoke it inline if the
+        // peer already finished connecting before AddPeer was called. Critical
+        // for TCP peers where ConnectAsync fires EmitConnect synchronously -
+        // the caller's `AddPeer(tcpPeer)` after a completed `ConnectAsync` would
+        // otherwise miss the already-fired OnConnect and the BitTorrent
+        // handshake would never start. Same story for any other SimplePeer
+        // variant that transitions to Connected synchronously before AddPeer.
+        Action runOnConnected = () =>
         {
             peer.OnConnected();
             if (peer.WireInstance != null)
@@ -961,6 +969,18 @@ public partial class Torrent : IAsyncDisposable
                 };
             }
         };
+
+        // Subscribe for the normal case (peer is still connecting), and if the
+        // peer already transitioned to Connected before we got here, run the
+        // wire-up inline so we don't miss the already-fired OnConnect.
+        simplePeer.OnConnect += runOnConnected;
+        if (simplePeer.Connected)
+        {
+            // Safe to run now: everything above just wires up event handlers +
+            // creates the Wire; none of it depends on being inside the OnConnect
+            // handler's callback stack.
+            runOnConnected();
+        }
 
         simplePeer.OnError += (err) => { peer.Destroy(err); _peers.TryRemove(peer.Id, out _); };
         simplePeer.OnClose += () => _peers.TryRemove(peer.Id, out _);

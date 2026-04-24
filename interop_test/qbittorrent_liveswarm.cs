@@ -74,12 +74,9 @@ var savePath = prefsJson.RootElement.GetProperty("save_path").GetString()!;
 Console.WriteLine($"qBittorrent listen_port={listenPort}, save_path={savePath}");
 
 // --- 3. Ensure qBittorrent is seeding spawndev_hybrid.torrent ---
-// Copy payload into save_path so recheck can verify.
-var saveFile = Path.Combine(savePath, "payload.bin");
-File.Copy(payloadPath, saveFile, overwrite: true);
-Console.WriteLine($"Copied payload.bin -> {saveFile}");
-
-// Clear any stale entry.
+// STEP 3a: Clear any stale payload.bin torrents FIRST so qBittorrent releases its
+// file handle - otherwise the File.Copy below hits "user-mapped section open"
+// from a previous run's seeder still holding the file mapped for upload.
 var existing = JsonDocument.Parse(await http.GetStringAsync("/api/v2/torrents/info")).RootElement;
 foreach (var t in existing.EnumerateArray())
 {
@@ -90,7 +87,12 @@ foreach (var t in existing.EnumerateArray())
     await http.PostAsync("/api/v2/torrents/delete",
         new FormUrlEncodedContent(new Dictionary<string, string> { ["hashes"] = hash, ["deleteFiles"] = "false" }));
 }
-await Task.Delay(500);
+await Task.Delay(1500); // give qBittorrent time to release the memory-mapped file
+
+// STEP 3b: Copy payload into save_path so recheck can verify.
+var saveFile = Path.Combine(savePath, "payload.bin");
+File.Copy(payloadPath, saveFile, overwrite: true);
+Console.WriteLine($"Copied payload.bin -> {saveFile}");
 
 // Re-add (hybrid; has both v1 + v2).
 using (var multi = new MultipartFormDataContent())
@@ -158,12 +160,24 @@ var torrent = client.Add(torrentBytes, addOpts);
 Console.WriteLine($"C# client added torrent: infoHash={torrent.WireInfoHashHex}, pieces={torrent.PieceCount}");
 
 // --- 5. Inject qBittorrent as a direct peer (bypassing tracker discovery) ---
+// Retry the TCP connect up to 5 times - qBittorrent can briefly drop its
+// incoming-TCP-listener during the add+recheck cycle, and fresh cold connects
+// can fail transiently on Windows for a beat.
 Console.WriteLine($"Connecting to 127.0.0.1:{listenPort} (qBittorrent's TCP listen) ...");
-var tcpPeer = new TcpPeer(initiator: true);
-await tcpPeer.ConnectAsync($"127.0.0.1:{listenPort}");
-if (!tcpPeer.Connected)
+TcpPeer? tcpPeer = null;
+for (int attempt = 1; attempt <= 5; attempt++)
 {
-    Console.Error.WriteLine($"TCP connect to 127.0.0.1:{listenPort} failed.");
+    tcpPeer = new TcpPeer(initiator: true);
+    await tcpPeer.ConnectAsync($"127.0.0.1:{listenPort}");
+    if (tcpPeer.Connected) break;
+    await tcpPeer.DisposeAsync();
+    tcpPeer = null;
+    Console.WriteLine($"  TCP connect attempt {attempt} failed, retrying in 1s...");
+    await Task.Delay(1000);
+}
+if (tcpPeer is null || !tcpPeer.Connected)
+{
+    Console.Error.WriteLine($"TCP connect to 127.0.0.1:{listenPort} failed after 5 attempts.");
     return 6;
 }
 torrent.AddPeer(tcpPeer);
@@ -192,11 +206,14 @@ if (!torrent.Done)
 Console.WriteLine($"Download complete in {torrent.Downloaded} bytes across {torrent.Wires.Count} wires.");
 
 // --- 7. Verify byte-for-byte match with original ---
-var downloadedPath = Path.Combine(tmpRoot, "payload.bin");
-if (!File.Exists(downloadedPath)) { Console.Error.WriteLine($"Expected downloaded file not found at {downloadedPath}"); return 8; }
+// Client is using MemoryChunkStore (no AsyncFileSystem configured for desktop console
+// scripts), so pull the bytes through the torrent's in-memory read API rather than
+// looking for a file on disk.
+var tf = torrent.Files?.FirstOrDefault();
+if (tf == null) { Console.Error.WriteLine("No files on torrent after download"); return 8; }
+var downloadedBytes = await tf.ReadAsync(0, (int)tf.Length);
 
 var originalBytes = File.ReadAllBytes(payloadPath);
-var downloadedBytes = File.ReadAllBytes(downloadedPath);
 
 if (originalBytes.Length != downloadedBytes.Length)
 {

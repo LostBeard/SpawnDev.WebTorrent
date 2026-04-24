@@ -26,13 +26,27 @@ For each of the three formats, automates:
 
 **Does NOT prove:** peer-wire exchange over a live network. That's the live-swarm step, WIP.
 
-### Live-swarm interop (`qbittorrent_liveswarm.cs`) - WIP
+### Live-swarm interop (`qbittorrent_liveswarm.cs`) - PASSING
 
-Intended to prove that bytes actually flow between qBittorrent (seeder) and a SpawnDev.WebTorrent C# client (downloader) over a real TCP BitTorrent peer-wire. Script in `interop_test/`; the scaffolding (Web UI auth, seed setup, C# client add, direct TcpPeer connect via qBittorrent's `listen_port`) is in place but the BitTorrent handshake isn't firing from the directly-added peer. Probably needs either:
-- Torrent-side wire-up that initiates the handshake when AddPeer is called with an already-connected TcpPeer (not sure if that's the lazy-initiate code path), OR
-- An HTTP/UDP tracker both clients can announce to so peer discovery goes through the normal Discovery / OnTcpPeer path which is proven.
+Proves that bytes actually flow between qBittorrent (seeder) and a SpawnDev.WebTorrent C# client (downloader) over a real TCP BitTorrent peer-wire. Flow:
+1. Web UI auth + read `listen_port` + `save_path`.
+2. Delete any stale payload.bin torrents from previous runs (releases qBittorrent's file-map hold).
+3. Copy `interop_test/output/payload.bin` into qBittorrent's save_path.
+4. Add `spawndev_hybrid.torrent` with `skip_checking=true`, force-recheck, poll `/api/v2/torrents/info` until `progress==1.0` and state is `stalledUP`/`seeding` - qBittorrent is now seeding.
+5. Create a SpawnDev.WebTorrent client (no tracker announce, no AsyncFileSystem - MemoryChunkStore).
+6. Add the same `.torrent`.
+7. Open a direct TCP connection to `127.0.0.1:<listen_port>` via `TcpPeer.ConnectAsync`, retry up to 5x (qBittorrent's listener briefly cycles during add+recheck).
+8. `torrent.AddPeer(tcpPeer)` → BT handshake → piece exchange.
+9. Wait for `torrent.Done`.
+10. Pull bytes from the in-memory chunk store via `torrent.Files[0].ReadAsync(0, Length)`, SHA-256-compare against the original `payload.bin`.
 
-Current fallback: static hash-match-and-recheck is good enough for release confidence.
+Last green run: **1 MiB transferred, SHA-256 match** in under 3 seconds on localhost.
+
+### Library bug found by this test
+
+`Torrent.AddPeer(SimplePeer)` only subscribed to `OnConnect`; if the underlying peer had already transitioned to `Connected` before `AddPeer` was called (as happens for `TcpPeer` where `ConnectAsync` fires `EmitConnect` synchronously before returning), the subscription came in too late and `Peer.OnConnected` never fired, which means no BT handshake, no wire, no transfer. Affects every direct-add caller - including the production `Torrent.ConnectTcpPeer` path that discovery/LSD peer discovery ultimately funnels into.
+
+Fix: `AddPeer` now captures the wire-up in a local `runOnConnected` delegate, subscribes it to `OnConnect` for the normal case, AND invokes it inline immediately if `simplePeer.Connected` is already true. Landed in `Torrent.cs` along with this doc.
 
 ## Setup
 
@@ -120,7 +134,7 @@ That wrapper doesn't exist yet - the current scripts are self-contained. Writing
 |------|------|
 | `gen_qbittorrent_test.cs` | One-shot torrent + payload generator. Deterministic seed so hashes stay stable across runs. |
 | `qbittorrent_interop.cs` | Static binary-compat test (add + recheck + hash match across v1 / pure-v2 / hybrid). Shipped, passing. |
-| `qbittorrent_liveswarm.cs` | WIP live-swarm test (qBittorrent seeds, SpawnDev.WebTorrent downloads over localhost TCP). Infrastructure works; BitTorrent handshake needs deeper investigation. |
+| `qbittorrent_liveswarm.cs` | Live-swarm test: qBittorrent seeds, SpawnDev.WebTorrent downloads over localhost TCP, SHA-256 verify. PASSING. |
 | `output/` | Generated artifacts (`payload.bin`, `spawndev_v1.torrent`, `spawndev_v2.torrent`, `spawndev_hybrid.torrent`). Safe to delete - regenerate via `gen_qbittorrent_test.cs`. |
 
 ## Why not run these in PlaywrightMultiTest
@@ -134,5 +148,4 @@ When a need arises to automate this in CI, the right approach is either:
 ## History
 
 - **2026-04-24 morning:** Static interop shipped (`3792837` on master). All three formats PASS against qBittorrent 5.1.4 / libtorrent 2.0.11.
-- **2026-04-24 evening:** Live-swarm scaffold written during audit follow-up. Hash-match still the production confidence signal; live-swarm remains WIP.
-- **PLAN-BEP52-External-Interop.md** tracks the full cross-client matrix. Step 4 ("live-swarm bi-directional active seeding") stays open until `qbittorrent_liveswarm.cs` completes the handshake.
+- **2026-04-24 evening:** Live-swarm test lands + uncovers a latent `Torrent.AddPeer` bug where already-connected peers never fired handshake. Library fix + test both green. qBittorrent seeds → SpawnDev.WebTorrent downloads → 1 MiB SHA-256 byte-identical in under 3 seconds on localhost. This closes `PLAN-BEP52-External-Interop.md` Step 4 ("live-swarm bi-directional active seeding") from the seed-qBit / leech-C# direction. The reverse direction (seed-C# / leech-qBit) is a symmetric follow-up - C# peer needs a TCP listener so qBittorrent can connect in.

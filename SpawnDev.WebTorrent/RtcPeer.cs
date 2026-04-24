@@ -94,6 +94,12 @@ public class RtcPeer : SimplePeer
                 if (WebTorrentClient.VerboseLogging)
                     Console.WriteLine($"[RtcPeer] Responder OnDataChannel label={channel.Label} readyState={channel.ReadyState}");
                 _dc = channel;
+                // Propagate the channel's label up to SimplePeer so Torrent.OnHandshake's
+                // deterministic-tiebreaker can compare the same cross-side-stable identifier
+                // the initiator sees. Initiator created the channel with this label; responder
+                // defaults to "" until the channel arrives via OnDataChannel — this line
+                // closes the gap so both endpoints agree on ChannelName.
+                ChannelName = channel.Label;
                 WireDataChannel(_dc);
             };
 

@@ -788,23 +788,22 @@ public partial class Torrent : IAsyncDisposable
 
                 // Validate handshake: detect self-connections and duplicates.
                 //
-                // Duplicate-peer convergence rule: when two popups/tabs/clients form
-                // multiple simultaneous WebRTC connections (tracker fans out ~N offers per
-                // announce), both sides can complete BT handshakes on N wires in arbitrary
-                // order relative to each other. If each side independently picks "keep the
-                // first-arriving handshake, destroy the rest," coord can keep wire-X while
-                // worker keeps wire-Y. Coord's X is then torn down by remote close (because
-                // worker destroyed it), and vice versa — both swarms collapse to 0 peers.
+                // Duplicate-peer convergence rule: when two clients form multiple
+                // simultaneous WebRTC connections (tracker fans out ~N offers per announce),
+                // both sides can complete BT handshakes on N wires in arbitrary order
+                // relative to each other. The per-side ordering of "existing" vs "newcomer"
+                // is timing-dependent and NOT cross-side stable — if each side picks based
+                // on its own local ordering, coord keeps wire-A while worker keeps wire-B,
+                // each side's remote close kills the other's survivor, both swarms → 0.
                 //
-                // Fix: deterministic tiebreaker using lexicographic PeerId comparison.
-                // BOTH sides apply the same rule keyed on (localPeerId, remotePeerId):
-                //   * Side with lexicographically SMALLER PeerId is the "keeper": keeps
-                //     the EARLIEST-registered wire (existing), destroys the new arrival.
-                //   * Side with LARGER PeerId is the "yielder": destroys its earlier wire
-                //     (existing) and keeps the newly-arrived one.
-                // Both sides converge on the same physical WebRTC connection surviving —
-                // either the earlier-ordered pair (smaller-side wins from their view of
-                // "first") or the later-ordered pair (larger-side wins from theirs).
+                // Fix (rc.12, Geordi's diagnosis): compare an identifier that's IDENTICAL
+                // on both endpoints of the same WebRTC connection — the data channel's
+                // Label. The initiator creates the channel with a random label; the
+                // responder receives that same label via OnDataChannel. Both sides ranking
+                // wires by channel Label pick the SAME physical connection to keep.
+                //
+                // Rule: when duplicate detected, keep the wire whose underlying channel
+                // label is lexicographically SMALLER. Both sides converge.
                 peer.WireInstance.OnHandshake += (infoHash, peerId, exts) =>
                 {
                     // Self-connection detection
@@ -815,30 +814,29 @@ public partial class Torrent : IAsyncDisposable
                         peer.Destroy(); return;
                     }
                     // Duplicate peer detection (same remote peerId already connected)
-                    var existing = Wires.ToArray().FirstOrDefault(w => w != peer.WireInstance && w.PeerId == peerId);
-                    if (existing != null)
+                    var existingWire = Wires.ToArray().FirstOrDefault(w => w != peer.WireInstance && w.PeerId == peerId);
+                    if (existingWire != null)
                     {
-                        // Deterministic tiebreaker: both sides agree on which wire survives.
-                        // Compare local vs remote PeerId; "smaller" side keeps existing,
-                        // "larger" side keeps new. Mathematically: for any two distinct
-                        // PeerIds A<B, the pair's two sides see (A, B) and (B, A); both
-                        // sides return the same answer when keyed on "was my-local < remote?".
-                        var localPeerId = _client?.PeerId ?? "";
-                        bool localIsSmaller = string.Compare(localPeerId, peerId, StringComparison.Ordinal) < 0;
-                        if (localIsSmaller)
+                        // Cross-side-stable tiebreaker: channel Label.
+                        var existingPeer = _peers.Values.FirstOrDefault(p => p.WireInstance == existingWire);
+                        string newLabel = (peer.Conn as SimplePeer)?.ChannelName ?? peer.Id;
+                        string existingLabel = (existingPeer?.Conn as SimplePeer)?.ChannelName ?? existingPeer?.Id ?? "";
+
+                        // Keep the wire with lexicographically SMALLER channel label.
+                        // Both sides see the same labels on both wires → both agree.
+                        bool keepNew = string.Compare(newLabel, existingLabel, StringComparison.Ordinal) < 0;
+                        if (keepNew)
                         {
-                            // We keep the existing wire; destroy the newcomer.
                             if (WebTorrentClient.VerboseLogging)
-                                Console.WriteLine($"[Torrent.OnHandshake] DUPLICATE (local<remote): keep existing wire, destroy newcomer peer {peer.Id} (Wires={Wires.Count})");
-                            peer.Destroy(); return;
+                                Console.WriteLine($"[Torrent.OnHandshake] DUPLICATE (newLabel<existingLabel {newLabel[..Math.Min(8, newLabel.Length)]}<{existingLabel[..Math.Min(8, existingLabel.Length)]}): keep newcomer, destroy existing peer {existingPeer?.Id}");
+                            existingPeer?.Destroy();
+                            return;
                         }
                         else
                         {
-                            // We yield: destroy the existing wire and let the newcomer survive.
                             if (WebTorrentClient.VerboseLogging)
-                                Console.WriteLine($"[Torrent.OnHandshake] DUPLICATE (local>=remote): destroy existing wire, keep newcomer peer {peer.Id} (Wires={Wires.Count})");
-                            var existingPeer = _peers.Values.FirstOrDefault(p => p.WireInstance == existing);
-                            existingPeer?.Destroy();
+                                Console.WriteLine($"[Torrent.OnHandshake] DUPLICATE (newLabel>=existingLabel {newLabel[..Math.Min(8, newLabel.Length)]}>={existingLabel[..Math.Min(8, existingLabel.Length)]}): keep existing, destroy newcomer peer {peer.Id}");
+                            peer.Destroy();
                             return;
                         }
                     }

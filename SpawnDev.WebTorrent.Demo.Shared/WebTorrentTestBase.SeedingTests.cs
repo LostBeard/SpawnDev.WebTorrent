@@ -115,4 +115,59 @@ public abstract partial class WebTorrentTestBase
             throw new Exception($"Downloaded should equal Length ({torrent.Length}), got {torrent.Downloaded}");
         await client.DisposeAsync();
     }
+
+    // ---- Migrated from NUnit SeedingTests.cs — cases not already above ----
+
+    [TestMethod]
+    public async Task Seed_OnRequestHandler_ServesCorrectData()
+    {
+        var client = new WebTorrentClient();
+        var data = new byte[32768];
+        new Random(301).NextBytes(data);
+
+        var torrent = await client.SeedAsync("serve-test.bin", data, new TorrentCreatorOptions
+        {
+            HashAlgorithm = "SHA-1",
+            PieceLength = 16384,
+        });
+
+        var partial = await torrent._store!.GetAsync(0, 0, 1024);
+        if (partial is null) throw new Exception("store partial read returned null");
+        if (partial.Length != 1024) throw new Exception($"partial.Length={partial.Length}, expected 1024");
+        if (!partial.SequenceEqual(data[..1024])) throw new Exception("partial(0,0,1024) bytes mismatch");
+
+        var partial2 = await torrent._store!.GetAsync(1, 4096, 2048);
+        if (partial2 is null) throw new Exception("partial(1,4096,2048) returned null");
+        if (partial2.Length != 2048) throw new Exception($"partial2.Length={partial2.Length}, expected 2048");
+        var expected = new byte[2048];
+        Array.Copy(data, 16384 + 4096, expected, 0, 2048);
+        if (!partial2.SequenceEqual(expected)) throw new Exception("partial(1,4096,2048) bytes mismatch");
+
+        await client.DisposeAsync();
+    }
+
+    [TestMethod]
+    public async Task Seed_ComputedMagnetUri_IsValid()
+    {
+        var client = new WebTorrentClient();
+        var data = new byte[1024];
+
+        var torrent = await client.SeedAsync("magnet-test.bin", data, new TorrentCreatorOptions
+        {
+            HashAlgorithm = "SHA-1",
+            Trackers = new[] { "wss://tracker.example.com/announce" },
+        });
+
+        var magnet = torrent.ComputedMagnetUri;
+        if (!magnet.StartsWith("magnet:?xt=urn:btih:"))
+            throw new Exception($"magnet URI should start with magnet:?xt=urn:btih:, got {magnet}");
+        if (!magnet.Contains(torrent.InfoHash!))
+            throw new Exception($"magnet URI should contain InfoHash {torrent.InfoHash}, got {magnet}");
+        if (!magnet.Contains("dn=magnet-test.bin"))
+            throw new Exception($"magnet URI should contain display name, got {magnet}");
+        if (!magnet.Contains("tracker.example.com"))
+            throw new Exception($"magnet URI should contain tracker host, got {magnet}");
+
+        await client.DisposeAsync();
+    }
 }

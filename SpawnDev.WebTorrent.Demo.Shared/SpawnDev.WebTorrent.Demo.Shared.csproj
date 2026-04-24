@@ -18,6 +18,9 @@
 	<ItemGroup>
 		<EmbeddedResource Include="InteropFixtures\*.torrent" />
 		<EmbeddedResource Include="InteropFixtures\libtorrent_reference_manifest.json" />
+		<!-- regenerate_fixtures.cs is a standalone `dotnet run` script, not part of this assembly. -->
+		<Compile Remove="InteropFixtures\regenerate_fixtures.cs" />
+		<None Include="InteropFixtures\regenerate_fixtures.cs" />
 	</ItemGroup>
 
 </Project>

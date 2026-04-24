@@ -33,7 +33,8 @@ public abstract partial class WebTorrentTestBase
         // Fixture: v2.torrent — hybrid v1+v2, single 64KB file, 64KB pieces (=> 1 piece).
         await AssertFixtureMatchesManifest(
             fixtureName: "v2.torrent",
-            expectedHasV1InfoHash: true);
+            expectedHasV1InfoHash: true,
+            expectedFileCount: 1);
     }
 
     [TestMethod]
@@ -43,7 +44,8 @@ public abstract partial class WebTorrentTestBase
         // Exercises the piece layers dict path (file > piece size).
         await AssertFixtureMatchesManifest(
             fixtureName: "v2_multipiece_file.torrent",
-            expectedHasV1InfoHash: true);
+            expectedHasV1InfoHash: true,
+            expectedFileCount: 1);
     }
 
     [TestMethod]
@@ -53,7 +55,8 @@ public abstract partial class WebTorrentTestBase
         // The parser must populate V2InfoHash and leave InfoHash as empty string.
         await AssertFixtureMatchesManifest(
             fixtureName: "v2_only.torrent",
-            expectedHasV1InfoHash: false);
+            expectedHasV1InfoHash: false,
+            expectedFileCount: 1);
     }
 
     [TestMethod]
@@ -64,14 +67,22 @@ public abstract partial class WebTorrentTestBase
         // disk) because it carries the full piece layers dict inline. Proves the
         // parser handles real-world hybrid piece-layer dictionaries from third-party
         // encoders.
+        //
+        // expectedFileCount=null because we don't know the exact file count of
+        // libtorrent's hybrid-test corpus fixture without inspecting it; we only
+        // assert it's > 1 (multi-file).
         await AssertFixtureMatchesManifest(
             fixtureName: "v2_hybrid.torrent",
-            expectedHasV1InfoHash: true);
+            expectedHasV1InfoHash: true,
+            expectedFileCount: null);
     }
 
     // ---- helpers ----
 
-    private static async Task AssertFixtureMatchesManifest(string fixtureName, bool expectedHasV1InfoHash)
+    private static async Task AssertFixtureMatchesManifest(
+        string fixtureName,
+        bool expectedHasV1InfoHash,
+        int? expectedFileCount)
     {
         var manifest = LoadManifest();
         var entry = manifest.Fixtures.FirstOrDefault(f => f.File == fixtureName)
@@ -134,6 +145,42 @@ public abstract partial class WebTorrentTestBase
             if (parsed.PieceHashes.Length == 0)
                 throw new Exception($"{fixtureName}: expected non-zero piece hashes for multi-piece v2 fixture");
         }
+
+        // The derived algorithm property is the public entry point clients use to
+        // pick SHA-1 vs SHA-256 verification — make sure it says SHA-256 for v2.
+        if (parsed.PieceHashAlgorithm != "SHA-256")
+            throw new Exception(
+                $"{fixtureName}: v2 fixture should report PieceHashAlgorithm=SHA-256, " +
+                $"got \"{parsed.PieceHashAlgorithm}\"");
+
+        if (expectedFileCount is int expectedCount)
+        {
+            if (parsed.Files.Length != expectedCount)
+                throw new Exception(
+                    $"{fixtureName}: parser reported {parsed.Files.Length} file(s), " +
+                    $"expected {expectedCount}");
+        }
+        else
+        {
+            // multi-file sentinel: > 1 file
+            if (parsed.Files.Length <= 1)
+                throw new Exception(
+                    $"{fixtureName}: expected multi-file torrent to have >1 file, " +
+                    $"parser reported {parsed.Files.Length}");
+        }
+
+        // Defense-in-depth: prove the parser captured the info-dict byte slice
+        // accurately by re-hashing it ourselves and comparing to the reported
+        // V2InfoHash. If the slice boundaries were off, this catches it.
+        if (parsed.InfoDictBytes == null || parsed.InfoDictBytes.Length == 0)
+            throw new Exception($"{fixtureName}: parser did not preserve InfoDictBytes");
+        var rehashed = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(parsed.InfoDictBytes)).ToLowerInvariant();
+        if (rehashed != parsed.V2InfoHash)
+            throw new Exception(
+                $"{fixtureName}: InfoDictBytes doesn't hash to V2InfoHash — " +
+                $"parser's info-dict slice boundary is off. " +
+                $"Rehashed={rehashed}, V2InfoHash={parsed.V2InfoHash}");
 
         await Task.CompletedTask; // keep signature parity with other async TestMethod entries
     }

@@ -146,21 +146,69 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
-    public async Task CreatorStream_MultiFile_HybridOption_Throws()
+    public async Task CreatorStream_Hybrid_MultiFile_MatchesInMemory()
     {
-        var file1 = MakeDeterministicData(16384, seed: 6041);
-        using var s1 = new MemoryStream(file1);
+        // Streaming hybrid multi-file produces byte-identical info dict as in-memory path.
+        var file1 = MakeDeterministicData(16384 * 3 + 500, seed: 6111); // misaligned → pad file
+        var file2 = MakeDeterministicData(16384 * 2, seed: 6112);       // aligned
+        var file3 = MakeDeterministicData(12345, seed: 6113);           // genuinely partial last
         var opts = new TorrentCreatorOptions { MetaVersion = 2, Hybrid = true, PieceLength = 16384 };
 
-        try
-        {
-            await TorrentCreator.CreateFromMultipleStreamsAsync(
-                "hybrid",
-                new[] { ("only.bin", (Stream)s1, (long)file1.Length) },
-                opts);
-        }
-        catch (ArgumentException) { return; }
-        throw new Exception("expected ArgumentException when Hybrid=true is requested (streaming hybrid multi-file not supported)");
+        var (_, inMem) = TorrentCreator.CreateFromMultipleFiles(
+            "hybrid-stream",
+            new[] { ("a.bin", file1), ("b.bin", file2), ("c.bin", file3) },
+            opts);
+
+        using var s1 = new MemoryStream(file1);
+        using var s2 = new MemoryStream(file2);
+        using var s3 = new MemoryStream(file3);
+        var (_, streamed) = await TorrentCreator.CreateFromMultipleStreamsAsync(
+            "hybrid-stream",
+            new[]
+            {
+                ("a.bin", (Stream)s1, (long)file1.Length),
+                ("b.bin", (Stream)s2, (long)file2.Length),
+                ("c.bin", (Stream)s3, (long)file3.Length),
+            },
+            opts);
+
+        // Hybrid hashes both sides; both info hashes must match.
+        if (streamed.V2InfoHash != inMem.V2InfoHash)
+            throw new Exception($"V2InfoHash mismatch: streamed={streamed.V2InfoHash}, inMem={inMem.V2InfoHash}");
+        if (streamed.InfoHash != inMem.InfoHash)
+            throw new Exception($"V1 InfoHash mismatch: streamed={streamed.InfoHash}, inMem={inMem.InfoHash}");
+        if (streamed.PieceCount != inMem.PieceCount)
+            throw new Exception($"PieceCount mismatch: streamed={streamed.PieceCount}, inMem={inMem.PieceCount}");
+        for (int i = 0; i < streamed.FileRoots.Length; i++)
+            if (!streamed.FileRoots[i].SequenceEqual(inMem.FileRoots[i]))
+                throw new Exception($"FileRoots[{i}] mismatch");
+        if (!streamed.InfoDictBytes!.SequenceEqual(inMem.InfoDictBytes!))
+            throw new Exception("InfoDictBytes differ between streaming and in-memory hybrid paths");
+    }
+
+    [TestMethod]
+    public async Task CreatorStream_Hybrid_MultiFile_RoundTripsThroughParser()
+    {
+        var file1 = MakeDeterministicData(16384 + 7777, seed: 6121);
+        var file2 = MakeDeterministicData(5000, seed: 6122);
+        var opts = new TorrentCreatorOptions { MetaVersion = 2, Hybrid = true, PieceLength = 16384 };
+
+        using var s1 = new MemoryStream(file1);
+        using var s2 = new MemoryStream(file2);
+        var (bytes, created) = await TorrentCreator.CreateFromMultipleStreamsAsync(
+            "hybrid-rt",
+            new[]
+            {
+                ("a.bin", (Stream)s1, (long)file1.Length),
+                ("b.bin", (Stream)s2, (long)file2.Length),
+            },
+            opts);
+
+        var parsed = TorrentParser.Parse(bytes);
+        if (parsed.MetaVersion != 2) throw new Exception("MetaVersion mismatch");
+        if (parsed.V2InfoHash != created.V2InfoHash) throw new Exception("V2InfoHash round-trip mismatch");
+        if (parsed.InfoHash != created.InfoHash) throw new Exception("v1 InfoHash round-trip mismatch");
+        if (parsed.Files.Length != 2) throw new Exception($"Files.Length={parsed.Files.Length}");
     }
 
     [TestMethod]

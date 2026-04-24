@@ -192,11 +192,7 @@ public static class TorrentCreator
         options ??= new TorrentCreatorOptions();
         if (options.MetaVersion != 2)
             throw new ArgumentException(
-                "CreateFromMultipleStreamsAsync currently supports v2 only. Use CreateFromMultipleFiles for v1.",
-                nameof(options));
-        if (options.Hybrid)
-            throw new ArgumentException(
-                "Hybrid multi-file streaming is not supported — hybrid v1+v2 needs deterministic pad-file alignment across both hash paths, which requires all bytes present at create time. Use the in-memory CreateFromMultipleFiles for hybrid.",
+                "CreateFromMultipleStreamsAsync currently supports v2 only (with optional Hybrid). Use CreateFromMultipleFiles for v1.",
                 nameof(options));
 
         long totalLength = files.Sum(f => f.length);
@@ -209,31 +205,78 @@ public static class TorrentCreator
         // same file sequence. BEP 52 file-tree walk is bytewise path order.
         var sorted = files.OrderBy(f => f.path, StringComparer.Ordinal).ToArray();
 
-        // Stream each file through the incremental hasher to produce its root + piece layer.
+        // Single-pass streaming: each read feeds both the v2 IncrementalMerkleHasher AND
+        // (in hybrid mode) the v1 piece-hasher. Lengths are declared up-front by the caller,
+        // so we know the virtual-stream pad layout without a second scan — hybrid pad-file
+        // alignment just means zero-padding each non-last file's tail up to the next piece
+        // boundary inside the v1 hash. v2 side hashes real bytes only (per-file independently).
         var fileRoots = new byte[sorted.Length][];
         var filePieceLayers = new byte[sorted.Length][][];
+        var v1PieceHashes = options.Hybrid ? new List<byte[]>() : null;
         int bufferSize = Math.Max(pieceLength, 64 * 1024);
         var buffer = new byte[bufferSize];
+        var v1PieceBuf = options.Hybrid ? new byte[pieceLength] : null;
+
         for (int i = 0; i < sorted.Length; i++)
         {
             ct.ThrowIfCancellationRequested();
             var hasher = MerkleHasher.CreateIncremental(pieceLength);
+            int v1PieceFill = 0;
+            bool isLast = i == sorted.Length - 1;
             int bytesRead;
             while ((bytesRead = await sorted[i].stream.ReadAsync(buffer.AsMemory(0, bufferSize), ct).ConfigureAwait(false)) > 0)
             {
+                // v2: feed incremental Merkle
                 hasher.Update(buffer.AsSpan(0, bytesRead));
+
+                // v1 (hybrid only): chunk into full pieces + hash.
+                if (v1PieceHashes is not null && v1PieceBuf is not null)
+                {
+                    int srcPos = 0;
+                    while (srcPos < bytesRead)
+                    {
+                        int toCopy = Math.Min(pieceLength - v1PieceFill, bytesRead - srcPos);
+                        Buffer.BlockCopy(buffer, srcPos, v1PieceBuf, v1PieceFill, toCopy);
+                        v1PieceFill += toCopy;
+                        srcPos += toCopy;
+                        if (v1PieceFill == pieceLength)
+                        {
+                            v1PieceHashes.Add(SHA1.HashData(v1PieceBuf.AsSpan(0, pieceLength)));
+                            v1PieceFill = 0;
+                        }
+                    }
+                }
             }
+
+            // End-of-file: finalize v2 (handles any partial leaf internally)
             var (fileRoot, pieceLayer) = hasher.Finish();
             if (hasher.TotalBytesHashed != sorted[i].length)
                 throw new InvalidOperationException(
-                    $"File '{sorted[i].path}' declared length={sorted[i].length} but stream produced {hasher.TotalBytesHashed} bytes. " +
-                    $"Streaming multi-file cannot rewrite the declared length mid-flight because it feeds straight into the file-tree dict.");
+                    $"File '{sorted[i].path}' declared length={sorted[i].length} but stream produced {hasher.TotalBytesHashed} bytes.");
             fileRoots[i] = fileRoot;
             filePieceLayers[i] = pieceLayer;
+
+            // v1: emit partial final piece for this file. Non-last files get zero-padded
+            // to a full piece (matches the pad-file-filled virtual stream); the truly last
+            // file emits a genuine partial piece if unaligned.
+            if (v1PieceHashes is not null && v1PieceBuf is not null && v1PieceFill > 0)
+            {
+                if (!isLast)
+                {
+                    Array.Clear(v1PieceBuf, v1PieceFill, pieceLength - v1PieceFill);
+                    v1PieceHashes.Add(SHA1.HashData(v1PieceBuf.AsSpan(0, pieceLength)));
+                }
+                else
+                {
+                    v1PieceHashes.Add(SHA1.HashData(v1PieceBuf.AsSpan(0, v1PieceFill)));
+                }
+            }
         }
 
         var descriptors = sorted.Select(f => (path: f.path, length: f.length)).ToArray();
-        return AssembleV2MultiFile(torrentName, descriptors, fileRoots, filePieceLayers, pieceLength, options);
+        return options.Hybrid
+            ? AssembleHybridMultiFile(torrentName, descriptors, fileRoots, filePieceLayers, v1PieceHashes!, pieceLength, options)
+            : AssembleV2MultiFile(torrentName, descriptors, fileRoots, filePieceLayers, pieceLength, options);
     }
 
     private static (byte[], TorrentMetadata) CreateFromMultipleFilesV1(
@@ -871,38 +914,6 @@ public static class TorrentCreator
             : CalculatePieceLength(realTotalLength);
         ValidateV2PieceSize(pieceLength);
 
-        // Build v1 files list with pad entries between real files.
-        var v1FilesList = new List<object>();
-        long paddedOffset = 0;
-        var realFileOffsets = new long[files.Length];
-        for (int i = 0; i < files.Length; i++)
-        {
-            realFileOffsets[i] = paddedOffset;
-            v1FilesList.Add(new Dictionary<string, object>
-            {
-                ["length"] = (long)files[i].data.Length,
-                ["path"] = SplitPathForBencode(files[i].path),
-            });
-            paddedOffset += files[i].data.Length;
-
-            bool isLast = i == files.Length - 1;
-            if (!isLast && files[i].data.Length % pieceLength != 0)
-            {
-                long padLen = pieceLength - (files[i].data.Length % pieceLength);
-                v1FilesList.Add(new Dictionary<string, object>
-                {
-                    ["attr"] = Encoding.UTF8.GetBytes("p"),
-                    ["length"] = padLen,
-                    ["path"] = new List<object>
-                    {
-                        Encoding.UTF8.GetBytes(".pad"),
-                        Encoding.UTF8.GetBytes(padLen.ToString()),
-                    },
-                });
-                paddedOffset += padLen;
-            }
-        }
-
         // Compute v1 pieces over the padded virtual stream. Because each real file starts
         // at a piece boundary and pad bytes are zeros, each piece contains content from
         // EXACTLY ONE real file (possibly with zero-pad tail on the last piece of that file).
@@ -920,9 +931,8 @@ public static class TorrentCreator
                 }
                 else
                 {
-                    // Partial piece - last piece of this file.
-                    // If not the last file, pad file fills it to piece boundary. If this IS
-                    // the last file, last piece is genuinely partial (v1 behavior).
+                    // Partial piece - last piece of this file. Pad to full piece with zeros
+                    // if not the last file (pad file fills the gap); genuine partial if last.
                     if (!isLast)
                     {
                         var padded = new byte[pieceLength];
@@ -937,10 +947,6 @@ public static class TorrentCreator
             }
         }
 
-        var v1PiecesConcat = new byte[v1PieceHashes.Count * 20];
-        for (int i = 0; i < v1PieceHashes.Count; i++)
-            Buffer.BlockCopy(v1PieceHashes[i], 0, v1PiecesConcat, i * 20, 20);
-
         // v2 per-file Merkle (over REAL bytes, no padding).
         var fileRoots = new byte[files.Length][];
         var filePieceLayers = new byte[files.Length][][];
@@ -951,7 +957,67 @@ public static class TorrentCreator
                 ? MerkleHasher.ComputePieceLayer(files[i].data, pieceLength)
                 : Array.Empty<byte[]>();
         }
-        var v2FileTree = BuildV2FileTree(files, fileRoots);
+
+        var descriptors = files.Select(f => (path: f.path, length: (long)f.data.Length)).ToArray();
+        return AssembleHybridMultiFile(torrentName, descriptors, fileRoots, filePieceLayers, v1PieceHashes, pieceLength, options);
+    }
+
+    /// <summary>
+    /// Shared assembly of a hybrid v1+v2 multi-file torrent from precomputed per-file Merkle
+    /// results and v1 piece hashes. Used by both the in-memory <see cref="BuildHybridMultiFile"/>
+    /// path and the streaming <see cref="CreateFromMultipleStreamsAsync"/> hybrid path. Takes
+    /// only path+length descriptors plus the precomputed hashes — no byte buffers — so it
+    /// works whether the source was byte[] input or Stream consumed through incremental hashers.
+    /// </summary>
+    private static (byte[] torrentBytes, TorrentMetadata metadata) AssembleHybridMultiFile(
+        string torrentName,
+        (string path, long length)[] files,
+        byte[][] fileRoots,
+        byte[][][] filePieceLayers,
+        List<byte[]> v1PieceHashes,
+        int pieceLength,
+        TorrentCreatorOptions options)
+    {
+        long realTotalLength = files.Sum(f => f.length);
+
+        // Build v1 files list with pad entries between real files (matches padded-stream
+        // byte layout that the v1 piece hashes were computed against).
+        var v1FilesList = new List<object>();
+        long paddedOffset = 0;
+        var realFileOffsets = new long[files.Length];
+        for (int i = 0; i < files.Length; i++)
+        {
+            realFileOffsets[i] = paddedOffset;
+            v1FilesList.Add(new Dictionary<string, object>
+            {
+                ["length"] = files[i].length,
+                ["path"] = SplitPathForBencode(files[i].path),
+            });
+            paddedOffset += files[i].length;
+
+            bool isLast = i == files.Length - 1;
+            if (!isLast && files[i].length % pieceLength != 0)
+            {
+                long padLen = pieceLength - (files[i].length % pieceLength);
+                v1FilesList.Add(new Dictionary<string, object>
+                {
+                    ["attr"] = Encoding.UTF8.GetBytes("p"),
+                    ["length"] = padLen,
+                    ["path"] = new List<object>
+                    {
+                        Encoding.UTF8.GetBytes(".pad"),
+                        Encoding.UTF8.GetBytes(padLen.ToString()),
+                    },
+                });
+                paddedOffset += padLen;
+            }
+        }
+
+        var v1PiecesConcat = new byte[v1PieceHashes.Count * 20];
+        for (int i = 0; i < v1PieceHashes.Count; i++)
+            Buffer.BlockCopy(v1PieceHashes[i], 0, v1PiecesConcat, i * 20, 20);
+
+        var v2FileTree = BuildV2FileTreeFromDescriptors(files, fileRoots);
 
         // Combined hybrid info dict: v1 keys (files, name, piece length, pieces) + v2 keys
         // (file tree, meta version, name, piece length). 'name' and 'piece length' are
@@ -998,7 +1064,7 @@ public static class TorrentCreator
             {
                 Path = files[i].path,
                 Name = System.IO.Path.GetFileName(files[i].path),
-                Length = files[i].data.Length,
+                Length = files[i].length,
                 Offset = realFileOffsets[i],
             };
         }
@@ -1010,7 +1076,7 @@ public static class TorrentCreator
         {
             if (filePieceLayers[i].Length > 0)
                 flatHashes.AddRange(filePieceLayers[i]);
-            else if (files[i].data.Length > 0)
+            else if (files[i].length > 0)
                 flatHashes.Add(fileRoots[i]);
         }
 

@@ -296,11 +296,16 @@ public class WebTorrentClient : IAsyncDisposable
         // Default trackers are merged inside InitFromMagnetAsync before StartDiscovery
         _ = torrent.InitFromMagnetAsync(magnetOrInfoHash, this, opts);
 
-        // Check for duplicate after InfoHash is set
-        var existing = Torrents.FirstOrDefault(t => t.InfoHash == torrent.InfoHash && t != torrent);
+        // Check for duplicate after WireInfoHashHex is set. WireInfoHashHex resolves
+        // to v1 InfoHash when present, else truncated V2InfoHash — so pure-v2 magnets
+        // dedup correctly where the pre-rc.20 plain-InfoHash match would miss them.
+        var existing = Torrents.FirstOrDefault(t =>
+            t != torrent &&
+            !string.IsNullOrEmpty(torrent.WireInfoHashHex) &&
+            string.Equals(t.WireInfoHashHex, torrent.WireInfoHashHex, StringComparison.OrdinalIgnoreCase));
         if (existing != null)
         {
-            OnWarning?.Invoke($"Duplicate torrent: {torrent.InfoHash}");
+            OnWarning?.Invoke($"Duplicate torrent: {torrent.WireInfoHashHex}");
             return existing;
         }
 
@@ -404,7 +409,13 @@ public class WebTorrentClient : IAsyncDisposable
         var torrent = new Torrent();
         torrent.InitFromMetadata(metadata, this, opts);
 
-        var existing = Torrents.FirstOrDefault(t => t.InfoHash == torrent.InfoHash && t != torrent);
+        // Duplicate check: match by WireInfoHashHex so pure-v2 torrents (empty v1
+        // InfoHash) still dedup. Previous code matched only on InfoHash which meant
+        // two calls with the same pure-v2 .torrent bytes would create two Torrents.
+        var existing = Torrents.FirstOrDefault(t =>
+            t != torrent &&
+            !string.IsNullOrEmpty(torrent.WireInfoHashHex) &&
+            string.Equals(t.WireInfoHashHex, torrent.WireInfoHashHex, StringComparison.OrdinalIgnoreCase));
         if (existing != null) return existing;
 
         Torrents.Add(torrent);
@@ -586,8 +597,11 @@ public class WebTorrentClient : IAsyncDisposable
 
         torrent.Done = true;
 
-        // Check for duplicate
-        var existing = Torrents.FirstOrDefault(t => t.InfoHash == torrent.InfoHash && t != torrent);
+        // Check for duplicate (WireInfoHashHex handles pure-v2 dedup)
+        var existing = Torrents.FirstOrDefault(t =>
+            t != torrent &&
+            !string.IsNullOrEmpty(torrent.WireInfoHashHex) &&
+            string.Equals(t.WireInfoHashHex, torrent.WireInfoHashHex, StringComparison.OrdinalIgnoreCase));
         if (existing != null) return existing;
 
         Torrents.Add(torrent);
@@ -651,10 +665,10 @@ public class WebTorrentClient : IAsyncDisposable
         OnRemove?.Invoke(torrent);
     }
 
-    /// <summary>Remove a torrent by info hash.</summary>
+    /// <summary>Remove a torrent by info hash (v1, full v2, or wire truncation).</summary>
     public async Task RemoveAsync(string infoHash)
     {
-        var torrent = Torrents.FirstOrDefault(t => t.InfoHash == infoHash);
+        var torrent = Get(infoHash);
         if (torrent != null) await RemoveAsync(torrent);
     }
 
@@ -676,10 +690,10 @@ public class WebTorrentClient : IAsyncDisposable
         }
     }
 
-    /// <summary>Remove a torrent by info hash and delete all associated data.</summary>
+    /// <summary>Remove a torrent (v1, full v2, or wire truncation) and delete all associated data.</summary>
     public async Task RemoveWithDataAsync(string infoHash)
     {
-        var torrent = Torrents.FirstOrDefault(t => t.InfoHash == infoHash);
+        var torrent = Get(infoHash);
         if (torrent != null) await RemoveWithDataAsync(torrent);
     }
 

@@ -161,6 +161,46 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
+    public async Task PureV2_AddSameMagnetTwice_Dedups()
+    {
+        // rc.20 regression: pre-fix, two Add() calls with the same pure-v2 magnet produced
+        // TWO Torrent entries because the duplicate check compared on v1 InfoHash (empty
+        // for pure-v2). rc.20 compares on WireInfoHashHex which falls back to v2.
+        var client = CreateIsolatedClient();
+        try
+        {
+            var magnet = $"magnet:?xt=urn:btmh:1220{PureV2MagnetHash}&dn=dedup-test";
+            var t1 = client.Add(magnet);
+            var t2 = client.Add(magnet);
+            if (!ReferenceEquals(t1, t2))
+                throw new Exception("two Add() calls with same pure-v2 magnet should return the same Torrent instance");
+            if (client.Torrents.Count != 1)
+                throw new Exception($"Torrents.Count={client.Torrents.Count}, expected 1 after dedup");
+        }
+        finally { await client.DisposeAsync(); }
+    }
+
+    [TestMethod]
+    public async Task PureV2_RemoveAsyncByHash_ResolvesV2Hash()
+    {
+        // rc.20: RemoveAsync(infoHash) now routes through Get() so pure-v2 callers can
+        // remove by the full v2 hash (64 chars) or the wire-truncated version (40 chars).
+        var client = CreateIsolatedClient();
+        try
+        {
+            var magnet = $"magnet:?xt=urn:btmh:1220{PureV2MagnetHash}&dn=remove-test";
+            var torrent = client.Add(magnet);
+            if (client.Torrents.Count != 1) throw new Exception("setup: expected 1 torrent");
+
+            // Remove by full v2 hash
+            await client.RemoveAsync(PureV2MagnetHash);
+            if (client.Torrents.Count != 0)
+                throw new Exception($"RemoveAsync(fullV2) failed; Torrents.Count={client.Torrents.Count}");
+        }
+        finally { await client.DisposeAsync(); }
+    }
+
+    [TestMethod]
     public async Task V1Only_Client_UtMetadataFactory_StaysOnV1()
     {
         // Mirror: v1-only magnet → factory produces a default (v1) UtMetadataExtension.

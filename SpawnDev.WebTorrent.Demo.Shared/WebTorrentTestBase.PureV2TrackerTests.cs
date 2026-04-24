@@ -201,6 +201,35 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
+    public async Task PureV2_Torrent_DisplayName_FallsBackThroughNameThenWireHash()
+    {
+        // rc.22: Torrent.DisplayName is the UI-safe name -> hash -> "unknown" fallback.
+        // Pre-rc.22 the demos used `torrent.Name ?? torrent.InfoHash ?? "unknown"` which
+        // silently returned "" for pure-v2 torrents (?? triggers on null, not empty).
+        var client = CreateIsolatedClient();
+        try
+        {
+            // Pure-v2 magnet with no dn= (no Name) → should fall to WireInfoHashHex
+            var t1 = client.Add($"magnet:?xt=urn:btmh:1220{PureV2MagnetHash}");
+            var wireHex = PureV2MagnetHash[..40].ToLowerInvariant();
+            if (t1.DisplayName != wireHex)
+                throw new Exception($"pure-v2 no-name DisplayName={t1.DisplayName}, expected {wireHex}");
+
+            // Pure-v2 magnet WITH dn= (Name set) → prefer Name
+            var t2 = client.Add($"magnet:?xt=urn:btmh:1220aaaa789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0&dn=my-model");
+            if (t2.DisplayName != "my-model")
+                throw new Exception($"pure-v2 with-name DisplayName={t2.DisplayName}, expected my-model");
+
+            // V1 magnet with no dn → falls back to v1 hash
+            var v1Hex = "aaaabbbbccccddddeeeeffff1111222233334444";
+            var t3 = client.Add($"magnet:?xt=urn:btih:{v1Hex}");
+            if (t3.DisplayName != v1Hex)
+                throw new Exception($"v1 no-name DisplayName={t3.DisplayName}, expected {v1Hex}");
+        }
+        finally { await client.DisposeAsync(); }
+    }
+
+    [TestMethod]
     public async Task PureV2_RemoveWithDataAsyncByHash_ResolvesV2Hash()
     {
         // rc.20/rc.21: RemoveWithDataAsync(string) also routes through Get() so the full

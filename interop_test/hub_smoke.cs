@@ -1,7 +1,8 @@
 // Hub smoke test - verify the empty-Origin bypass is live on hub.spawndev.com.
 //
 // Three checks:
-//   1. Health/root endpoint reports the new version (3.1.6) - sanity.
+//   1. Health/root endpoint reports a version >= 3.1.6 (the release with the
+//      empty-Origin bypass) - sanity.
 //   2. Desktop ClientWebSocket (no Origin header) can complete the WSS upgrade -
 //      this is the new behavior shipped in SpawnDev.RTC.Server 1.0.5 + RTC 1.1.6;
 //      prior to redeploy the hub 403'd here.
@@ -22,16 +23,18 @@ using var http = new HttpClient(new HttpClientHandler
     ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
 });
 
-// --- 1. Sanity: hub root reports new version. ---
+// --- 1. Sanity: hub root reports a version >= 3.1.6 (the release where the
+//        empty-Origin bypass we're verifying actually landed). Anything from
+//        3.1.6 forward is a valid hub for this smoke test. ---
 Console.WriteLine($"[hub-smoke] GET {HubBase}/ ...");
 var rootJson = await http.GetStringAsync(HubBase + "/");
 using var rootDoc = JsonDocument.Parse(rootJson);
 var version = rootDoc.RootElement.TryGetProperty("version", out var v) ? v.GetString() : null;
 var allowlistEnabled = rootDoc.RootElement.TryGetProperty("originAllowlistEnabled", out var a) && a.GetBoolean();
 Console.WriteLine($"  version={version}, originAllowlistEnabled={allowlistEnabled}");
-if (version != "3.1.6")
+if (string.IsNullOrEmpty(version) || !Version.TryParse(version, out var parsed) || parsed < new Version(3, 1, 6))
 {
-    Console.Error.WriteLine($"  FAIL: expected version 3.1.6, got {version}");
+    Console.Error.WriteLine($"  FAIL: hub version {version} is older than 3.1.6 (the release with the empty-Origin bypass we're verifying)");
     return 1;
 }
 

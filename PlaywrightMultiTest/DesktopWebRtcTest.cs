@@ -1,3 +1,5 @@
+using System.Net;
+using System.Security.Cryptography;
 using SpawnDev.WebTorrent;
 
 namespace PlaywrightMultiTest;
@@ -146,5 +148,100 @@ public class DesktopWebRtcTest
             Assert.Fail($"Downloaded 0 bytes. Peers={peers}. Check [DL] logs.");
 
         Console.WriteLine($"[Test] SUCCESS: Downloaded {downloaded} bytes from {peers} peers");
+    }
+
+    [Test, Timeout(30000)]
+    public async Task Desktop_TcpListenerOption_AcceptsInboundLeech()
+    {
+        // Locks the WebTorrentClientOptions.TcpListenPort + EnsureTcpListenerAsync
+        // surface added in 3.1.7+ (the path that closes seed-C# / leech-mainline
+        // interop). Two clients on loopback: A seeds with the listener auto-started;
+        // B leeches by manually constructing a TcpPeer.ConnectAsync to A's
+        // kernel-assigned port. Verifies the listener accepts the inbound peer,
+        // routes the BT handshake to the matching torrent by info_hash, and serves
+        // the full payload byte-identical.
+
+        // Deterministic 64 KiB payload (4 pieces of 16 KiB each).
+        var payload = new byte[65536];
+        for (int i = 0; i < payload.Length; i++)
+            payload[i] = (byte)((i * 31 + 7) & 0xFF);
+        var expectedHash = Convert.ToHexString(SHA256.HashData(payload));
+
+        // ----- A: seeder + auto-started TCP listener on a kernel-assigned port -----
+        await using var seeder = new WebTorrentClient(new WebTorrentClientOptions
+        {
+            // Disable peer-discovery sources so the only path B can use is
+            // direct TCP connect. Makes the test deterministic and fast.
+            EnableTrackers = false,
+            EnableDht = false,
+            EnableLsd = false,
+            EnableUtPex = false,
+            DefaultTrackers = Array.Empty<string>(),
+            TcpListenPort = 0,
+            TcpListenAddress = IPAddress.Loopback,
+        });
+        // Wait for the listener to bind (constructor fired EnsureTcpListenerAsync
+        // fire-and-forget; idempotent re-call returns once it's ready).
+        await seeder.EnsureTcpListenerAsync(0, IPAddress.Loopback);
+        Assert.That(seeder.TcpListener, Is.Not.Null, "TcpListener should be set after EnsureTcpListenerAsync");
+        var listenPort = seeder.TcpListener!.LocalEndPoint.Port;
+        Assert.That(listenPort, Is.GreaterThan(0), "Kernel-assigned port should be > 0");
+
+        var seedTorrent = await seeder.SeedAsync("tcp-listener-test.bin", payload,
+            new TorrentCreatorOptions
+            {
+                PieceLength = 16384,
+                MetaVersion = 2,
+                Hybrid = true,
+            });
+        Assert.That(seedTorrent.Done, Is.True, "Seeder torrent should be done");
+
+        // ----- B: leecher with no peer-discovery; manually connect to A's port -----
+        await using var leecher = new WebTorrentClient(new WebTorrentClientOptions
+        {
+            EnableTrackers = false,
+            EnableDht = false,
+            EnableLsd = false,
+            EnableUtPex = false,
+            DefaultTrackers = Array.Empty<string>(),
+        });
+
+        // Add the same .torrent metadata to the leecher (no payload data).
+        var (torrentBytes, _) = TorrentCreator.CreateFromBytes("tcp-listener-test.bin", payload,
+            new TorrentCreatorOptions
+            {
+                PieceLength = 16384,
+                MetaVersion = 2,
+                Hybrid = true,
+            });
+        var dlTmp = Path.Combine(Path.GetTempPath(), "tcplistener_test_" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(dlTmp);
+        var dlTorrent = leecher.Add(torrentBytes, new AddTorrentOptions { Path = dlTmp });
+
+        // Direct TCP dial-in to the seeder's listener.
+        var tcpPeer = new TcpPeer(initiator: true);
+        await tcpPeer.ConnectAsync($"127.0.0.1:{listenPort}");
+        Assert.That(tcpPeer.Connected, Is.True, "TcpPeer.ConnectAsync should establish a connection to the listener");
+        dlTorrent.AddPeer(tcpPeer);
+
+        // Wait for the leecher to finish downloading.
+        var deadline = DateTime.UtcNow.AddSeconds(20);
+        while (!dlTorrent.Done && DateTime.UtcNow < deadline)
+            await Task.Delay(200);
+
+        Assert.That(dlTorrent.Done, Is.True,
+            $"Leecher torrent should be Done within 20s (progress={dlTorrent.Progress:P1}, downloaded={dlTorrent.Downloaded}, " +
+            $"listenerAccepted={seeder.TcpListener.AcceptedCount}, listenerRejected={seeder.TcpListener.RejectedCount})");
+
+        var dlFile = dlTorrent.Files?.FirstOrDefault();
+        Assert.That(dlFile, Is.Not.Null, "Leecher should have a file");
+        var actualBytes = await dlFile!.ReadAsync(0, (int)dlFile.Length);
+        Assert.That(actualBytes.Length, Is.EqualTo(payload.Length));
+        var actualHash = Convert.ToHexString(SHA256.HashData(actualBytes));
+        Assert.That(actualHash, Is.EqualTo(expectedHash),
+            "Leecher's downloaded bytes must SHA-256-match the seeder's payload");
+
+        Assert.That(seeder.TcpListener.AcceptedCount, Is.GreaterThanOrEqualTo(1),
+            "Listener should have accepted at least one inbound peer");
     }
 }

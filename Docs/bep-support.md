@@ -1,6 +1,6 @@
 # BEP (BitTorrent Enhancement Proposal) Support
 
-Status of BEP implementation in SpawnDev.WebTorrent _Alt.
+Status of BEP implementation in SpawnDev.WebTorrent.
 
 ## Implemented
 
@@ -39,7 +39,7 @@ Three BEPs are desktop-only due to a hard browser platform constraint: **browser
 
 | Algorithm | Desktop | Browser | Library | Notes |
 |-----------|---------|---------|---------|-------|
-| **Ed25519** | Yes | Yes | `SpawnDev.BlazorJS.Cryptography` 3.1.0+ | BEP 44 REQUIRED algorithm. 32-byte public keys, 64-byte signatures. |
+| **Ed25519** | Yes | Yes | `SpawnDev.BlazorJS.Cryptography` 3.2.0+ | BEP 44 REQUIRED algorithm. 32-byte public keys, 64-byte signatures. |
 
 Ed25519 support was added to `SpawnDev.BlazorJS.Cryptography` specifically for BEP 44/46 compliance. The `Ed25519Signer` class works identically on both platforms:
 - **Browser:** WebCrypto API (native C++ — hardware-accelerated on most platforms)
@@ -54,34 +54,40 @@ All BEP 44/46 operations (DHT mutable items, AgentChannel pub/sub, `btpk` magnet
 | SHA-1 (20 bytes) | Yes | Yes | For legacy compatibility |
 | SHA-256 (32 bytes) | Yes | Yes | Default for new torrents. Auto-detected from piece hash size. |
 
-Verification uses `IPortableCrypto` when available:
-- **Browser:** SubtleCrypto (native C++ — orders of magnitude faster than WASM SHA)
-- **Desktop:** `System.Security.Cryptography` (already fast)
+Verification routes through `IPieceHashEngine` (default `SystemCryptoPieceHashEngine` — `System.Security.Cryptography` SHA-1 / SHA-256, hardware-accelerated SHA-NI on modern CPUs and natively wired in browser via WebCrypto where available). Slot in a custom engine via `WebTorrentClient.PieceHashEngine` to route piece verification through GPU / batched implementations. See [hash-engine.md](hash-engine.md).
 
 ## Tracker Support
 
 | Type | Desktop | Browser | Protocol |
 |------|---------|---------|----------|
-| WebSocket (wss://) | Yes | Yes | JSON signaling with WebRTC offer/answer relay |
-| HTTP/HTTPS | Yes | Yes | BEP 3 announce + BEP 48 scrape, compact/non-compact peer lists |
+| WebSocket (wss://) | Yes | Yes | JSON signaling with WebRTC offer/answer relay (provided by `SpawnDev.RTC.Server`) |
+| HTTP/HTTPS | Yes | Yes | BEP 3 announce + BEP 48 scrape, compact/non-compact peer lists. Set `WebTorrentClientOptions.AdvertiseTcpListenerToTrackers = true` to be listed at your inbound TCP port. |
 | UDP | Yes | No | BEP 15 binary protocol (connect/announce). No UDP in browser. |
 
 ## WebRTC Transport
 
 | Platform | Library | Notes |
 |----------|---------|-------|
-| Browser | SpawnDev.BlazorJS RTCPeerConnection | Full signaling via tracker relay |
-| Desktop | SIPSorcery 10.0.3 RTCPeerConnection | Same signaling protocol, cross-platform P2P |
+| Browser | [`SpawnDev.RTC`](https://github.com/LostBeard/SpawnDev.RTC) → BlazorJS `RTCPeerConnection` | Native browser WebRTC via SpawnDev.BlazorJS typed wrappers |
+| Desktop | [`SpawnDev.RTC`](https://github.com/LostBeard/SpawnDev.RTC) → SipSorcery fork (10.0.5+) | Forked SipSorcery preserves browser-interop DTLS/SRTP + adds SCTP MaxBurst tunables, ResolveHmacKey hook, RelayPortRange |
+
+One `RtcPeer` API on both sides; the underlying transport is selected automatically.
+
+## TCP Peer Wire (desktop only)
+
+| Direction | Class | Notes |
+|-----------|-------|-------|
+| Outbound | `TcpPeer.ConnectAsync(ip:port)` | Mainline-style direct connect to a known peer. |
+| Inbound | `TcpListenerService` (via `WebTorrentClientOptions.TcpListenPort`) | Accepts inbound BitTorrent peer-wire connections. Peeks the 68-byte handshake, routes by info_hash to the matching torrent. See [tcp-listener.md](tcp-listener.md). |
 
 ## Not Implemented (high effort / future)
 
 | BEP | Title | Effort | Notes |
 |-----|-------|--------|-------|
-| [29](http://bittorrent.org/beps/bep_0029.html) | uTorrent Transport Protocol (uTP) | High | Full congestion-controlled UDP transport (LEDBAT). Desktop only. Requires implementing a complete sliding-window protocol stack with loss recovery. |
-| [52](http://bittorrent.org/beps/bep_0052.html) | BitTorrent Protocol v2 | Large | Per-file SHA-256 Merkle trees, new info dict format, hybrid v1/v2 torrents. Requires new TorrentParser branch, Merkle tree construction, updated piece verification. |
+| [29](http://bittorrent.org/beps/bep_0029.html) | uTorrent Transport Protocol (uTP) | High | Full congestion-controlled UDP transport (LEDBAT). Desktop only. Requires implementing a complete sliding-window protocol stack with loss recovery. Browser has no UDP API. |
 
 ## Test Coverage
 
-109 shared test methods (via `SpawnDev.UnitTesting`) covering all 17 implemented BEPs, running on both desktop (DemoConsole) and browser (Demo via PlaywrightMultiTest). Plus 66 NUnit desktop-only tests for wire protocol, piece management, seeding, torrent creation, file streaming, rate limiting, and lifecycle management.
+468+ shared test methods running on BOTH browser AND desktop runtimes via PlaywrightMultiTest (~936 test executions per full sweep), plus libtorrent 2.0 external-interop fixtures, plus three live-network interop tests (qBittorrent forward + reverse via `addPeers`, Node.js `webtorrent@^2` via local SpawnDev.RTC tracker). The historical NUnit-only `SpawnDev.WebTorrent.Tests` project was retired 2026-04-23 — every former NUnit test now runs through `WebTorrentTestBase` partials so coverage exercises both runtimes.
 
-All tests use real data, real hashing, real protocol bytes. No mocks. Verified against live WebTorrent swarms (Sintel) and official BEP 46 test vectors.
+All tests use real data, real hashing, real protocol bytes. No mocks. Verified against live WebTorrent swarms, qBittorrent 5.x + libtorrent 2.0, JS WebTorrent reference, and official BEP 46 test vectors.

@@ -1,4 +1,6 @@
-# SpawnDev.WebTorrent — Post-1.1 Roadmap
+# SpawnDev.WebTorrent — Post-3.x Roadmap
+
+> Last updated 2026-04-25 against 3.2.0 stable. The "Post-1.1" header was historical. Current consumer-facing features documented in `README.md`, `CHANGELOG.md`, and `Docs/`.
 
 ## Completed in v1.1.0
 
@@ -58,15 +60,16 @@ Rides the same WebRTC connections used for piece exchange — no new infrastruct
 - Mount a torrent as a drive (Dokan on desktop, OPFS in browser)
 - File access triggers piece downloads transparently
 
-### GPU-Accelerated Piece Hashing
-- Use SpawnDev.ILGPU for parallel SHA-1/SHA-256 computation
-- Batch-verify thousands of pieces on GPU
-- Significant speedup for large model verification (2GB+ files)
+### GPU-Accelerated Piece Hashing — INTERFACE SHIPPED 3.2.0
+- `IPieceHashEngine` interface + `SystemCryptoPieceHashEngine` default landed in 3.2.0 (2026-04-25). See `Docs/hash-engine.md`.
+- The actual GPU engine (parallel SHA-1/SHA-256 batched dispatch via SpawnDev.ILGPU) remains pending and will ship as a separate `SpawnDev.WebTorrent.GpuHash` package — keeps SpawnDev.WebTorrent dependency-light for consumers who don't need it.
+- Batch-verify hot path: `BatchSha256(IReadOnlyList<ReadOnlyMemory<byte>>) → byte[][]` is already on the interface; the GPU engine just needs to dispatch all inputs as one ILGPU kernel batch.
+- Significant speedup for large model verification (2GB+ files) — full-torrent rechecks are the natural target.
 
-### Bandwidth-Aware Seeding
-- Detect metered connections (mobile data)
-- Respect upload limits (configurable, default conservative)
-- Smart seeding: prioritize pieces that are rare in the swarm
+### Bandwidth-Aware Seeding — POLICY SURFACE SHIPPED 3.2.0
+- `BandwidthPolicy` enum + `WebTorrentClient.ApplyBandwidthPolicy` runtime knob landed in 3.2.0 (2026-04-25). Unlimited / Conservative (256 KiB/s) / Metered (64 KiB/s) / SeedingDisabled / Custom. See `Docs/bandwidth-policy.md`.
+- **Still future:** automatic detection of metered connections via WinRT `IsConnectionCostMetered` + browser `navigator.connection.saveData` + Linux interface heuristics. `BandwidthPolicy.AutoDetect()` exists today as a placeholder returning `Unlimited`.
+- **Still future:** smart-piece prioritization — when bandwidth is constrained, prioritize rare pieces over abundant ones in the upload queue. Requires changes to the choke-rotation algorithm; not part of the policy enum surface.
 
 ### Push Notifications for Compute Swarms
 - Web Push API to recall opted-in volunteers when swarm capacity is low

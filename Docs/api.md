@@ -15,11 +15,26 @@ var client = new WebTorrentClient(opts);
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `PeerId` | `string?` | auto-generated | Wire protocol peer ID (hex). Auto-generates Azureus-style `-WW{ver}-` + random. |
+| `NodeId` | `byte[]?` | random 20-byte | DHT node id (BEP 5). Persist + restore across runs to keep your DHT identity stable. |
 | `MaxConns` | `int` | `55` | Max peer connections per torrent |
 | `EnableWebSeeds` | `bool` | `true` | Enable BEP 19 web seed connections |
+| `EnableTrackers` | `bool` | `true` | Enable HTTP/UDP/WebSocket tracker discovery |
+| `EnableDht` | `bool` | `true` | Enable DHT (BEP 5) on desktop; ignored in browser |
+| `EnableLsd` | `bool` | `true` | Enable Local Service Discovery (BEP 14) on desktop; ignored in browser |
+| `EnableUtPex` | `bool` | `true` | Enable peer exchange wire extension (BEP 11) |
+| `DefaultTrackers` | `string[]?` | `null` | Trackers merged into every torrent (set to empty array to opt out) |
 | `IceServers` | `string[]?` | Google/Twilio STUN | ICE servers for WebRTC |
+| `Blocklist` | `HashSet<string>?` | `null` | IP addresses to refuse connections from |
+| `DownloadLimit` | `long` | `-1` | Download bytes/sec ceiling. `-1` = unlimited, `0` = paused |
+| `UploadLimit` | `long` | `-1` | Upload bytes/sec ceiling. Wins over `BandwidthPolicy` when `>= 0`. |
+| `BandwidthPolicy` | `BandwidthPolicy` | `Unlimited` | High-level upload policy. `Conservative` = 256 KiB/s, `Metered` = 64 KiB/s, `SeedingDisabled` = 0, `Custom` = paired with explicit `UploadLimit`. See [bandwidth-policy.md](bandwidth-policy.md). |
+| `TcpListenPort` | `int?` | `null` | Desktop only. `null` = no listener, `0` = ephemeral, `>0` = bind that port. Lets mainline clients dial in. See [tcp-listener.md](tcp-listener.md). |
+| `TcpListenAddress` | `IPAddress?` | `IPAddress.Any` | Local address for `TcpListenPort`. `IPAddress.Loopback` for localhost-only. |
+| `AdvertiseTcpListenerToTrackers` | `bool` | `false` | When `true` AND a `TcpListener` is running, HTTP/UDP tracker announces include the listener's port so other peers find us automatically. |
+| `PieceHashEngine` | `IPieceHashEngine?` | `SystemCryptoPieceHashEngine` | Pluggable piece-verification hash engine. See [hash-engine.md](hash-engine.md). |
 | `HttpClient` | `HttpClient?` | `new HttpClient()` | HTTP client for web seeds and HTTP trackers |
 | `AsyncFileSystem` | `IAsyncFS?` | `null` | Persistent storage (OPFS in browser, native FS on desktop) |
+| `Crypto` | `IPortableCrypto?` | `null` | Cross-platform Ed25519 for BEP 44/46 (register via `AddPlatformCrypto()` in DI). |
 | `StreamHandler` | `ServiceWorkerStreamHandler?` | `null` | Service worker handler for media streaming |
 
 ### Properties
@@ -35,10 +50,16 @@ var client = new WebTorrentClient(opts);
 | `Destroyed` | `bool` | Whether the client has been destroyed |
 | `UploadRateLimiter` | `RateLimiter` | Upload rate limiter. Set `.Rate` to bytes/sec, -1 for unlimited, 0 to pause. |
 | `DownloadRateLimiter` | `RateLimiter` | Download rate limiter. Same. |
+| `BandwidthPolicy` | `BandwidthPolicy` | Active upload policy. Use `ApplyBandwidthPolicy(policy)` to flip + re-rate at runtime. |
+| `PieceHashEngine` | `IPieceHashEngine` | Piece-verification engine. Default `SystemCryptoPieceHashEngine`; replace for GPU / batched implementations. |
 | `Dht` | `DhtDiscovery?` | DHT instance (desktop only, null in browser) |
+| `TcpListener` | `TcpListenerService?` | Inbound TCP peer-wire listener (desktop only). Inspect `.LocalEndPoint.Port` for the kernel-assigned port when `TcpListenPort = 0`. |
+| `AdvertiseTcpListenerToTrackers` | `bool` | Mirror of the option; flip at runtime to start/stop advertising the listener port to trackers. |
+| `AdvertisedTcpPort` | `int` | Read-only: returns the port currently advertised to trackers (0 if disabled or no listener). |
 | `StreamHandler` | `ServiceWorkerStreamHandler?` | Service worker stream handler |
 | `IceServers` | `string[]` | ICE servers for WebRTC peer connections |
 | `AsyncFileSystem` | `IAsyncFS?` | Persistent storage backend |
+| `Crypto` | `IPortableCrypto?` | Cross-platform Ed25519 implementation (BEP 44/46) |
 | `VerboseLogging` | `static bool` | Enable verbose console output (gate all logging behind this) |
 
 ### Methods
@@ -124,9 +145,25 @@ Wire up the service worker stream handler so `file.StreamURL` works.
 
 Restore previously persisted torrents from OPFS/filesystem storage.
 
+#### `EnsureTcpListenerAsync(int port = 0, IPAddress? address = null)`
+
+Desktop only. Bind a `TcpListenerService` and start accepting inbound BitTorrent peer-wire connections from mainline clients (qBittorrent, libtorrent, Transmission, rqbit). Idempotent. `port = 0` lets the kernel assign an ephemeral port (read it back via `client.TcpListener.LocalEndPoint.Port`). Browser-side: no-op. See [tcp-listener.md](tcp-listener.md).
+
+#### `EnsureDhtAsync(DhtOptions? opts = null, CancellationToken ct = default)`
+
+Desktop only. Lazily start the DHT (BEP 5) on a specific port + node id. Calling once with options gives you control over the DHT identity; the lazy paths inside `AddBtpkAsync` etc. start the DHT on the default port if it isn't already running.
+
+#### `ApplyBandwidthPolicy(BandwidthPolicy policy)`
+
+Apply `policy` to `UploadRateLimiter.Rate` and update `BandwidthPolicy` in lockstep so the two can't drift. Useful for "pause seeding while on cellular" / "go full speed at home" UX. See [bandwidth-policy.md](bandwidth-policy.md).
+
+#### `ThrottleUpload(long rate)`
+
+Set `UploadRateLimiter.Rate` directly without touching `BandwidthPolicy`. Use when `BandwidthPolicy = Custom` and you want to pin the exact bytes/sec.
+
 #### `DisposeAsync()`
 
-Destroy the client and all torrents.
+Destroy the client, all torrents, and any TCP listener.
 
 ### Events
 
@@ -390,7 +427,7 @@ Represents a peer connection with the BitTorrent wire protocol.
 |----------|------|-------------|
 | `PeerId` | `string?` | Remote peer ID (hex) |
 | `PeerIdBuffer` | `byte[]?` | Remote peer ID (20 bytes) |
-| `Type` | `string?` | Connection type: `"webrtc"`, `"tcpOutgoing"`, `"webSeed"` |
+| `Type` | `string?` | Connection type: `"webrtc"`, `"tcpOutgoing"`, `"tcpIncoming"` (from `TcpListenerService`), `"webSeed"` |
 | `Destroyed` | `bool` | Whether the wire is destroyed |
 | `AmChoking` | `bool` | Whether we are choking this peer |
 | `AmInterested` | `bool` | Whether we are interested in this peer |
@@ -566,8 +603,9 @@ var health = channel.Channel("health");
 
 | Feature | Desktop (.NET) | Browser (Blazor WASM) |
 |---------|---------------|----------------------|
-| WebRTC peers | SipSorceryPeer | BrowserPeer |
-| TCP peers | TcpPeer | N/A (no sockets) |
+| WebRTC peers | RtcPeer (SpawnDev.RTC bridges to a SipSorcery fork) | RtcPeer (SpawnDev.RTC bridges to BlazorJS `RTCPeerConnection`) |
+| TCP peers (outbound) | TcpPeer.ConnectAsync | N/A (no sockets) |
+| TCP listener (inbound) | TcpListenerService — accepts mainline-client dials | N/A (no listening sockets in browser) |
 | DHT (BEP 5) | DhtDiscovery | N/A (no UDP) |
 | UDP tracker (BEP 15) | UdpTrackerClient | N/A (no UDP) |
 | Local discovery (BEP 14) | LocalServiceDiscovery | N/A (no UDP multicast) |

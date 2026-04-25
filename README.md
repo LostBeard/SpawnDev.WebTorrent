@@ -10,9 +10,9 @@ Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Run
 - **Pure C#** — No JavaScript interop, no Node.js, no npm. 100% .NET.
 - **Desktop + Browser** — Same library, same API. WPF, console, Blazor WebAssembly.
 - **DI Singleton Services** — `WebTorrentClient` and `ServiceWorkerStreamHandler` implement `IAsyncBackgroundService`. Register once, start with the app, inject anywhere.
-- **Real WebRTC P2P** — Browser (SpawnDev.BlazorJS) and desktop (SIPSorcery) peers interop seamlessly via the same tracker.
+- **Real WebRTC P2P** — Cross-platform via [SpawnDev.RTC](https://github.com/LostBeard/SpawnDev.RTC). One `RtcPeer` type backs browser (BlazorJS `RTCPeerConnection`) and desktop (a SipSorcery fork with proven DTLS/SRTP). Browser and desktop peers interop seamlessly through the same tracker.
 - **18 BEPs** — Full wire protocol, DHT, Fast Extension, ut_metadata, ut_pex, private torrents, magnet file selection, tracker scrape, local service discovery, BEP 52 v2 (SHA-256 + Merkle + hybrid + magnet + pure-v2 end-to-end download), and more. v2 peer wire messages (21 `hash_request` / 22 `hashes` / 23 `hash_reject`) + leaf-level `base_layer=0` serving + `V2HashRequestCoordinator` + pure-v2 tracker + wire handshake + dedup + OPFS persistence + service-worker streaming + HTTP file browser all shipped. Pure-v2-only magnets (`urn:btmh:`) now work end-to-end, keyed through `WireInfoHashHex` (first 20 bytes of SHA-256, libtorrent / qBittorrent / rqbit convention).
-- **3 Tracker Types** — WebSocket (browser+desktop), HTTP/HTTPS, UDP (desktop).
+- **4 Tracker / Discovery Types** — WebSocket (browser + desktop, WebRTC signaling), HTTP/HTTPS, UDP (desktop), Local Service Discovery (BEP 14, multicast on the local subnet, desktop).
 - **Web Seed Download** — HTTP range requests with multi-file piece assembly (BEP 17/19).
 - **Persistent Storage** — Torrents and pieces persist in OPFS (browser) or filesystem (desktop). Survive page reloads. Resume downloading automatically.
 - **Media Streaming with Seeking** — Service worker intercepts video/audio range requests and serves pieces on demand. `file.StreamURL`, `file.StreamTo(elem)`, `file.CreateReadStream()`. True seeking — pieces download as the video plays.
@@ -21,10 +21,10 @@ Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Run
 - **Random-Access Streaming** — Read any byte range from a torrent file as it downloads. Pieces download on demand. Perfect for ML model weight streaming.
 - **Seeding** — Upload pieces to requesting peers with configurable rate limiting.
 - **Inbound TCP Peer Listener** (desktop) — `WebTorrentClientOptions.TcpListenPort` accepts inbound BitTorrent peer-wire connections so mainline clients (qBittorrent, libtorrent, Transmission, rqbit) can dial in by IP+port and leech the torrents you're seeding. Routes inbound handshakes by info_hash to the matching torrent automatically. Set `AdvertiseTcpListenerToTrackers = true` and trackers put us in their compact peer list so peers find us automatically. See [Docs/tcp-listener.md](Docs/tcp-listener.md).
-- **Pluggable piece-hash engine** — `IPieceHashEngine` interface with `BatchSha256` lets recheck-heavy workloads route piece verification through a GPU / batched implementation. Default `SystemCryptoPieceHashEngine` is byte-identical to 3.1.x; the GPU engine will ship as a separate package.
-- **Bandwidth policy** — `BandwidthPolicy` enum (`Unlimited` / `Conservative` / `Metered` / `SeedingDisabled` / `Custom`) plus `WebTorrentClient.ApplyBandwidthPolicy(...)` runtime knob. Tell the client "be reasonable on a metered connection" without picking a number.
+- **Pluggable piece-hash engine** — `IPieceHashEngine` interface with `BatchSha256` lets recheck-heavy workloads route piece verification through a GPU / batched implementation. Default `SystemCryptoPieceHashEngine` is byte-identical to 3.1.x; the GPU engine will ship as a separate package. See [Docs/hash-engine.md](Docs/hash-engine.md).
+- **Bandwidth policy** — `BandwidthPolicy` enum (`Unlimited` / `Conservative` / `Metered` / `SeedingDisabled` / `Custom`) plus `WebTorrentClient.ApplyBandwidthPolicy(...)` runtime knob. Tell the client "be reasonable on a metered connection" without picking a number. See [Docs/bandwidth-policy.md](Docs/bandwidth-policy.md).
 - **Speed Tracking** — Real-time download/upload bytes/sec per torrent.
-- **AI Agent Communication** — BEP 46 DHT mutable items with Ed25519 signing via SpawnDev.BlazorJS.Cryptography 3.1.0. AgentChannel pub/sub for shared AI state. `btpk` magnet URI support for mutable torrent subscriptions.
+- **AI Agent Communication** — BEP 46 DHT mutable items with Ed25519 signing via [SpawnDev.BlazorJS.Cryptography](https://github.com/LostBeard/SpawnDev.BlazorJS.Cryptography) 3.2.0+. AgentChannel pub/sub for shared AI state. `btpk` magnet URI support for mutable torrent subscriptions.
 - **HuggingFace Integration** — Optional server extension that proxies HuggingFace model CDN with local caching and automatic torrent generation.
 - **Custom Wire Extensions** — `UseExtension()` factory pattern (same as JS WebTorrent `wire.use()`). Build custom P2P protocols on top of the BitTorrent wire — distributed compute, AI agents, anything. Extensions negotiate via BEP 10.
 - **.torrent Creation** — Create and parse .torrent files. Complete Bencode encoder/decoder. SHA-256 piece hashes (BEP 52 Phase 1) by default for stronger integrity on large ML model files; SHA-1 available via `HashAlgorithm = "SHA-1"` for v1 back-compat. `TorrentMetadata.PieceHashAlgorithm` surfaces which algorithm a parsed torrent uses.
@@ -124,50 +124,57 @@ Feature parity with the [WebTorrent JS File API](https://github.com/webtorrent/w
 
 ## Wire Extensions (BEP 10)
 
-Register custom wire protocol extensions that participate in BEP 10 negotiation — same pattern as JS WebTorrent's `wire.use()`:
+Register custom wire-protocol extensions that participate in BEP 10 negotiation — same pattern as JS WebTorrent's `wire.use()`. The factory takes a `Wire` and returns an `IWireExtension`; one instance is created per peer connection, **before** the extended handshake so `OnExtendedHandshake` sees the peer's `m` dict.
 
 ```csharp
-// Register before adding torrents — factory receives (swarm, wire), creates one per peer
-client.UseExtension((swarm, wire) => new MyComputeExtension());
-
-// Or on a specific swarm
-swarm.UseExtension((swarm, wire) => new MyComputeExtension());
+// Register on the client - applies to every torrent the client opens.
+client.UseExtension(wire => new MyComputeExtension(wire));
 ```
 
-Create custom extensions by extending `WireExtension`:
+Build extensions by implementing `IWireExtension`:
 
 ```csharp
-public class MyComputeExtension : WireExtension
+public class MyComputeExtension : IWireExtension
 {
-    public override string Name => "sd_compute";
+    private readonly Wire _wire;
+    private bool _peerHasIt;
 
-    public override Task HandleMessageAsync(byte[] payload)
+    public MyComputeExtension(Wire wire) { _wire = wire; }
+
+    public string Name => "sd_compute";
+
+    public void OnHandshake(string infoHash, string peerId, WireExtensions extensions)
     {
-        // Handle incoming messages from peers
-        var msg = ParseMessage(payload);
-        return Task.CompletedTask;
+        // Pre-extended-handshake hook (BEP 3 handshake just landed). Rarely needed.
     }
 
-    public override Dictionary<string, object>? GetHandshakeData()
+    public void OnExtendedHandshake(Dictionary<string, object> handshake)
     {
-        // Include data in BEP 10 handshake (optional)
-        return new() { ["capabilities"] = new List<object> { "gpu", "wasm" } };
+        // BEP 10 - the peer's `m` dict tells us which extensions it speaks.
+        if (handshake.TryGetValue("m", out var mObj) && mObj is Dictionary<string, object> m)
+            _peerHasIt = m.ContainsKey(Name);
     }
 
-    public override void ProcessHandshakeData(Dictionary<string, object> data)
+    public void OnMessage(byte[] buf)
     {
-        // Process peer's handshake data
+        // Inbound payload from the peer for this extension.
+        ProcessIncoming(buf);
     }
 
-    public async Task SendComputeData(byte[] data)
+    public Task SendComputeAsync(byte[] payload)
     {
-        if (!IsSupported) return; // peer doesn't have this extension
-        await SendAsync(data); // sends directly through the wire
+        if (!_peerHasIt) return Task.CompletedTask;
+        // Wire.Extended(name, payload) routes through the BEP 10 mapping the
+        // peer advertised in its `m` dict. The bundled UtPexExtension uses
+        // the same path: `await _wire.Extended("ut_pex", payload);`.
+        return _wire.Extended(Name, payload);
     }
+
+    private void ProcessIncoming(byte[] buf) { /* ... */ }
 }
 ```
 
-Extensions are created per-peer via factory, registered **before** the BEP 10 handshake so `IsSupported` and `RemoteId` are set correctly. Use this for custom P2P protocols on top of the BitTorrent wire (e.g., distributed compute, AI agent communication).
+Use this for custom P2P protocols layered on top of the BitTorrent wire — distributed compute, AI agent communication, custom telemetry. The bundled `UtPexExtension` (BEP 11) and `UtMetadataExtension` (BEP 9) are reference implementations of the same interface.
 
 ## Service Worker — Media Streaming with Seeking
 
@@ -226,7 +233,7 @@ app.MapHuggingFaceProxy(proxy);
 | App | Platform | Features |
 |-----|----------|----------|
 | Blazor WASM Demo | Browser | Full torrent client UI, media streaming with seeking, WebRTC P2P, OPFS persistent storage, seeding, .torrent creation, torrent persistence across reloads |
-| WPF Desktop Demo | Windows | Full torrent client UI, media player with seeking, drag-drop .torrent files, SIPSorcery WebRTC |
+| WPF Desktop Demo | Windows | Full torrent client UI, media player with seeking, drag-drop .torrent files, WebRTC P2P via SpawnDev.RTC (SipSorcery fork). |
 
 Both demos connect to the same trackers and can P2P with each other.
 
@@ -265,24 +272,27 @@ AI models are big. CDNs can't scale when every user downloads the same 2GB model
 
 ```
 Browser Client                    Desktop Client
-+---------------+                 +------------------+
-| WebTorrent    |                 | WebTorrent       |
-| Client        |                 | Client           |
-|               |                 |                  |
-| WebRTC (P2P)<-+------+-------->+ SIPSorcery (P2P) |
-| BlazorJS      |      |         | RTCPeerConnection|
-|               |      |         |                  |
-| OPFS Storage  |      |         | FileChunkStore   |
-+---------------+      |         +------------------+
-        |               |                |
-        v               v                v
-+-------------------------------------------+
-| hub.spawndev.com                          |
-| SpawnDev.RTC.Server (WebSocket signaling) |
-| WebSeedServer (HTTP range fallback)       |
-| HuggingFaceProxy (model CDN cache, SHA-256|
-|   piece hashes for integrity)             |
-+-------------------------------------------+
++----------------+                +-----------------+
+| WebTorrentClient                | WebTorrentClient|
+|                |                |                 |
+| RtcPeer  <-----+----+--------->-+ RtcPeer         |
+|  (BlazorJS     |    |           |  (SipSorcery    |
+|   RTCPeer-     |    |           |   fork; same    |
+|   Connection)  |    |           |   API)          |
+|                |    |           | TcpPeer +/--    |
+|                |    |           | TcpListener<--->| <- mainline peers
+|                |    |           |                 |    (qBittorrent etc.)
+| OPFS storage   |    |           | FileChunkStore  |
++----------------+    |           +-----------------+
+        |             |                  |
+        v             v                  v
++--------------------------------------------+
+| hub.spawndev.com                           |
+| SpawnDev.RTC.Server (WebSocket signaling)  |
+| WebSeedServer (HTTP range fallback)        |
+| HuggingFaceProxy (model CDN cache, SHA-256 |
+|   piece hashes for integrity)              |
++--------------------------------------------+
 ```
 
 ## Documentation
@@ -291,8 +301,13 @@ Browser Client                    Desktop Client
 |-----|-------------|
 | [API Reference](Docs/api.md) | Full API surface: `WebTorrentClient`, `Torrent`, `File`, `TorrentCreator`, `AgentChannel`, wire extensions |
 | [BEP Support](Docs/bep-support.md) | BitTorrent Enhancement Proposal implementation status |
-| [Protocol Reference](Docs/protocol-reference/) | Deep dives on the wire protocol, DHT, trackers, mutable items |
-| [qBittorrent Interop Testing](Docs/qbittorrent-interop.md) | How to run the `interop_test/` scripts against a local qBittorrent Web UI. Covers static binary-compat (shipped), live-swarm (WIP), and multi-instance setup. |
+| [BEP 52 v2 Overview](Docs/bep52.md) | SHA-256 + Merkle-tree torrents, hybrid v1+v2, wire-protocol details |
+| [BEP 52 v2 Walkthrough](Docs/bep52-example.md) | Code samples for creating, parsing, and verifying v2 torrents |
+| [TCP Peer Listener](Docs/tcp-listener.md) | `WebTorrentClientOptions.TcpListenPort` + `AdvertiseTcpListenerToTrackers` for accepting inbound BitTorrent peer-wire connections from mainline clients |
+| [Hash Engine](Docs/hash-engine.md) | `IPieceHashEngine` slot-in for piece verification — default `SystemCryptoPieceHashEngine`, GPU-batched implementations land via a separate package |
+| [Bandwidth Policy](Docs/bandwidth-policy.md) | `BandwidthPolicy` enum + `ApplyBandwidthPolicy(...)` for upload-throttle intent (Unlimited / Conservative / Metered / SeedingDisabled / Custom) |
+| [qBittorrent Interop Testing](Docs/qbittorrent-interop.md) | How to run the `interop_test/` scripts against a local qBittorrent Web UI. Static binary-compat + live-swarm both directions + JS WebTorrent live-swarm all PASSING. |
+| [Protocol Reference](Docs/protocol-reference/) | Deep dives on the wire protocol, DHT, trackers, mutable items (descriptive captures of the JS-WebTorrent reference, useful for protocol implementers) |
 
 For WebRTC signaling architecture (tracker wire protocol, `RoomKey`, running your own tracker) see the [SpawnDev.RTC docs](https://github.com/LostBeard/SpawnDev.RTC/tree/master/SpawnDev.RTC/Docs) - tracker signaling lives in that package as of 3.1.0.
 

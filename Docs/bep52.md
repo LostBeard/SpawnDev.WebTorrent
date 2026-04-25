@@ -107,7 +107,7 @@ hashes:                       <header 48 bytes> [hash_0:32][hash_1:32]...  (leng
 2. Hands the base-layer range + requested proof layers to `MerkleProofBuilder.Build`
 3. Replies with a `hashes` message, or `hash_reject` if we don't hold that root / the request is malformed
 
-Currently served: `base_layer == pieceLayerLevel` (piece-layer hashes for v2-only magnet bootstrap or re-verification). Leaf-level (`base_layer = 0`) requests would require re-hashing piece content from our chunk store - rejected politely rather than stalled.
+Both layers are served: `base_layer == pieceLayerLevel` returns piece-layer hashes (the common case for v2-only magnet bootstrap or re-verification), and `base_layer == 0` returns 16 KiB leaf hashes by re-hashing the corresponding piece content from our chunk store. Malformed or unknown-root requests return `hash_reject` rather than stalling.
 
 ### Issuing a hash_request (client path)
 
@@ -137,7 +137,7 @@ A v2 peer connected to a v1 peer simply never issues `hash_request` against it (
 
 ## Test coverage
 
-All v2 paths are exercised on desktop .NET (NUnit, `SpawnDev.WebTorrent.Tests`) and Blazor WASM (`SpawnDev.WebTorrent.Demo.Shared/WebTorrentTestBase.Bep52V2Tests.cs` + `PlaywrightMultiTest`). The shared-tests mirror ensures browser behavior matches desktop - byte-for-byte for the hashing / encoding / decoding paths, state-for-state for the coordinator.
+All v2 paths are exercised on **both** desktop .NET and Blazor WASM via `WebTorrentTestBase` partials in `SpawnDev.WebTorrent.Demo.Shared` (e.g. `WebTorrentTestBase.Bep52V2Tests.cs`), driven by PlaywrightMultiTest so every test runs through both runtimes. The historical NUnit-only `SpawnDev.WebTorrent.Tests` project was retired 2026-04-23 — every former NUnit test now lives in the shared base class. Browser behavior matches desktop byte-for-byte on the hashing / encoding / decoding paths and state-for-state on the coordinator.
 
 Key tests:
 
@@ -153,14 +153,18 @@ Total BEP 52-specific tests: **~180** across NUnit (desktop) and SpawnDev.UnitTe
 
 ## External-client interop
 
-**JS WebTorrent ↔ SpawnDev.WebTorrent: verified 2026-04-23.** Captain round-tripped content between the official JS WebTorrent library (via his [Blazor WASM wrapper](https://lostbeard.github.io/SpawnDev.BlazorJS.WebTorrents/)) and `SpawnDev.WebTorrent.Demo` through `hub.spawndev.com:44365/announce`. JS-WebTorrent seed → C# demo downloader completed end-to-end, byte-correct, fast. This covers the BEP 3 + BEP 9 + tracker + WebRTC signaling paths against the canonical JS WebTorrent stack.
+All four interop paths PASS as of 2026-04-25:
 
-**libtorrent / qBittorrent v2-peer-wire interop: not yet verified.** JS WebTorrent is predominantly v1 so the above proof doesn't exercise messages 21/22/23 against an external v2-capable client. Plan: `Plans/PLAN-BEP52-External-Interop.md` details a 5-step runbook (byte-level torrent diff against libtorrent reference, qBittorrent drag-drop load test, libtorrent-generated-parses-in-SpawnDev reference test, end-to-end cross-seeding both directions, fixture corpus). Largely manual work; hasn't blocked any production consumer.
+- **JS WebTorrent (v1) ↔ SpawnDev.WebTorrent.** Round-trips between the official JS WebTorrent library and `SpawnDev.WebTorrent.Demo` through `hub.spawndev.com:44365/announce`. Locked by `interop_test/js_webtorrent_liveswarm.cs` (Node.js `webtorrent@^2` + `@roamhq/wrtc` seeds; SpawnDev.WebTorrent C# leeches via local SpawnDev.RTC tracker + WebRTC; 1 MiB SHA-256 byte-identical).
+- **qBittorrent / libtorrent 2.0 (v1 + pure v2 + hybrid) static interop.** `interop_test/qbittorrent_interop.cs` adds the SpawnDev-generated `.torrent` to qBittorrent, force-rechecks, asserts 100% completion + matching v1 / v2 info hashes. All three formats green.
+- **qBittorrent live-swarm forward** (qBittorrent seeds → SpawnDev.WebTorrent leeches via TCP). 1 MiB hybrid torrent SHA-256 byte-identical end-to-end.
+- **qBittorrent live-swarm reverse** (SpawnDev.WebTorrent seeds via `TcpListenerService` → qBittorrent leeches via `addPeers`). 1 MiB hybrid torrent SHA-256 byte-identical end-to-end. Closes `Plans/PLAN-BEP52-External-Interop.md` Step 4 in both directions.
+
+`Plans/PLAN-BEP52-External-Interop.md` carries the full runbook + fixture corpus (4 libtorrent 2.0 reference torrents embedded in `Demo.Shared/InteropFixtures/` + parsed in PlaywrightMultiTest).
 
 ## Known limitations
 
-- **Pure-v2-only multi-file downloads.** Torrents created with `MetaVersion=2, Hybrid=false` and multiple files parse correctly (metadata, file tree, per-file roots, piece layers) but the download engine's global-piece-index model only addresses file 0's piece layer. HuggingFace model torrents + our default creator emit hybrids so this is a rare edge case. Refactor to per-file piece indexing is a Phase 3 followup; detail in `Plans/bep52-phase2-execution.md`.
-- **Serving leaf-level (`base_layer = 0`) hash_requests.** Current seed path only serves `base_layer == pieceLayerLevel` (piece-layer range requests - the practical common case). Leaf-level requests would require re-hashing piece content from the chunk store. Straightforward extension if a use case emerges; peers rarely ask at leaf level because piece-layer hashes are sufficient for full-piece verification.
+- **Pure-v2-only multi-file downloads via the global-piece-index download engine.** Torrents created with `MetaVersion=2, Hybrid=false` and multiple files parse correctly (metadata, file tree, per-file roots, piece layers) and download correctly through the production paths shipped in 3.1.3-rc.20+ (pure-v2 dedup, persist/restore, service-worker streaming, HTTP file browser keyed on `WireInfoHashHex`). The Phase 3 followup ("per-file piece indexing inside the global download engine") was completed for the consumer-visible paths; the only remaining edge is direct global-piece-index API callers, who should use `Torrent.Files[i].ReadAsync` instead.
 
 ## File reference
 

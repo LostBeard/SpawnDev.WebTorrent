@@ -1,5 +1,39 @@
 # Changelog
 
+## 3.1.8 (2026-04-25)
+
+### `TcpListenerService` wired into `WebTorrentClient` as a first-class API
+
+Purely additive on top of 3.1.7 - no behavior change for existing consumers, no breaking changes.
+
+**New API surface:**
+
+- `WebTorrentClient.TcpListener` property (`TcpListenerService?`).
+- `WebTorrentClient.EnsureTcpListenerAsync(port, address)` method - idempotent; mirrors the existing `EnsureDhtAsync` precedent.
+- `WebTorrentClientOptions.TcpListenPort` (`int?`) - `null` = no listener (default, back-compat); `0` = kernel-assigned ephemeral port (read `client.TcpListener.LocalEndPoint.Port` back); `> 0` = bind a specific port.
+- `WebTorrentClientOptions.TcpListenAddress` (`IPAddress?`) - defaults to `IPAddress.Any` so external peers can reach the listener; pass `IPAddress.Loopback` for localhost-only test harnesses.
+- Constructor fires `EnsureTcpListenerAsync` fire-and-forget when `TcpListenPort` is set.
+- `client.DisposeAsync` releases the listening socket so back-to-back tests don't collide on the same port.
+
+```csharp
+// One-liner for a seeder that accepts inbound mainline-client connections:
+await using var client = new WebTorrentClient(new WebTorrentClientOptions
+{
+    TcpListenPort = 0,                   // ephemeral
+    TcpListenAddress = IPAddress.Any,    // external-reachable
+});
+await client.EnsureTcpListenerAsync(0, IPAddress.Any);
+int port = client.TcpListener!.LocalEndPoint.Port;
+```
+
+Mainline-client interop (qBittorrent, libtorrent, Transmission) unchanged - dial in by IP+port and the listener routes by info_hash to the matching torrent.
+
+**New test:** `Desktop_TcpListenerOption_AcceptsInboundLeech` in PlaywrightMultiTest. Two clients on loopback, A seeds via the option, B leeches via direct `TcpPeer.ConnectAsync` to A's kernel-assigned port. Full 64 KiB SHA-256 byte-identical round-trip in ~10s with no peer-discovery sources enabled (deterministic - no public swarm dependency).
+
+**Reverse-direction interop test** (`interop_test/qbittorrent_reverse_liveswarm.cs`) simplified to use the option - drops the manual `TcpListenerService` construction + dispose.
+
+PlaywrightMultiTest full sweep: **951 pass / 0 fail / 16 skip** (+1 from 3.1.7 baseline for the new test). All three interop tests still PASS.
+
 ## 3.1.7 (2026-04-24)
 
 ### Two seeder peer-wire correctness fixes + new `TcpListenerService`

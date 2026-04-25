@@ -14,6 +14,46 @@ public class TcpPeer : SimplePeer
 
     public TcpPeer(bool initiator) : base(initiator, trickle: false) { }
 
+    /// <summary>
+    /// Attach an already-connected <see cref="TcpClient"/> (typically from a
+    /// <see cref="TcpListener"/> accept loop) WITHOUT starting the read loop.
+    /// The remote peer's handshake bytes must NOT have been consumed yet - the
+    /// wire that this peer gets handed to needs to parse them. The caller MUST
+    /// call <see cref="StartReadLoop"/> after wiring the peer into a torrent
+    /// (so OnData has a subscriber by the time the first read fires).
+    ///
+    /// Why split: the kernel TCP buffer already contains the peer's handshake
+    /// at attach time (the listener peeked it). NetworkStream.ReadAsync can
+    /// complete synchronously when data is buffered, which races against the
+    /// caller's torrent.AddPeer + Wire-creation + OnData wire-up. Splitting
+    /// ensures OnData is wired before any data is read off the socket.
+    /// </summary>
+    public Task AttachAsync(TcpClient acceptedClient, CancellationToken ct = default)
+    {
+        if (Destroyed) return Task.CompletedTask;
+        _tcp = acceptedClient;
+        _stream = _tcp.GetStream();
+
+        var remote = (acceptedClient.Client.RemoteEndPoint as System.Net.IPEndPoint);
+        RemoteAddress = remote?.Address.ToString() ?? "";
+        RemotePort = remote?.Port ?? 0;
+        Connected = true;
+
+        _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        EmitConnect();
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Begin reading from the attached socket. Call only after the
+    /// caller has wired up an OnData subscriber - otherwise inbound bytes that
+    /// were already kernel-buffered at <see cref="AttachAsync"/> time can be
+    /// dropped on the floor.</summary>
+    public void StartReadLoop()
+    {
+        if (Destroyed || _cts is null) return;
+        _ = ReadLoopAsync(_cts.Token);
+    }
+
     /// <summary>Connect to a remote TCP peer by address ("ip:port").</summary>
     public async Task ConnectAsync(string address, CancellationToken ct = default)
     {

@@ -96,12 +96,12 @@ public abstract partial class WebTorrentTestBase
     // ── GAP 1: UseExtension(factory) ──
 
     // Sintel magnet - always has active peers. openwebtorrent is the reliable WSS tracker.
+    // hub.spawndev.com intentionally excluded (personal infra, not a Sintel swarm host).
     private const string P2PTestMagnet = "magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Sintel" +
         "&tr=wss%3A%2F%2Ftracker.openwebtorrent.com" +
-        "&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce" +
         "&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F";
 
-    [TestMethod(Timeout = 90000)]
+    [TestMethod(Timeout = 90000, RetryCount = 2)]
     public async Task UseExtension_RegistersAndCreatesExtension()
     {
         // Browser multi-client testing needs cross-window infrastructure (WebWorkerService).
@@ -229,7 +229,7 @@ public abstract partial class WebTorrentTestBase
 
     // ── GAP 4: Torrent.OnWire event ──
 
-    [TestMethod(Timeout = 90000)]
+    [TestMethod(Timeout = 90000, RetryCount = 2)]
     public async Task Torrent_OnWire_FiresOnPeerConnect()
     {
         // Browser multi-client testing needs cross-window infrastructure (WebWorkerService).

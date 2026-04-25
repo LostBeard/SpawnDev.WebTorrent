@@ -5,8 +5,8 @@
 		<LangVersion>latest</LangVersion>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
-		<Version>3.1.4</Version>
-		<PackageReleaseNotes>v3.1.4 stable: Version-sync with SpawnDev.WebTorrent 3.1.4. Transitive dep-bump to carry the SpawnDev.RTC 1.1.4 browser `SetParameters` fix through to consumers with lock files or explicit version pins. No server source changes. See SpawnDev.WebTorrent 3.1.4 release notes.</PackageReleaseNotes>
+		<Version>3.1.7</Version>
+		<PackageReleaseNotes>v3.1.7 stable: Version-sync with SpawnDev.WebTorrent 3.1.7. No source changes in WebTorrent.Server itself. WebTorrent 3.1.7 adds a new `TcpListenerService` for inbound BT peer connections (closes the seed-C# / leech-mainline audit gap) and ships two wire-level correctness fixes that benefit every consumer seeding to a pipelining leecher: `Wire._message` now sends header + data in a single buffer (was two separate writes that could interleave bytes between concurrent `SendPiece` responses, corrupting the wire and tripping mainline-client hash verification), and `TcpPeer.AttachAsync` is split from `StartReadLoop` to avoid a kernel-buffered-handshake drop race. See SpawnDev.WebTorrent 3.1.7 release notes for the full write-up.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>

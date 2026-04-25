@@ -147,37 +147,48 @@ When a need arises to automate this in CI, the right approach is either:
 - Package qBittorrent + its libtorrent into a container and run it as a CI service dependency, OR
 - Use libtorrent directly (no qBittorrent GUI layer) which is what the in-PlaywrightMultiTest interop fixture tests already do (`SpawnDev.WebTorrent.Demo.Shared/InteropFixtures/`).
 
-## JS WebTorrent interop (WIP, scaffold committed)
+## JS WebTorrent interop (PASSING - 2026-04-24)
 
 **Goal:** Node.js `webtorrent@^2` seeder announcing to a SpawnDev.RTC.Server tracker, SpawnDev.WebTorrent C# client leeching via the same tracker + WebRTC peer-wire. Proves real interop with the reference JS WebTorrent stack (the one powering webtorrent.io), not just our own self-consistent swarm.
 
-**Scaffold location:**
+**Status:** PASS - 1 MiB hybrid torrent transferred SHA-256 byte-identical from `webtorrent@^2` (Node.js + `@roamhq/wrtc`) to SpawnDev.WebTorrent C# via real WebRTC datachannel through a local `SpawnDev.RTC.ServerApp` WebSocket tracker. Closes the "Pure JS-WebTorrent live interop" audit gap.
+
+**Files:**
 - `js/package.json` - pulls `webtorrent@^2` + `@roamhq/wrtc` (Node.js WebRTC polyfill, successor to the deprecated `wrtc`).
 - `js/seeder.js` - minimal seeder with stdout protocol: `READY infohash=... magnet=...`, `PEER-CONNECT addr=...`, `PROGRESS uploaded=... peers=...`, `TRACKER-ANNOUNCE`, `WARNING ...`.
-- `js_webtorrent_liveswarm.cs` - C# harness that starts an in-process Kestrel + `UseRtcSignaling("/announce")` tracker, generates a fresh torrent pointing only at that tracker, spawns the Node.js seeder, starts a C# WebTorrentClient, waits for download.
+- `js_webtorrent_liveswarm.cs` - C# harness that spawns `SpawnDev.RTC.ServerApp.exe` as a subprocess on a free port, generates a fresh hybrid torrent pointing only at that tracker, launches the Node.js seeder, starts a C# WebTorrentClient as the leech, waits for download, verifies SHA-256.
 
-**What works:**
-- Standalone JS seeder runs cleanly. `DEBUG=bittorrent-tracker:*` shows WebSocket tracker connection attempts, payload hashing, WebRTC offer generation. Cross-connects to qBittorrent via DHT + public tracker (tracker.openwebtorrent.com) when those are included.
-- C# harness spins up a working local tracker (verified by `TrackerSignalingServer.Rooms.Count` probe).
+**How to run:**
 
-**What's blocked:**
-- Neither the JS seeder nor the C# leech successfully reaches the in-process local tracker. Both announce-URL'd correctly (verified in logs), both have WebRTC support enabled (wrtc top-level + `tracker.wrtc`), but `trackerSignalingServer.ConnectedPeerIds` stays empty throughout the run. Tested with `ws://127.0.0.1:<port>/announce` and confirmed Kestrel accepts the WebSocket upgrade for our own test client. No obvious rejection reason in bittorrent-tracker's debug log - it does a first-attempt socket open, then schedules reconnect at ~137 s with no visible error surfaced. Likely one of:
-   1. bittorrent-tracker silently skips ws:// trackers when a `webrtcSupport` probe fails in some edge case.
-   2. Our tracker's WebSocket upgrade response differs subtly from the tracker.openwebtorrent.com shape that bittorrent-tracker expects.
-   3. Kestrel's in-process setup has a startup race the harness timing doesn't account for.
+```bash
+cd D:\users\tj\Projects\SpawnDev.RTC\SpawnDev.RTC\SpawnDev.RTC.ServerApp
+dotnet build -c Release                          # one-time build of the tracker subprocess target
 
-**Next debug steps:**
-- Stand up `SpawnDev.RTC.ServerApp` in a separate process and point the harness at THAT instead of in-process. Rules out startup races.
-- Log every incoming WebSocket frame on `TrackerSignalingServer.HandleWebSocketAsync` so we can see if JS's connect hits us at all.
-- Try the same harness against the browser Demo (Blazor WASM) + JS seeder via Playwright - known-good path.
-- Patch bittorrent-tracker with console.log of the connect error to see why it thinks the connect failed.
+cd D:\users\tj\Projects\SpawnDev.WebTorrent\SpawnDev.WebTorrent\interop_test\js
+npm install                                      # one-time install of webtorrent + @roamhq/wrtc
 
-**What this test would close:**
-- `PLAN-BEP52-External-Interop.md:23` - "JS WebTorrent is predominantly v1, so the above test almost certainly used v1-encoded torrents. libtorrent 2.0+ / qBittorrent v4.4+ remain as separate cross-client v2-peer-wire checks below." Currently only qBittorrent is automated.
-- Reverse direction (seed-C# / leech-JS): symmetric follow-up once the baseline works.
+cd D:\users\tj\Projects\SpawnDev.WebTorrent\SpawnDev.WebTorrent\interop_test
+dotnet run gen_qbittorrent_test.cs              # one-time payload.bin + torrent generation
+dotnet run js_webtorrent_liveswarm.cs            # the test (fully self-contained after the above)
+```
+
+Expected output (elided):
+
+```
+  JS-WebTorrent LIVE-SWARM PASS
+  1048576 bytes SHA-256 byte-identical (468b2bfd7d7eff3a...)
+  Transport: webtorrent@^2 (Node.js + @roamhq/wrtc) -> SpawnDev.WebTorrent C#
+  Tracker : SpawnDev.RTC.Server (WebSocket, ws://127.0.0.1:<port>/announce)
+```
+
+**The bug this test caught:** Under .NET 10 file-based `dotnet run script.cs` hosts (new in .NET 10), reflection-based JSON serialization is disabled by default. SpawnDev.RTC's `BinaryJsonSerializer` (tracker client outbound) + `TrackerSignalingServer._readOpts` (server inbound) didn't specify a `TypeInfoResolver`, so the very first announce threw `InvalidOperationException: Reflection-based serialization has been disabled for this application.`, which the `_ = _discovery.AnnounceAsync(...)` fire-and-forget wrapper in `Torrent.StartDiscovery` silently swallowed - the C# client never registered with any tracker under file-based/AOT/trimmed hosts. Fixed in SpawnDev.RTC 1.1.6-rc.1 + SpawnDev.RTC.Server 1.0.5-rc.1 by setting `TypeInfoResolver = new DefaultJsonTypeInfoResolver()` explicitly on both options objects. Zero behavior change for reflection-enabled builds; a real fix for anyone running the client under AOT, trimmed, or file-based hosts. An off-by-default production bug that only surfaced because the interop test itself is a file-based script.
+
+**Reverse direction:** Seed-C# / leech-JS is a symmetric follow-up once the reverse setup exists (C# needs a WebRTC listener advertising its presence in the tracker room, which is already what Discovery / WebSocketTracker does for the leech direction - the missing piece is making the C# side seed-ready in the test harness).
 
 ## History
 
 - **2026-04-24 morning:** Static interop shipped (`3792837` on master). All three formats PASS against qBittorrent 5.1.4 / libtorrent 2.0.11.
-- **2026-04-24 evening:** Live-swarm test lands + uncovers a latent `Torrent.AddPeer` bug where already-connected peers never fired handshake. Library fix + test both green. qBittorrent seeds → SpawnDev.WebTorrent downloads → 1 MiB SHA-256 byte-identical in under 3 seconds on localhost. This closes `PLAN-BEP52-External-Interop.md` Step 4 ("live-swarm bi-directional active seeding") from the seed-qBit / leech-C# direction. The reverse direction (seed-C# / leech-qBit) is a symmetric follow-up - C# peer needs a TCP listener so qBittorrent can connect in.
+- **2026-04-24 evening:** Live-swarm test lands + uncovers a latent `Torrent.AddPeer` bug where already-connected peers never fired handshake. Library fix + test both green. qBittorrent seeds → SpawnDev.WebTorrent downloads → 1 MiB SHA-256 byte-identical in under 3 seconds on localhost. This closes `PLAN-BEP52-External-Interop.md` Step 4 ("live-swarm bi-directional active seeding") from the seed-qBit / leech-C# direction.
+- **2026-04-24 night:** Reverse direction PASSING (`interop_test/qbittorrent_reverse_liveswarm.cs`). New `TcpListenerService` accepts inbound BT peer connections (peeks 68-byte handshake via MSG_PEEK, routes by info_hash to matching torrent, hands the still-unconsumed socket to a responder-mode `TcpPeer`). Test drives qBittorrent via WebUI: adds .torrent paused, resumes, POSTs `addPeers` pointing qBT at our listener; qBT dials in, leeches all 16 pieces of the 1 MiB hybrid torrent, file SHA-256 byte-identical end-to-end. Surfaced two latent wire-level correctness bugs along the way: (a) `TcpPeer.AttachAsync` started reading before the caller's `OnData` was wired so kernel-buffered handshake bytes got dropped (fixed by splitting AttachAsync from a new `StartReadLoop`); (b) `Wire._message` was issuing `await _push(header); await _push(data);` as two separate writes which let two concurrent `SendPiece` responses interleave bytes on the underlying transport - mainline clients then failed hash verification on the scrambled blocks (fixed by building the full frame in one buffer + a `SemaphoreSlim` around `_push`). Closes `PLAN-BEP52-External-Interop.md` Step 4 in BOTH directions. SpawnDev.WebTorrent 3.1.7-rc.1 carries the fixes.
 - **2026-04-24 late evening:** JS WebTorrent Node.js harness scaffolded but not yet connecting to the in-process tracker. Committed as WIP with debug notes above.
+- **2026-04-24 (same night):** JS WebTorrent live-swarm **PASSING**. Root cause was a `BinaryJsonSerializer` missing `TypeInfoResolver` under .NET 10 file-based `dotnet run script.cs` hosts - the announce threw on first send, the exception was swallowed by the `_ = _discovery.AnnounceAsync(...)` fire-and-forget, and the client silently never registered. Fix in SpawnDev.RTC 1.1.6-rc.1 + SpawnDev.RTC.Server 1.0.5-rc.1. Test end-to-end: 1 MiB SHA-256 byte-identical from `webtorrent@^2` Node.js seeder to SpawnDev.WebTorrent C# over real WebRTC datachannel in a few seconds on localhost.

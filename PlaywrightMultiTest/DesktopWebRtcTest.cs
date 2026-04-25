@@ -12,6 +12,9 @@ public class DesktopWebRtcTest
     [Test, Timeout(30000)]
     public async Task Desktop_SeedAndAnnounce_TrackerConnects()
     {
+        // Local in-process tracker - verifies the desktop seed path is functional
+        // without a live-infra dependency on hub.spawndev.com.
+        await using var tracker = await LocalTrackerFixture.StartAsync();
         var client = new WebTorrentClient();
         WebTorrentClient.VerboseLogging = true;
 
@@ -22,7 +25,7 @@ public class DesktopWebRtcTest
             new TorrentCreatorOptions
             {
                 PieceLength = 16384,
-                Trackers = new[] { "wss://hub.spawndev.com:44365/announce" },
+                Trackers = new[] { tracker.WsAnnounceUrl },
             });
 
         Console.WriteLine($"InfoHash: {swarm.InfoHashHex}");
@@ -38,7 +41,7 @@ public class DesktopWebRtcTest
         Assert.That(swarm.HasMetadata, Is.True, "Swarm should have metadata");
         Assert.That(swarm.InfoHashHex, Is.Not.Empty, "InfoHash should not be empty");
         Assert.That(swarm.ComputedMagnetUri, Does.Contain("xt=urn:btih:"), "MagnetURI should be valid");
-        Assert.That(swarm.ComputedMagnetUri, Does.Contain("hub.spawndev.com"), "MagnetURI should contain tracker");
+        Assert.That(swarm.ComputedMagnetUri, Does.Contain("127.0.0.1"), "MagnetURI should contain the local tracker address");
 
         // The tracker connection is now awaited in SetMetadataAsync.
         // If we got here, the tracker WebSocket connected and announced successfully.
@@ -52,6 +55,12 @@ public class DesktopWebRtcTest
     [Test, Timeout(60000)]
     public async Task Desktop_TwoClients_DiscoverViaTracker()
     {
+        // In-process local tracker - deterministic and doesn't depend on hub.spawndev.com.
+        // Previously used wss://hub.spawndev.com:44365/announce which 403's desktop C#
+        // clients when the hub has an Origin allowlist set (browser-only abuse protection).
+        // SpawnDev.RTC 1.1.6-rc.2 fixes the allowlist to bypass empty-Origin, but local
+        // tracker is still the right choice for a unit test: no internet, no flake, CI-safe.
+        await using var tracker = await LocalTrackerFixture.StartAsync();
         WebTorrentClient.VerboseLogging = true;
 
         // Seeder
@@ -63,7 +72,7 @@ public class DesktopWebRtcTest
             new TorrentCreatorOptions
             {
                 PieceLength = 16384,
-                Trackers = new[] { "wss://hub.spawndev.com:44365/announce" },
+                Trackers = new[] { tracker.WsAnnounceUrl },
             });
         Console.WriteLine($"Seeder: InfoHash={seederSwarm.InfoHashHex}, Ready={seederSwarm.Ready}");
 
@@ -92,7 +101,7 @@ public class DesktopWebRtcTest
         WebTorrentClient.VerboseLogging = false;
     }
 
-    [Test, Timeout(180000)]
+    [Test, Timeout(180000), Retry(3)]
     public async Task Desktop_Download_Sintel_PeersOnly()
     {
         WebTorrentClient.VerboseLogging = true;
@@ -100,7 +109,6 @@ public class DesktopWebRtcTest
 
         var magnet = "magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Sintel" +
             "&tr=wss%3A%2F%2Ftracker.openwebtorrent.com" +
-            "&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce" +
             "&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F";
 
         var swarm = client.Add(magnet, new AddTorrentOptions { DisableWebSeeds = true });

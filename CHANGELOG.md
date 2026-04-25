@@ -1,5 +1,71 @@
 # Changelog
 
+## 3.1.7 (2026-04-24)
+
+### Two seeder peer-wire correctness fixes + new `TcpListenerService`
+
+**1. `Wire._message` byte-stream corruption fix.**
+
+The old code framed a length-prefixed wire message followed by payload bytes as TWO separate writes:
+
+```csharp
+// BROKEN
+await _push(header);
+await _push(data);
+```
+
+Two `_push` acquisitions of the underlying transport's send lock let two concurrent `_message` calls (e.g. four pipelined `SendPiece` responses to a leecher's request messages) interleave bytes on the wire: `header_A | header_B | data_A | data_B`. Mainline clients (qBittorrent, libtorrent) then failed SHA-1 verification on the scrambled blocks and dropped the connection after one good piece.
+
+Fixed by building the full frame (header + payload) into a single buffer and issuing one `_push` call. Plus a `SemaphoreSlim(1, 1)` around `_push` itself for any future paths that send multiple buffers serially.
+
+This is wire-level and benefits every transport - TCP AND WebRTC. Any consumer seeding to a pipelining leecher (the normal case in BitTorrent) avoids byte-stream corruption.
+
+**Why latent for so long:** every prior live-swarm test had the SpawnDev.WebTorrent client as the LEECH, not the seed. Leechers send tiny `request` / `interested` / `cancel` messages, never concurrent payloads. The bug only surfaces when WE are seeding to a pipelining downloader.
+
+**2. `TcpPeer.AttachAsync` drop-on-floor race.**
+
+When `TcpListenerService` (new, see below) accepted an inbound connection with the BT handshake already kernel-buffered, the old single-method attach started the read loop synchronously inline. `NetworkStream.ReadAsync` resolved immediately with the buffered bytes, `EmitData` fired before the caller had wired up `OnData -> Wire.DataReceived`, and the handshake was lost.
+
+Fixed by splitting:
+- `AttachAsync` - configure the socket, fire `EmitConnect`, return.
+- `StartReadLoop` - actually start reading.
+
+`TcpListenerService` calls `AddPeer` between the two so the wire is constructed and `OnData` is wired before any inbound read fires.
+
+**3. New `TcpListenerService`.**
+
+Accepts inbound BitTorrent peer-wire connections, peeks the 68-byte BT handshake via `MSG_PEEK` (non-destructive kernel-buffer read), routes by info_hash to the matching torrent in the client, hands the still-unconsumed socket to a responder-mode `TcpPeer`. Closes the last open audit item in `PLAN-BEP52-External-Interop.md` Step 4 (reverse direction: seed-C# / leech-qBittorrent).
+
+New `interop_test/qbittorrent_reverse_liveswarm.cs` drives the full live-swarm: SpawnDev.WebTorrent C# seeds, qBittorrent leeches via WebUI `addPeers` API pointing at our listener, 1 MiB hybrid torrent SHA-256 byte-identical end-to-end.
+
+PlaywrightMultiTest full sweep: **950 pass / 0 fail / 16 skip** in 8m 7s. Zero regressions vs 3.1.6.
+
+## 3.1.6 (2026-04-24)
+
+### JS WebTorrent live-swarm interop PASSING
+
+New `interop_test/js_webtorrent_liveswarm.cs` drives a real Node.js `webtorrent@^2` seeder (via `@roamhq/wrtc` - the maintained Node.js WebRTC polyfill) paired against SpawnDev.WebTorrent C# as the leech through a local `SpawnDev.RTC.ServerApp` WebSocket tracker subprocess: 1 MiB hybrid torrent, real WebRTC offer/answer exchange, SHA-256 byte-identical end-to-end. Closes the "Pure JS-WebTorrent live interop" audit gap in `PLAN-BEP52-External-Interop.md`.
+
+### Carries the SpawnDev.RTC 1.1.6 tracker-signaling fixes
+
+3.1.6 pulls in SpawnDev.RTC 1.1.6, which fixes two tracker-signaling bugs:
+
+1. **`TypeInfoResolver`** explicitly set on `BinaryJsonSerializer` (client outbound) and `TrackerSignalingServer._readOpts` (server inbound) so announce serialization works under .NET 10 file-based `dotnet run script.cs` hosts and AOT/trimmed publishes (which disable reflection-based serialization by default). The `_ = _discovery.AnnounceAsync(...)` fire-and-forget in `Torrent.StartDiscovery` was silently swallowing the resulting `InvalidOperationException` on those hosts - clients never registered with any tracker.
+2. **Empty-Origin bypass** on the `AllowedOrigins` allowlist - non-browser clients (desktop C# `ClientWebSocket`, Node.js `ws`, curl) don't send Origin and shouldn't be subject to a browser-origin-abuse gate. Browser-origin enforcement is unchanged.
+
+See SpawnDev.RTC 1.1.6 CHANGELOG for the full root-cause write-up.
+
+### Test infrastructure
+
+- New `LocalTrackerFixture` in PlaywrightMultiTest: spins up an in-process `SpawnDev.RTC.Server` Kestrel host on a free TCP port, used by `Desktop_TwoClients_DiscoverViaTracker` and `Desktop_SeedAndAnnounce_TrackerConnects` (previously depended on hub.spawndev.com - CI-brittle).
+- Sintel magnets in network / interop tests reduced to `tracker.openwebtorrent.com` only (hub doesn't host Sintel peers).
+- `RetryCount = 2` on 7 live-public-swarm tests (`Network_*`, `Interop_LiveSwarm_Sintel_DownloadsPieces`, `Bep46_Loopback_*`, `UseExtension_RegistersAndCreatesExtension`, `Torrent_OnWire_FiresOnPeerConnect`).
+- `Bep46_Loopback_*` ports randomized per invocation to avoid TIME_WAIT collisions on retry / cross-run reuse.
+- Old `JsInteropTest.cs` + `js-interop/` script directory removed; superseded by the new `interop_test/js_webtorrent_liveswarm.cs` harness which uses `@roamhq/wrtc` and a local tracker.
+- SpawnDev.UnitTesting bumped 2.5.0 → 2.5.2 across the solution (for the new `RetryCount` attribute).
+
+PlaywrightMultiTest full sweep: **950 pass / 0 fail / 16 skip** in 7m 43s (was 477 / 5 / 6 on 3.1.5).
+
 ## 3.1.3-rc.26 (2026-04-24)
 
 ### BEP 44/46 server-side completeness

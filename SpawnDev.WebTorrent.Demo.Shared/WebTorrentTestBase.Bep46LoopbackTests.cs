@@ -17,13 +17,18 @@ namespace SpawnDev.WebTorrent.Demo.Shared;
 /// </summary>
 public abstract partial class WebTorrentTestBase
 {
-    [TestMethod]
+    [TestMethod(RetryCount = 2)]
     public async Task Bep46_Loopback_PublishSubscribe_DeliversValue()
     {
         if (OperatingSystem.IsBrowser()) return; // Browser has no UDP
 
-        const int publisherPort = 56810;
-        const int subscriberPort = 56811;
+        // Randomize ports per invocation to avoid port-reuse races on retry +
+        // collisions with any prior testhost instance that hasn't fully released
+        // the socket (Windows TIME_WAIT can hold ports for ~120s under high
+        // retry-driven churn in a single run).
+        var basePort = 40000 + System.Security.Cryptography.RandomNumberGenerator.GetInt32(20000);
+        int publisherPort = basePort;
+        int subscriberPort = basePort + 1;
 
 
         // Ed25519 signer via DotNetCrypto (desktop platform crypto).
@@ -117,13 +122,15 @@ public abstract partial class WebTorrentTestBase
         }
     }
 
-    [TestMethod]
+    [TestMethod(RetryCount = 2)]
     public async Task Bep46_Loopback_Republish_BumpsSequence()
     {
         if (OperatingSystem.IsBrowser()) return;
 
-        const int publisherPort = 56820;
-        const int subscriberPort = 56821;
+        // Randomize ports (see sibling test's comment on port-reuse races).
+        var basePort = 40000 + System.Security.Cryptography.RandomNumberGenerator.GetInt32(20000);
+        int publisherPort = basePort;
+        int subscriberPort = basePort + 1;
 
         var prevVerbose = WebTorrentClient.VerboseLogging;
         WebTorrentClient.VerboseLogging = true;

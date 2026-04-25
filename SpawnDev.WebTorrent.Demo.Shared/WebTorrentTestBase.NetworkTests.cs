@@ -7,9 +7,12 @@ public abstract partial class WebTorrentTestBase
 {
     // tracker.webtorrent.dev is fickle and blocks some origins (confirmed by TJ 2026-04-16).
     // openwebtorrent.com is the most reliable public WSS tracker observed.
+    // hub.spawndev.com is NOT included: these tests verify public Sintel swarm
+    // connectivity, not our own tracker. Using only openwebtorrent narrows the
+    // live-infra dependency to one well-known tracker rather than fanning out to
+    // a personal-infra node that wouldn't host Sintel peers anyway.
     private const string SintelMagnet = "magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Sintel" +
         "&tr=wss%3A%2F%2Ftracker.openwebtorrent.com" +
-        "&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce" +
         "&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F";
 
     private static async Task WaitUntilAsync(Func<bool> condition, int timeoutMs)
@@ -22,7 +25,7 @@ public abstract partial class WebTorrentTestBase
         }
     }
 
-    [TestMethod(Timeout = 90000)]
+    [TestMethod(Timeout = 90000, RetryCount = 2)]
     public async Task Network_TrackerConnect_Announces()
     {
         var client = CreateIsolatedClient();
@@ -35,7 +38,7 @@ public abstract partial class WebTorrentTestBase
         await client.DisposeAsync();
     }
 
-    [TestMethod(Timeout = 150000)]
+    [TestMethod(Timeout = 150000, RetryCount = 2)]
     public async Task Network_MagnetAdd_PeersFound()
     {
         var client = CreateIsolatedClient();
@@ -48,7 +51,7 @@ public abstract partial class WebTorrentTestBase
         await client.DisposeAsync();
     }
 
-    [TestMethod(Timeout = 120000)]
+    [TestMethod(Timeout = 120000, RetryCount = 2)]
     public async Task Network_MagnetAdd_MetadataReceived()
     {
         var client = CreateIsolatedClient();
@@ -63,7 +66,7 @@ public abstract partial class WebTorrentTestBase
         await client.DisposeAsync();
     }
 
-    [TestMethod(Timeout = 240000)]
+    [TestMethod(Timeout = 240000, RetryCount = 2)]
     public async Task Network_LiveSwarm_DownloadsPieces()
     {
         var client = CreateIsolatedClient();

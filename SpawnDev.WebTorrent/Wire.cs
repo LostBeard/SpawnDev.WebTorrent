@@ -233,6 +233,17 @@ public class Wire : IAsyncDisposable
     private bool _extendedHandshakeSent;
     private byte[]? _infoHash;
 
+    // Serializes outbound writes. NetworkStream / DataChannel sends MUST NOT
+    // interleave - byte-level corruption results when two _push calls race
+    // (e.g. four parallel SendPiece responses to a pipelined leecher's
+    // request messages). The race surfaced in the qBittorrent reverse-direction
+    // live-swarm test (C# seed -> qBT leech): four concurrent piece responses
+    // got serialized at the byte stream and qBT received scrambled blocks,
+    // failed hash verification, dropped the connection. Forward path never hit
+    // it because leechers only send tiny request/interested/cancel messages,
+    // not concurrent payloads.
+    private readonly SemaphoreSlim _sendLock = new(1, 1);
+
     // Keep-alive
     private Timer? _keepAliveTimer;
 
@@ -846,21 +857,32 @@ public class Wire : IAsyncDisposable
     private async Task _push(byte[] data)
     {
         if (_finished || SendRaw == null) return;
-        await SendRaw(data);
+        // Serialize via _sendLock - see _sendLock declaration for the rationale.
+        await _sendLock.WaitAsync().ConfigureAwait(false);
+        try { await SendRaw(data).ConfigureAwait(false); }
+        finally { _sendLock.Release(); }
     }
 
     private async Task _message(int id, int[] numbers, byte[]? data)
     {
         int dataLength = data?.Length ?? 0;
-        var header = new byte[5 + (4 * numbers.Length)];
-        WriteInt32BE(header, 0, header.Length + dataLength - 4);
-        header[4] = (byte)id;
+        int headerLen = 5 + (4 * numbers.Length);
+        // Build the full frame in one buffer so concurrent _message calls don't
+        // interleave header and payload bytes between two _push acquisitions of
+        // the send lock. Pre-fix this method did `await _push(header); await
+        // _push(data);` - two separate lock-protected sends - which let two
+        // concurrent SendPiece calls write `header_A | header_B | data_A | data_B`
+        // and produce a corrupt byte stream that qBittorrent then rejected on
+        // hash verification, dropping the connection after one good block.
+        // Caught by the qbittorrent_reverse_liveswarm.cs interop test.
+        var frame = new byte[headerLen + dataLength];
+        WriteInt32BE(frame, 0, headerLen + dataLength - 4);
+        frame[4] = (byte)id;
         for (int i = 0; i < numbers.Length; i++)
-            WriteInt32BE(header, 5 + (4 * i), numbers[i]);
-
-        await _push(header);
+            WriteInt32BE(frame, 5 + (4 * i), numbers[i]);
         if (data != null && data.Length > 0)
-            await _push(data);
+            Buffer.BlockCopy(data, 0, frame, headerLen, data.Length);
+        await _push(frame);
     }
 
     private async Task _sendExtendedHandshake()

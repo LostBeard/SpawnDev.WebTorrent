@@ -208,6 +208,13 @@ public class WebTorrentClient : IAsyncDisposable
         if (opts.StreamHandler != null)
             RegisterStreamHandler(opts.StreamHandler);
 
+        // Auto-start the inbound TCP listener if a port was requested. Bind +
+        // accept-loop start are async so this is fire-and-forget; consumers who
+        // need to know the kernel-assigned port should await EnsureTcpListenerAsync
+        // explicitly instead of relying on the option.
+        if (opts.TcpListenPort.HasValue && !OperatingSystem.IsBrowser())
+            _ = EnsureTcpListenerAsync(opts.TcpListenPort.Value, opts.TcpListenAddress);
+
         Ready = true; // No blocklist to load in C# version
 
         // Register ut_pex extension (BEP 11) — peer exchange for all wires
@@ -354,6 +361,40 @@ public class WebTorrentClient : IAsyncDisposable
         var opts = options ?? new DhtOptions();
         Dht = new DhtDiscovery(opts);
         await Dht.StartAsync(new byte[20], opts.Port, ct);
+    }
+
+    /// <summary>The TCP peer-wire listener, if one is running. Set by
+    /// <see cref="EnsureTcpListenerAsync"/> (or auto-start via
+    /// <see cref="WebTorrentClientOptions.TcpListenPort"/>). Inspect
+    /// <c>TcpListener.LocalEndPoint.Port</c> to get the actually-bound port
+    /// when the requested port was 0 (kernel-assigned ephemeral). Always
+    /// null in the browser - listening sockets are desktop-only.</summary>
+    public TcpListenerService? TcpListener { get; private set; }
+
+    /// <summary>
+    /// Bind a TCP peer-wire listener and start accepting inbound BitTorrent
+    /// connections. Idempotent; calling twice with the same port is a no-op.
+    /// Closes the seed-C# / leech-mainline interop path - mainline clients
+    /// (qBittorrent, libtorrent, Transmission) can dial in by IP+port and
+    /// our listener routes by info_hash to the matching torrent. Desktop
+    /// only - browser cannot bind a listening socket.
+    /// </summary>
+    /// <param name="port">TCP port to bind. 0 = kernel-assigned ephemeral
+    /// (read <see cref="TcpListener"/>.LocalEndPoint.Port back to learn the
+    /// actual port); &gt;0 = specific port.</param>
+    /// <param name="address">Local address to bind. Defaults to
+    /// <see cref="System.Net.IPAddress.Any"/> so external peers can reach
+    /// the listener; pass <see cref="System.Net.IPAddress.Loopback"/> for
+    /// localhost-only test harnesses.</param>
+    public Task EnsureTcpListenerAsync(int port = 0, System.Net.IPAddress? address = null)
+    {
+        if (Destroyed) throw new InvalidOperationException("Client is destroyed");
+        if (OperatingSystem.IsBrowser()) return Task.CompletedTask;
+        if (TcpListener != null) return Task.CompletedTask;
+
+        var bindAddr = address ?? System.Net.IPAddress.Any;
+        TcpListener = new TcpListenerService(this, bindAddr, port);
+        return TcpListener.StartAsync();
     }
 
     public async Task<Torrent?> AddBtpkAsync(byte[] publicKey, byte[]? salt = null,
@@ -779,6 +820,15 @@ public class WebTorrentClient : IAsyncDisposable
             Dht = null;
         }
 
+        // Release the inbound TCP listener if one was started. Same rationale
+        // as DHT: the listening socket leaks across tests if not explicitly
+        // closed and the next bind on the same port fails.
+        if (TcpListener != null)
+        {
+            try { await TcpListener.DisposeAsync(); } catch { }
+            TcpListener = null;
+        }
+
         _http.Dispose();
     }
 }
@@ -810,6 +860,20 @@ public class WebTorrentClientOptions
     public string[]? IceServers { get; set; }
     /// <summary>Default WSS trackers merged into every torrent for peer discovery. Set to empty array to disable.</summary>
     public string[]? DefaultTrackers { get; set; }
+    /// <summary>
+    /// Bind a TCP peer-wire listener at this port and auto-start it on construction.
+    /// `null` (default) = no listener (back-compat). `0` = kernel-assigned ephemeral
+    /// port; read <see cref="WebTorrentClient.TcpListener"/>.LocalEndPoint.Port back to
+    /// learn the actual port. `&gt;0` = bind that specific port. Desktop only -
+    /// browser-side ignores. Lets mainline clients (qBittorrent, libtorrent,
+    /// Transmission) dial in by IP+port to leech torrents we're seeding.
+    /// </summary>
+    public int? TcpListenPort { get; set; }
+    /// <summary>Local address to bind <see cref="TcpListenPort"/> to. Defaults to
+    /// <see cref="System.Net.IPAddress.Any"/> so external peers can reach the
+    /// listener. Pass <see cref="System.Net.IPAddress.Loopback"/> for localhost-only
+    /// test harnesses. Ignored when <see cref="TcpListenPort"/> is null.</summary>
+    public System.Net.IPAddress? TcpListenAddress { get; set; }
     public HttpClient? HttpClient { get; set; }
     /// <summary>Async file system for persistent storage (OPFS in browser, native FS on desktop).</summary>
     public SpawnDev.AsyncFileSystem.IAsyncFS? AsyncFileSystem { get; set; }

@@ -97,10 +97,6 @@ try { if (File.Exists(qbtTargetPath)) File.Delete(qbtTargetPath); } catch { }
 // --- 4. Bring up the C# seeder + listener ---
 Console.WriteLine("Starting SpawnDev.WebTorrent C# seeder ...");
 
-// Pick a free TCP port to listen on.
-int listenPort;
-using (var probe = new TcpListener(IPAddress.Loopback, 0)) { probe.Start(); listenPort = ((IPEndPoint)probe.LocalEndpoint).Port; probe.Stop(); }
-
 await using var client = new WebTorrentClient(new WebTorrentClientOptions
 {
     // Same posture as the forward test - localhost interop, no need to talk
@@ -110,7 +106,20 @@ await using var client = new WebTorrentClient(new WebTorrentClientOptions
     EnableLsd = false,
     EnableUtPex = false,
     DefaultTrackers = Array.Empty<string>(),
+    // Spin up the inbound TCP listener on a kernel-assigned ephemeral port
+    // bound to loopback. The kernel-assigned port comes back via
+    // client.TcpListener.LocalEndPoint.Port once EnsureTcpListenerAsync
+    // completes. Loopback is fine here since qBittorrent and our test are
+    // on the same machine.
+    TcpListenPort = 0,
+    TcpListenAddress = IPAddress.Loopback,
 });
+
+// EnsureTcpListenerAsync runs fire-and-forget from the constructor when
+// TcpListenPort is set. Wait for it to complete so we can read back the
+// actual kernel-assigned port. Calling Ensure again is idempotent.
+await client.EnsureTcpListenerAsync(0, IPAddress.Loopback);
+int listenPort = client.TcpListener!.LocalEndPoint.Port;
 
 var payloadBytes = File.ReadAllBytes(payloadPath);
 // SeedAsync wants the data + a name; we don't pass the .torrent file because
@@ -138,10 +147,10 @@ if (!string.Equals(seedTorrent.WireInfoHashHex, refMeta.WireInfoHashHex, StringC
     return 4;
 }
 
-// Start the inbound TCP listener.
-var listener = new TcpListenerService(client, IPAddress.Loopback, listenPort);
-listener.OnLog += msg => Console.WriteLine(msg);
-await listener.StartAsync();
+// The listener was started by the WebTorrentClient constructor (TcpListenPort
+// option). Wire its log channel here so we still see accept/reject events.
+client.TcpListener.OnLog += msg => Console.WriteLine(msg);
+var listener = client.TcpListener;  // alias used below; client owns lifetime
 Console.WriteLine($"C# listener on 127.0.0.1:{listenPort}");
 
 // --- 5. Add the .torrent to qBittorrent paused, then resume + addPeers ---
@@ -233,7 +242,7 @@ if (finalProgress < 1.0)
 {
     Console.Error.WriteLine($"qBittorrent never reached 100% within deadline. Final progress={finalProgress:P2}, listenerAccepted={listener.AcceptedCount}, listenerRejected={listener.RejectedCount}");
     await DeletePayloadTorrentsAsync(deleteFiles: true);
-    await listener.DisposeAsync();
+    // listener disposal handled by client (await using)
     return 8;
 }
 
@@ -253,7 +262,7 @@ if (downloadedBytes == null)
 {
     Console.Error.WriteLine($"Failed to read {qbtTargetPath} (file locked).");
     await DeletePayloadTorrentsAsync(deleteFiles: true);
-    await listener.DisposeAsync();
+    // listener disposal handled by client (await using)
     return 9;
 }
 
@@ -261,7 +270,7 @@ if (downloadedBytes.Length != payloadBytes.Length)
 {
     Console.Error.WriteLine($"Length mismatch: original={payloadBytes.Length}, qBT wrote {downloadedBytes.Length}");
     await DeletePayloadTorrentsAsync(deleteFiles: true);
-    await listener.DisposeAsync();
+    // listener disposal handled by client (await using)
     return 10;
 }
 
@@ -271,7 +280,7 @@ if (originalHash != downloadedHash)
 {
     Console.Error.WriteLine($"Hash mismatch:\n  original   {originalHash}\n  downloaded {downloadedHash}");
     await DeletePayloadTorrentsAsync(deleteFiles: true);
-    await listener.DisposeAsync();
+    // listener disposal handled by client (await using)
     return 11;
 }
 
@@ -285,7 +294,7 @@ Console.WriteLine($"  Listener  : accepted={listener.AcceptedCount}, rejected={l
 Console.WriteLine("===============================================================");
 
 await DeletePayloadTorrentsAsync(deleteFiles: true);
-await listener.DisposeAsync();
+// listener disposal handled by client (await using)
 return 0;
 
 static string? Env(string k) => Environment.GetEnvironmentVariable(k);

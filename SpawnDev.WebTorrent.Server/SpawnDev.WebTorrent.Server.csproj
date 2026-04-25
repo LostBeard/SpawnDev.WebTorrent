@@ -5,8 +5,8 @@
 		<LangVersion>latest</LangVersion>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
-		<Version>3.1.8</Version>
-		<PackageReleaseNotes>v3.1.8 stable: Version-sync with SpawnDev.WebTorrent 3.1.8. No source changes in WebTorrent.Server itself. WebTorrent 3.1.8 wires the new `TcpListenerService` into `WebTorrentClient` as a first-class API surface (`TcpListenPort` + `TcpListenAddress` options + `EnsureTcpListenerAsync` method + `client.TcpListener` property). See SpawnDev.WebTorrent 3.1.8 release notes.</PackageReleaseNotes>
+		<Version>3.2.0</Version>
+		<PackageReleaseNotes>v3.2.0 stable: Version-sync with SpawnDev.WebTorrent 3.2.0. No source changes in WebTorrent.Server itself. WebTorrent 3.2.0 bundles four additive features on top of 3.1.8: (1) `WebTorrentClientOptions.AdvertiseTcpListenerToTrackers` so HTTP/UDP tracker announces include the listener's port (mainline peers find us automatically via the tracker, no manual addPeers); (2) pluggable `IPieceHashEngine` for future GPU-batched piece verification; (3) `BandwidthPolicy` enum (Unlimited/Conservative/Metered/SeedingDisabled/Custom) + `WebTorrentClient.ApplyBandwidthPolicy` runtime knob; (4) full `Docs/tcp-listener.md` covering TcpListener + tracker advertising + port-forwarding/NAT setup. SipSorcery fork: `MediaStreamTrack.StreamStatus` setter widened from internal to public. Zero behavior change for consumers who don't opt in. See SpawnDev.WebTorrent 3.2.0 release notes.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>

@@ -62,8 +62,15 @@ using (var ws = new ClientWebSocket())
     try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "smoke-done", default); } catch { }
 }
 
-// --- 3. Hostile Origin should still 403. ---
-Console.WriteLine($"[hub-smoke] WSS upgrade WITH hostile Origin (browser-malicious) ...");
+// --- 3. Origin posture matches the hub's reported config. ---
+//      hub.spawndev.com runs with the Origin allowlist DISABLED as of 2026-04-25
+//      (the only real abuse gate is TrackerGated TURN; signaling is open by design,
+//      matching the public-tracker convention). The allowlist code stays in
+//      SpawnDev.RTC.Server for any deployment that wants browser-side gating -
+//      it's just opt-in via env var instead of always-on. So this check adapts:
+//        - allowlistEnabled = true  -> hostile Origin must 403 (legacy hub posture)
+//        - allowlistEnabled = false -> hostile Origin must connect (current hub posture)
+Console.WriteLine($"[hub-smoke] WSS upgrade WITH hostile Origin (Origin posture check) ...");
 using (var ws = new ClientWebSocket())
 {
     ws.Options.SetRequestHeader("Origin", "https://evil.example.org");
@@ -79,18 +86,32 @@ using (var ws = new ClientWebSocket())
         Console.Error.WriteLine($"  FAIL: unexpected error type: {ex.GetType().Name}: {ex.Message}");
         return 4;
     }
-    if (!threw)
+
+    if (allowlistEnabled)
     {
-        Console.Error.WriteLine($"  FAIL: hostile Origin should have been rejected (state={ws.State})");
-        return 5;
+        if (!threw)
+        {
+            Console.Error.WriteLine($"  FAIL: allowlist enabled but hostile Origin connected anyway (state={ws.State})");
+            return 5;
+        }
+        Console.WriteLine($"  OK: allowlist enabled, hostile Origin rejected as expected");
     }
-    Console.WriteLine($"  OK: hostile Origin rejected (browser-abuse protection still active)");
+    else
+    {
+        if (threw || ws.State != WebSocketState.Open)
+        {
+            Console.Error.WriteLine($"  FAIL: allowlist disabled but hostile Origin was rejected (threw={threw}, state={ws.State})");
+            return 5;
+        }
+        Console.WriteLine($"  OK: allowlist disabled, hostile Origin accepted (TURN gate still requires tracker session)");
+        try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "smoke-done", default); } catch { }
+    }
 }
 
 Console.WriteLine();
 Console.WriteLine("═══════════════════════════════════════════════════════════════");
 Console.WriteLine($"  HUB SMOKE PASS - {HubBase}");
 Console.WriteLine($"  Hub version : {version}");
-Console.WriteLine($"  Allowlist   : enabled, browser-only (empty Origin bypassed)");
+Console.WriteLine($"  Allowlist   : {(allowlistEnabled ? "ENABLED, browser-only (empty Origin bypassed)" : "DISABLED (signaling open; TURN still tracker-gated)")}");
 Console.WriteLine("═══════════════════════════════════════════════════════════════");
 return 0;

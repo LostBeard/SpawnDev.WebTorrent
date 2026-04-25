@@ -41,7 +41,13 @@ Environment=ASPNETCORE_ENVIRONMENT=Production
 Environment=DOTNET_CLI_HOME=/tmp
 
 # --- Origin allowlist (basic abuse protection on /announce) ---
-Environment=RTC__AllowedOrigins=https://hub.spawndev.com;https://*.spawndev.com
+# DISABLED for hub.spawndev.com 2026-04-25. Hub is intentionally open to any
+# browser origin (matches public-tracker convention - openwebtorrent.com etc).
+# Real abuse protection is the TrackerGated TURN below: anyone can use the
+# signaling, but TURN bandwidth requires a live tracker WebSocket session
+# under a matching peerId. Empty/unset RTC__AllowedOrigins means "no allowlist";
+# uncomment to re-enable on this or any future deployment.
+# Environment=RTC__AllowedOrigins=https://hub.spawndev.com;https://*.spawndev.com
 
 # --- Embedded STUN/TURN server (RFC 5766) ---
 Environment=RTC__StunTurn__Enabled=true

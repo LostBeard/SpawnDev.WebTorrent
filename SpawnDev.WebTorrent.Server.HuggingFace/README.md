@@ -81,16 +81,18 @@ The HuggingFace hostname (`huggingface.co`) is a hardcoded upstream — the prox
 app.MapHuggingFaceProxy(new HuggingFaceProxy(opts));
 
 // Client side (Blazor WASM, using SpawnDev.WebTorrent)
-var magnet = await Http.GetStringAsync(
+var magnetJson = await Http.GetFromJsonAsync<MagnetResult>(
     $"https://your-server/magnet/Xenova/whisper-tiny/onnx/encoder_model.onnx");
-var torrent = await Client.AddAsync(magnet);
-await foreach (var piece in torrent.Files[0].StreamAsync())
-{
-    // Pieces arrive from peers AND from the HTTP web seed (your server) at once.
-}
+var torrent = await Client.AddAsync(magnetJson!.MagnetUri);
+var bytes = await torrent.Files[0].ReadAsync(0, (int)torrent.Files[0].Length);
+// Pieces arrive from peers AND from the HTTP web seed (your server) in parallel.
+
+record MagnetResult(string MagnetUri, string RepoId, string FilePath, string WebSeed);
 ```
 
 The first browser to load a model fills the cache; every subsequent browser participates in the swarm.
+
+**Full end-to-end walkthrough** (both sides — including service-worker streaming, status polling, ONNX Runtime integration, and live `hub.spawndev.com` examples): [`Docs/huggingface.md`](../Docs/huggingface.md) in the WebTorrent project.
 
 ## Production notes
 

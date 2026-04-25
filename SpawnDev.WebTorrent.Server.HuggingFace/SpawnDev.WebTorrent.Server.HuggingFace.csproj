@@ -5,11 +5,30 @@
 		<LangVersion>latest</LangVersion>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
-		<Description>HuggingFace CDN proxy for SpawnDev.WebTorrent.Server. Fetches model files from HuggingFace, caches locally, creates torrents, and serves as web seed. Optional extension — server works without it.</Description>
-		<Authors>Todd Tanner</Authors>
-		<PackageId>SpawnDev.WebTorrent.Server.HuggingFace</PackageId>
+		<Version>3.2.0</Version>
+		<PackageReleaseNotes>v3.2.0 stable: Version-sync with SpawnDev.WebTorrent + SpawnDev.WebTorrent.Server 3.2.0. No source changes in WebTorrent.Server.HuggingFace itself. The HuggingFace proxy continues to serve model files from HuggingFace's CDN with local caching, automatic torrent generation, and per-model stats. See SpawnDev.WebTorrent 3.2.0 release notes for the underlying client / server changes (TCP listener tracker advertising, pluggable IPieceHashEngine, BandwidthPolicy enum, SipSorcery fork StreamStatus public setter).</PackageReleaseNotes>
+		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
+		<GenerateDocumentationFile>true</GenerateDocumentationFile>
+		<EmbedAllSources>true</EmbedAllSources>
+		<DebugType>Embedded</DebugType>
+		<NoWarn>$(NoWarn);CS1591</NoWarn>
+		<Title>SpawnDev.WebTorrent.Server.HuggingFace</Title>
+		<Authors>LostBeard</Authors>
+		<Description>HuggingFace CDN proxy extension for SpawnDev.WebTorrent.Server. Fetches model files from HuggingFace's CDN on demand, caches locally, generates SHA-256 .torrent files, and serves as a BEP 17/19 web seed. Adds per-model request stats, LRU cache eviction, and configurable disk-headroom guards. Optional extension - SpawnDev.WebTorrent.Server works without it.</Description>
+		<PackageProjectUrl>https://github.com/LostBeard/SpawnDev.WebTorrent</PackageProjectUrl>
+		<PackageReadmeFile>README.md</PackageReadmeFile>
 		<PackageLicenseExpression>MIT</PackageLicenseExpression>
+		<PackageId>SpawnDev.WebTorrent.Server.HuggingFace</PackageId>
+		<RepositoryUrl>https://github.com/LostBeard/SpawnDev.WebTorrent.git</RepositoryUrl>
+		<RepositoryType>git</RepositoryType>
+		<PackageTags>BitTorrent;WebTorrent;HuggingFace;P2P;ModelDelivery;MachineLearning;ASP.NET;WebSeed</PackageTags>
+		<NoPackageAnalysis>true</NoPackageAnalysis>
+		<IsPackable>true</IsPackable>
 	</PropertyGroup>
+
+	<ItemGroup>
+		<None Include="README.md" Pack="true" PackagePath="\" />
+	</ItemGroup>
 
 	<ItemGroup>
 		<ProjectReference Include="..\SpawnDev.WebTorrent.Server\SpawnDev.WebTorrent.Server.csproj" />

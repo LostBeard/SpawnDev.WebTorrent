@@ -306,6 +306,7 @@ Browser Client                    Desktop Client
 | [TCP Peer Listener](Docs/tcp-listener.md) | `WebTorrentClientOptions.TcpListenPort` + `AdvertiseTcpListenerToTrackers` for accepting inbound BitTorrent peer-wire connections from mainline clients |
 | [Hash Engine](Docs/hash-engine.md) | `IPieceHashEngine` slot-in for piece verification — default `SystemCryptoPieceHashEngine`, GPU-batched implementations land via a separate package |
 | [Bandwidth Policy](Docs/bandwidth-policy.md) | `BandwidthPolicy` enum + `ApplyBandwidthPolicy(...)` for upload-throttle intent (Unlimited / Conservative / Metered / SeedingDisabled / Custom) |
+| [Service Worker](Docs/service-worker.md) | `webtorrent-sw.js` deep dive — Cross-Origin-Isolation headers, `/webtorrent/{hash}/{fileIdx}` streaming, MessageChannel protocol, video seeking |
 | [qBittorrent Interop Testing](Docs/qbittorrent-interop.md) | How to run the `interop_test/` scripts against a local qBittorrent Web UI. Static binary-compat + live-swarm both directions + JS WebTorrent live-swarm all PASSING. |
 | [Protocol Reference](Docs/protocol-reference/) | Deep dives on the wire protocol, DHT, trackers, mutable items (descriptive captures of the JS-WebTorrent reference, useful for protocol implementers) |
 

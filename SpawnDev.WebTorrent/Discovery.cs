@@ -20,6 +20,13 @@ public class Discovery : IAsyncDisposable
     private readonly Func<bool, SimplePeer> _createPeerFunc;
     private readonly HttpClient _http;
 
+    /// <summary>Port advertised on the most recent explicit announce. The
+    /// tracker-scheduled re-announce callbacks read this so the BEP 3
+    /// <c>port=</c> field stays consistent across the announce cycle (otherwise
+    /// the first announce would advertise our TcpListener and every periodic
+    /// follow-up would advertise port 0).</summary>
+    private int _lastAdvertisedPort;
+
     // ========================
     // EVENTS
     // ========================
@@ -63,7 +70,7 @@ public class Discovery : IAsyncDisposable
                 Action announceHandler = () =>
                 {
                     if (Destroyed) return;
-                    _ = tracker.AnnounceAsync(infoHash, new AnnounceOptions(), peerId);
+                    _ = tracker.AnnounceAsync(infoHash, new AnnounceOptions { Port = _lastAdvertisedPort }, peerId);
                     OnTrackerAnnounce?.Invoke();
                 };
                 tracker.OnAnnounce += announceHandler;
@@ -77,7 +84,7 @@ public class Discovery : IAsyncDisposable
                 tracker.OnWarning += (msg) => OnWarning?.Invoke(msg);
                 tracker.OnAnnounce += () =>
                 {
-                    _ = tracker.AnnounceAsync(new AnnounceOptions());
+                    _ = tracker.AnnounceAsync(new AnnounceOptions { Port = _lastAdvertisedPort });
                     OnTrackerAnnounce?.Invoke();
                 };
                 _httpTrackers.Add(tracker);
@@ -109,6 +116,11 @@ public class Discovery : IAsyncDisposable
         if (Destroyed) return;
         opts ??= new AnnounceOptions();
 
+        // Capture the advertised port so periodic tracker-scheduled re-announces
+        // (HttpTracker._announceTimer, WebSocketTracker.OnAnnounce) keep
+        // advertising the same port as the initial AnnounceAsync call.
+        _lastAdvertisedPort = opts.Port;
+
         var tasks = new List<Task>();
         foreach (var t in _wsTrackers)
             tasks.Add(AnnounceWithIsolation(() => t.AnnounceAsync(InfoHash, opts, PeerId), $"ws:{t.AnnounceUrl}"));
@@ -117,7 +129,15 @@ public class Discovery : IAsyncDisposable
         foreach (var t in _udpTrackers)
         {
             if (!t.IsConnected)
-                tasks.Add(AnnounceWithIsolation(() => t.StartAsync(InfoHash, 6881), "udp"));
+            {
+                // 6881 default = classic BitTorrent. opts.Port > 0 means we have
+                // a TcpListenerService and want trackers to put us in their
+                // compact peer list at our actual port. The reannounce loop
+                // inside UdpTrackerClient reuses _currentPort, so this single
+                // call locks the advertised port for the lifetime of the tracker.
+                var advertisePort = opts.Port > 0 ? opts.Port : 6881;
+                tasks.Add(AnnounceWithIsolation(() => t.StartAsync(InfoHash, advertisePort), "udp"));
+            }
         }
 
         await Task.WhenAll(tasks);

@@ -1,5 +1,66 @@
 # Changelog
 
+## 3.2.0 (2026-04-25)
+
+First minor cut since 3.1.0. Bundles five additive features on top of 3.1.7's wire-level seeder correctness fix. Zero behavior change for consumers who don't opt in to any of the new surfaces; existing 3.1.x code keeps running unchanged.
+
+### 1. `TcpListenerService` first-class API + tracker advertising
+
+The 3.1.8 internal cut wired `TcpListenerService` into `WebTorrentClient` as a first-class API with `WebTorrentClientOptions.TcpListenPort` / `TcpListenAddress` and `EnsureTcpListenerAsync(port, address)`. 3.2.0 keeps that surface and adds tracker advertising on top.
+
+**New: `WebTorrentClientOptions.AdvertiseTcpListenerToTrackers`** (default `false`, opt-in). When enabled AND a `TcpListener` is bound, every HTTP / UDP tracker announce includes the listener's actual port in the BEP 3 `port=` field instead of the legacy hardcoded `0` / `6881`. Trackers put us in their compact peer list and mainline peers find us automatically.
+
+```csharp
+await using var client = new WebTorrentClient(new WebTorrentClientOptions
+{
+    TcpListenPort = 51413,
+    AdvertiseTcpListenerToTrackers = true,   // mainline peers can find us via tracker
+});
+```
+
+WebSocket trackers (WebRTC signaling) are unaffected - their peer-pairing model is SDP-based, not IP+port-based. Inspect the runtime decision via `WebTorrentClient.AdvertisedTcpPort` (returns 0 when not advertising; the actual listener port when on).
+
+**Implementation:** new `Port` field on `AnnounceOptions`; `HttpTracker.AnnounceAsync` reads `opts.Port` (replaces hardcoded `&port=0`); `Discovery.AnnounceAsync` propagates the port to UDP / WebSocket trackers; `Discovery._lastAdvertisedPort` keeps the value consistent across periodic re-announces (otherwise the first announce would advertise our port and every periodic follow-up would silently revert).
+
+Full doc: [`Docs/tcp-listener.md`](SpawnDev.WebTorrent/Docs/tcp-listener.md). Locked by `Desktop_AdvertiseTcpListenerToTrackers_PutsListenerPortInAnnounce` (stub HttpListener captures the announce URL and asserts the port field) and `Desktop_AdvertiseTcpListenerToTrackers_DefaultIsOff` (back-compat default).
+
+### 2. Pluggable piece-hash engine — GPU acceleration ready
+
+New `IPieceHashEngine` interface with `Sha1`, `Sha256`, and `BatchSha256`. Default = `SystemCryptoPieceHashEngine` (System.Security.Cryptography, byte-identical to 3.1.x). Slot-in via `WebTorrentClientOptions.PieceHashEngine` and / or `WebTorrentClient.PieceHashEngine` property.
+
+**Why pluggable:** verifying every piece of a 100 GB torrent is 25,000+ independent SHA-256 calls. Batching them through ILGPU on a desktop GPU (CUDA / OpenCL / WebGPU on browser) can be ~10-30× faster than sequential CPU. `BatchSha256(IReadOnlyList<ReadOnlyMemory<byte>>)` is the API that future GPU implementations will dispatch as one kernel batch. SpawnDev.WebTorrent intentionally does NOT take a dependency on SpawnDev.ILGPU - the GPU engine ships as a separate package (`SpawnDev.WebTorrent.GpuHash`, planned).
+
+The v1 / Phase-1 piece-verification path (`Torrent.VerifyPieceHash` flat SHA-256 / SHA-1 case) routes through the engine. The v2 Merkle path still uses `MerkleHasher` directly - integration follows in a future cut.
+
+Locked by `Desktop_PieceHashEngine_RoutesThroughCustomEngine` (counting-engine wrapper proves the slot-in works) and `Desktop_PieceHashEngine_DefaultsToSystemCrypto`.
+
+### 3. Bandwidth policy
+
+New `BandwidthPolicy` enum: `Unlimited` (default, -1 bytes/sec), `Conservative` (256 KiB/sec), `Metered` (64 KiB/sec), `SeedingDisabled` (0, paused), `Custom` (paired with explicit `UploadLimit`). Set via `WebTorrentClientOptions.BandwidthPolicy`; flip at runtime via `WebTorrentClient.ApplyBandwidthPolicy(policy)`.
+
+```csharp
+await using var client = new WebTorrentClient(new WebTorrentClientOptions
+{
+    BandwidthPolicy = BandwidthPolicy.Metered,   // 64 KiB/sec ceiling
+});
+// ...later, on a wired connection again:
+client.ApplyBandwidthPolicy(BandwidthPolicy.Unlimited);
+```
+
+Explicit `UploadLimit >= 0` always wins over the policy - the policy is the convenience layer for callers who want to say "be reasonable on a metered connection" without picking a number. `BandwidthPolicy.AutoDetect()` exists today as a hook (returns `Unlimited` until platform-specific signals are wired up - WinRT `IsConnectionCostMetered`, browser `navigator.connection.saveData`, NetworkInterface heuristics).
+
+Locked by `Desktop_BandwidthPolicy_AppliesToUploadRateLimiter`, `_ExplicitUploadLimitWins`, and `_ApplyAtRuntimeSwitchesRate`.
+
+### 4. SipSorcery fork: `MediaStreamTrack.StreamStatus` public setter
+
+The bundled SipSorcery fork's `MediaStreamTrack.StreamStatus` setter is widened from `internal` to `public`. Consumers can now flip direction post-construction (e.g. `RecvOnly` → `SendRecv` after a remote DTLS handshake completes) without reflection or track recreation. Strict superset of the upstream surface - existing `internal` callers continue to work, public callers see what was already there.
+
+Logged in [`UPSTREAM_BACKLOG.md`](SpawnDev.RTC/Src/sipsorcery/UPSTREAM_BACKLOG.md) for eventual upstream PR. Locked by `MediaStreamTrack_StreamStatus_PublicSetterWorks` in `SpawnDev.RTC.DemoConsole.UnitTests.DesktopForkApiTests` (the test simply uses the setter from outside the SIPSorcery assembly - if visibility ever regresses to `internal`, the test stops compiling, which is the signal we want).
+
+### Test summary
+
+8 new PlaywrightMultiTest tests across the five surfaces. All shipped tests + interop matrix (qBittorrent live-swarm both directions, JS WebTorrent live-swarm via local SpawnDev.RTC tracker) green.
+
 ## 3.1.8 (2026-04-25)
 
 ### `TcpListenerService` wired into `WebTorrentClient` as a first-class API

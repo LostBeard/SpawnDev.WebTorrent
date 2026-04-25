@@ -11,6 +11,11 @@ namespace SpawnDev.WebTorrent;
 /// </summary>
 public partial class Torrent : IAsyncDisposable
 {
+    // Fallback hash engine for the rare path where _client is null (parser
+    // unit tests, in-memory torrent reconstruction without a client). Real
+    // production paths run with _client set.
+    private static readonly IPieceHashEngine _defaultEngine = new SystemCryptoPieceHashEngine();
+
     // ========================
     // STATE (match JS torrent properties)
     // ========================
@@ -777,6 +782,10 @@ public partial class Torrent : IAsyncDisposable
         {
             Event = "started",
             Left = Math.Max(Length - Downloaded, 0),
+            // Advertise our TCP listener port to mainline trackers so other
+            // clients can dial us in. 0 if no advertising enabled / no listener
+            // bound; keeps prior behavior on the legacy code path.
+            Port = _client.AdvertisedTcpPort,
         });
 
         // BEP 27: Private torrents MUST NOT use DHT, PEX, or LSD.

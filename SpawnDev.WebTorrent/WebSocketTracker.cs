@@ -352,6 +352,17 @@ public class AnnounceOptions
     public long Left { get; set; }
     public string? Event { get; set; }
     public int Numwant { get; set; } = 10; // JS: MAX_ANNOUNCE_PEERS = 10
+    /// <summary>
+    /// TCP listener port to advertise to the tracker. Mainline trackers
+    /// (HTTP/UDP) include this in their compact peer list so other clients can
+    /// dial in by IP+port. <c>0</c> = no TCP listener (default; legacy behavior
+    /// where <see cref="HttpTracker"/> hardcoded <c>port=0</c> and
+    /// <see cref="UdpTrackerClient"/> hardcoded <c>6881</c>). WebRTC tracker
+    /// signaling ignores this field. Set automatically by <see cref="Torrent"/>
+    /// when <see cref="WebTorrentClientOptions.AdvertiseTcpListenerToTrackers"/>
+    /// is true and a <see cref="TcpListenerService"/> is running.
+    /// </summary>
+    public int Port { get; set; }
 }
 
 public class TrackerUpdate

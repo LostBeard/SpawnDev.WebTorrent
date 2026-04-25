@@ -50,7 +50,10 @@ public class HttpTracker : IAsyncDisposable
         sb.Append(AnnounceUrl.Contains('?') ? '&' : '?');
         sb.Append("info_hash=").Append(UrlEncodeBytes(_infoHash));
         sb.Append("&peer_id=").Append(UrlEncodeBytes(_peerId));
-        sb.Append("&port=0");
+        // BEP 3: port the client is listening on for incoming peers. 0 = no
+        // listener (we leech-only); >0 advertises our TcpListenerService so
+        // other peers can dial us by IP+port and leech.
+        sb.Append("&port=").Append(opts.Port);
         sb.Append("&uploaded=").Append(opts.Uploaded);
         sb.Append("&downloaded=").Append(opts.Downloaded);
         sb.Append("&left=").Append(opts.Left);

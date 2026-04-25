@@ -96,6 +96,39 @@ public class WebTorrentClient : IAsyncDisposable
     /// <summary>Portable crypto for Ed25519 operations (BEP 44/46). Null if not configured.</summary>
     public IPortableCrypto? Crypto { get; set; }
 
+    /// <summary>
+    /// Hash engine used by piece verification. Defaults to
+    /// <see cref="SystemCryptoPieceHashEngine"/> (System.Security.Cryptography,
+    /// hardware-accelerated SHA-NI on modern CPUs). Replace with a GPU-backed
+    /// engine (e.g. <c>SpawnDev.WebTorrent.GpuHash</c> when shipped) for
+    /// recheck-heavy workloads where amortized GPU dispatch wins on large
+    /// torrents.
+    /// </summary>
+    public IPieceHashEngine PieceHashEngine { get; set; } = new SystemCryptoPieceHashEngine();
+
+    /// <summary>
+    /// Active upload bandwidth policy. Mirrors
+    /// <see cref="WebTorrentClientOptions.BandwidthPolicy"/>; mutating this
+    /// property alone does NOT retroactively change <c>UploadRateLimiter.Rate</c>.
+    /// Use <see cref="ApplyBandwidthPolicy(BandwidthPolicy)"/> to update both at
+    /// once. Surfaces the operator's intent for UI / telemetry.
+    /// </summary>
+    public BandwidthPolicy BandwidthPolicy { get; set; } = BandwidthPolicy.Unlimited;
+
+    /// <summary>
+    /// Apply <paramref name="policy"/> to <see cref="UploadRateLimiter.Rate"/>
+    /// at runtime. Updates <see cref="BandwidthPolicy"/> simultaneously so the
+    /// two can't drift. Pass <see cref="BandwidthPolicy.Custom"/> only if
+    /// you're also calling <see cref="ThrottleUpload"/> with the exact rate -
+    /// otherwise it's a no-op (the existing rate stays).
+    /// </summary>
+    public void ApplyBandwidthPolicy(BandwidthPolicy policy)
+    {
+        BandwidthPolicy = policy;
+        if (policy != BandwidthPolicy.Custom)
+            UploadRateLimiter.Rate = policy.ToUploadBytesPerSec();
+    }
+
     /// <summary>Async file system for persistent storage.</summary>
     public SpawnDev.AsyncFileSystem.IAsyncFS? AsyncFileSystem { get; set; }
 
@@ -197,7 +230,15 @@ public class WebTorrentClient : IAsyncDisposable
         if (opts.IceServers != null) IceServers = opts.IceServers;
         if (opts.DefaultTrackers != null) DefaultTrackers = opts.DefaultTrackers;
         if (opts.DownloadLimit >= 0) DownloadRateLimiter.Rate = opts.DownloadLimit;
-        if (opts.UploadLimit >= 0) UploadRateLimiter.Rate = opts.UploadLimit;
+        // UploadLimit (explicit bytes/sec) wins over BandwidthPolicy when set
+        // (>= 0). Otherwise the policy translates to a rate via the helper -
+        // Unlimited stays at -1 (legacy default), Conservative/Metered apply
+        // their ceilings, SeedingDisabled pins rate=0.
+        if (opts.UploadLimit >= 0)
+            UploadRateLimiter.Rate = opts.UploadLimit;
+        else
+            UploadRateLimiter.Rate = opts.BandwidthPolicy.ToUploadBytesPerSec();
+        BandwidthPolicy = opts.BandwidthPolicy;
         if (opts.Blocklist != null) foreach (var ip in opts.Blocklist) Blocklist.Add(ip);
 
         _http = opts.HttpClient ?? new HttpClient();
@@ -214,6 +255,8 @@ public class WebTorrentClient : IAsyncDisposable
         // explicitly instead of relying on the option.
         if (opts.TcpListenPort.HasValue && !OperatingSystem.IsBrowser())
             _ = EnsureTcpListenerAsync(opts.TcpListenPort.Value, opts.TcpListenAddress);
+        AdvertiseTcpListenerToTrackers = opts.AdvertiseTcpListenerToTrackers;
+        if (opts.PieceHashEngine != null) PieceHashEngine = opts.PieceHashEngine;
 
         Ready = true; // No blocklist to load in C# version
 
@@ -370,6 +413,31 @@ public class WebTorrentClient : IAsyncDisposable
     /// when the requested port was 0 (kernel-assigned ephemeral). Always
     /// null in the browser - listening sockets are desktop-only.</summary>
     public TcpListenerService? TcpListener { get; private set; }
+
+    /// <summary>
+    /// Whether tracker announces should advertise our <see cref="TcpListener"/>
+    /// port. When <c>true</c> AND a listener is bound, every HTTP/UDP tracker
+    /// announce includes the listener's actual port in the BEP 3 <c>port=</c>
+    /// field; trackers then put us in their compact peer list and other
+    /// clients dial us in. Mirrors
+    /// <see cref="WebTorrentClientOptions.AdvertiseTcpListenerToTrackers"/>;
+    /// can be flipped at runtime.
+    /// </summary>
+    public bool AdvertiseTcpListenerToTrackers { get; set; }
+
+    /// <summary>The port to advertise to HTTP/UDP trackers, or 0 if no
+    /// advertising should happen. Returns 0 in the browser, when no listener
+    /// is bound, or when <see cref="AdvertiseTcpListenerToTrackers"/> is false.
+    /// Used by <see cref="Torrent"/> at announce time.</summary>
+    public int AdvertisedTcpPort
+    {
+        get
+        {
+            if (!AdvertiseTcpListenerToTrackers) return 0;
+            if (TcpListener == null) return 0;
+            return TcpListener.LocalEndPoint.Port;
+        }
+    }
 
     /// <summary>
     /// Bind a TCP peer-wire listener and start accepting inbound BitTorrent
@@ -874,6 +942,20 @@ public class WebTorrentClientOptions
     /// listener. Pass <see cref="System.Net.IPAddress.Loopback"/> for localhost-only
     /// test harnesses. Ignored when <see cref="TcpListenPort"/> is null.</summary>
     public System.Net.IPAddress? TcpListenAddress { get; set; }
+    /// <summary>
+    /// When <c>true</c> AND a <see cref="WebTorrentClient.TcpListener"/> is
+    /// running, every HTTP / UDP tracker announce includes the listener's
+    /// actual port in the BEP 3 <c>port=</c> field so trackers put us in their
+    /// compact peer list and other clients (mainline + ours) can dial in.
+    /// Default <c>false</c> = legacy behavior (HTTP tracker advertised
+    /// <c>port=0</c>, UDP tracker advertised <c>6881</c>). WebSocket/WebRTC
+    /// tracker signaling is unaffected. Desktop only - has no effect in the
+    /// browser since browsers can't bind a listener anyway. Only relevant when
+    /// the listener is reachable from outside (port-forwarded, public IP, or
+    /// local subnet) - advertising a port that nobody can reach is harmless
+    /// but useless.
+    /// </summary>
+    public bool AdvertiseTcpListenerToTrackers { get; set; }
     public HttpClient? HttpClient { get; set; }
     /// <summary>Async file system for persistent storage (OPFS in browser, native FS on desktop).</summary>
     public SpawnDev.AsyncFileSystem.IAsyncFS? AsyncFileSystem { get; set; }
@@ -883,6 +965,22 @@ public class WebTorrentClientOptions
     public HashSet<string>? Blocklist { get; set; }
     /// <summary>Portable crypto for Ed25519 verification (BEP 44/46). Required for secure mutable DHT operations.</summary>
     public IPortableCrypto? Crypto { get; set; }
+    /// <summary>Optional piece-hash engine override. Default
+    /// <see cref="SystemCryptoPieceHashEngine"/> (System.Security.Cryptography).
+    /// Provide a custom <see cref="IPieceHashEngine"/> here to route piece
+    /// verification through a GPU / batched implementation.</summary>
+    public IPieceHashEngine? PieceHashEngine { get; set; }
+
+    /// <summary>
+    /// High-level upload bandwidth policy. <see cref="BandwidthPolicy.Unlimited"/>
+    /// (default) preserves legacy behavior. Other values translate to a
+    /// concrete <see cref="WebTorrentClient.UploadRateLimiter"/> rate via
+    /// <see cref="BandwidthPolicyExtensions.ToUploadBytesPerSec"/>. When
+    /// <see cref="UploadLimit"/> is set explicitly (>= 0), it wins over the
+    /// policy - the policy is the convenience layer for callers who want to
+    /// say "be reasonable on a metered connection" without picking a number.
+    /// </summary>
+    public BandwidthPolicy BandwidthPolicy { get; set; } = BandwidthPolicy.Unlimited;
 }
 
 public class AddTorrentOptions

@@ -880,9 +880,12 @@ public partial class Torrent
         }
 
         // v1 / Phase 1: flat SHA-1 (20B) or SHA-256 (32B) per stored hash length.
-        var actual = expected.Length == 32
-            ? System.Security.Cryptography.SHA256.HashData(buf)
-            : System.Security.Cryptography.SHA1.HashData(buf);
+        // Routed through WebTorrentClient.PieceHashEngine so a GPU-backed
+        // engine can intercept the hot path (default = SystemCryptoPieceHashEngine
+        // which calls System.Security.Cryptography directly - byte-identical to
+        // the legacy code).
+        var engine = _client?.PieceHashEngine ?? Torrent._defaultEngine;
+        var actual = expected.Length == 32 ? engine.Sha256(buf) : engine.Sha1(buf);
         return actual.SequenceEqual(expected);
     }
 }

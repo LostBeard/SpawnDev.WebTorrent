@@ -297,6 +297,27 @@ Browser Client                    Desktop Client
 
 ## Documentation
 
+### Protocol Documentation — `Research/`
+
+The most thorough public reference for the WebTorrent + BitTorrent wire protocols, written and maintained inside this repo. Covers everything an implementer needs and is **directly useful to anyone writing a WebTorrent client in any language** — the WebTorrent community currently lacks a single complete written spec. Every behavior here has been observed against the JS reference (`webtorrent`, `bittorrent-tracker`, `bittorrent-protocol` npm packages) — not just paraphrased from BEPs.
+
+| # | Document | Description |
+|---|----------|-------------|
+| 00 | [Research/00-README.md](Research/00-README.md) | Protocol research index |
+| 01 | [Research/01-wire-protocol.md](Research/01-wire-protocol.md) | BitTorrent peer wire protocol (BEP 3 base messages, BEP 6 Fast Extension, BEP 10 extension framework, byte-exact handshake layout, message framing, choke/unchoke, request/piece/cancel, full state machine) |
+| 02 | [Research/02-webtorrent-protocol.md](Research/02-webtorrent-protocol.md) | WebTorrent specifics: tracker WebSocket protocol, WebRTC data-channel setup, SDP offer/answer formats line-by-line, browser vs SipSorcery SDP differences, complete session walkthrough |
+| 03 | [Research/03-extension-protocols.md](Research/03-extension-protocols.md) | BEP 9 ut_metadata, BEP 11 ut_pex, lt_donthave - extension handshake, message types, peer inclusion rules |
+| 04 | [Research/04-tracker-protocols.md](Research/04-tracker-protocols.md) | HTTP, UDP, and WebSocket tracker protocols. Includes a verified-against-JS-reference behavior section for the WebSocket tracker (announce response shape, answer-relay no-response rule, stopped-event response with counts, offer-forwarding selection algorithm, scrape, frame-size limits) |
+| 05 | [Research/05-dht-protocol.md](Research/05-dht-protocol.md) | DHT (BEP 5) Kademlia + KRPC, mutable items (BEP 44/46), Ed25519 signing |
+| 06 | [Research/06-web-seeds.md](Research/06-web-seeds.md) | BEP 17 (HTTP seeding) and BEP 19 (web seeding via getright-style HTTP range requests) |
+| 07 | [Research/07-lifecycle.md](Research/07-lifecycle.md) | Master lifecycle: full order of operations from announce through download to seed |
+| 08 | [Research/08-sipsorcery-interop.md](Research/08-sipsorcery-interop.md) | SipSorcery / browser WebRTC interop analysis |
+| 09 | [Research/09-sipsorcery-dtls-analysis.md](Research/09-sipsorcery-dtls-analysis.md) | Why we fork SipSorcery for DTLS/SRTP — proven BouncyCastle DTLS stack vs upstream's SharpSRTP rewrite |
+
+The `tracker-debug/` directory ships parity harnesses (`verify-tracker-parity.mjs`, `verify-offer-flow.mjs`, `verify-offer-flow-local.mjs`) that compare SpawnDev's tracker behavior to the JS reference frame-by-frame; run before any change to tracker wire code.
+
+### API & Implementation
+
 | Doc | Description |
 |-----|-------------|
 | [API Reference](Docs/api.md) | Full API surface: `WebTorrentClient`, `Torrent`, `File`, `TorrentCreator`, `AgentChannel`, wire extensions |
@@ -309,7 +330,7 @@ Browser Client                    Desktop Client
 | [Service Worker](Docs/service-worker.md) | `webtorrent-sw.js` deep dive — Cross-Origin-Isolation headers, `/webtorrent/{hash}/{fileIdx}` streaming, MessageChannel protocol, video seeking |
 | [HuggingFace Model Delivery](Docs/huggingface.md) | End-to-end ML model delivery via P2P. Server side (proxy mount + standalone hub options) AND client side (Blazor Quick Start, magnet → AddAsync → stream pattern). Live `hub.spawndev.com` examples. |
 | [qBittorrent Interop Testing](Docs/qbittorrent-interop.md) | How to run the `interop_test/` scripts against a local qBittorrent Web UI. Static binary-compat + live-swarm both directions + JS WebTorrent live-swarm all PASSING. |
-| [Protocol Reference](Docs/protocol-reference/) | Deep dives on the wire protocol, DHT, trackers, mutable items (descriptive captures of the JS-WebTorrent reference, useful for protocol implementers) |
+| [Protocol Reference Captures](Docs/protocol-reference/) | Raw protocol captures from instrumented JS WebTorrent sessions (used to build the synthesized Research/ docs) |
 
 For WebRTC signaling architecture (tracker wire protocol, `RoomKey`, running your own tracker) see the [SpawnDev.RTC docs](https://github.com/LostBeard/SpawnDev.RTC/tree/master/SpawnDev.RTC/Docs) - tracker signaling lives in that package as of 3.1.0.
 

@@ -932,6 +932,142 @@ Peer A                        Tracker                       Peer B
 
 **Key architectural difference:** HTTP and UDP trackers are passive - they collect peer info and hand out peer lists. The WebSocket tracker is active - it relays signaling data in real time to enable WebRTC connections. After the WebRTC connection is established, the tracker is no longer involved in data transfer.
 
+### Server-Side Behavior — Verified Against JS Reference
+
+The WebSocket tracker has no formal BEP, so the JS reference (`webtorrent/bittorrent-tracker`'s `lib/server/parse-websocket.js` + `server.js`) defines the protocol. The WebTorrent community largely lacks a written behavioral spec. The behaviors below are observed against the JS reference (`bittorrent-tracker` npm package, run locally) by `D:\users\tj\Projects\SpawnDev.WebTorrent\tracker-debug\verify-tracker-parity.mjs`. SpawnDev.WebTorrent + SpawnDev.RTC.Server match each one.
+
+#### 1. Announce response: NO `peers` field on the WebSocket-tracker path
+
+The HTTP/UDP tracker response carries a `peers` list. The WebSocket-tracker response **does NOT** — peer discovery on this path happens exclusively via offer/answer relay below.
+
+```jsonc
+// Sent to the announcing client after every announce that is NOT an answer-relay or a scrape:
+{
+  "action":     "announce",
+  "info_hash":  "<20-byte binary string>",
+  "interval":   120,
+  "complete":   <number of seeders in the room>,
+  "incomplete": <number of leechers in the room>
+  // NO `peers` field. Including one is a divergence from the reference.
+  // NO `tracker_id` field by default (the JS reference does not emit one for WS).
+}
+```
+
+If a server emits a `peers` field (whether `[]`, `null`, or a populated list), JS WebTorrent clients that strictly follow the reference may treat it as an unrecognized field; client behavior in that case is undefined.
+
+#### 2. Answer-relay path: server sends NO response to the answer-sender
+
+When a client sends an announce with `answer + to_peer_id + offer_id` (a reply to a previously-received offer-relay), the server forwards the answer to the targeted peer **and returns nothing to the sender**. There is no `interval/complete/incomplete` reply for this announce.
+
+```jsonc
+// Client to server (answer-relay):
+{
+  "action":     "announce",
+  "info_hash":  "...",
+  "peer_id":    "<answering peer 20 bytes>",
+  "answer":     { "type": "answer", "sdp": "v=0\r\n..." },
+  "to_peer_id": "<offering peer 20 bytes>",
+  "offer_id":   "<20-byte binary string matching the original offer>"
+}
+
+// Server to original offering peer (forwarded answer):
+{
+  "action":    "announce",
+  "info_hash": "...",
+  "peer_id":   "<answering peer 20 bytes>",
+  "answer":    { "type": "answer", "sdp": "v=0\r\n..." },
+  "offer_id":  "<same 20-byte id>"
+}
+
+// Server to answer-sender: NOTHING. Do not respond.
+```
+
+A server that responds to the answer-sender with a counts frame produces an extra spurious announce frame the client never expects. Clients tolerant of unknown frames will ignore it; clients that strictly track expected frame sequences may desynchronize.
+
+#### 3. Stopped event: server DOES send a response, with post-stop counts
+
+When a client announces with `event=stopped`, the server removes the peer from the room **AND** sends back a normal announce response carrying the updated counts (`incomplete` reflects post-removal). The response shape is identical to the regular announce response (no `peers` field).
+
+```jsonc
+// Client to server (graceful leave):
+{
+  "action":    "announce",
+  "info_hash": "...",
+  "peer_id":   "...",
+  "event":     "stopped",
+  "left":      0
+}
+
+// Server to client (response with post-stop counts):
+{
+  "action":     "announce",
+  "info_hash":  "...",
+  "interval":   120,
+  "complete":   <updated, this peer no longer counted>,
+  "incomplete": <updated, this peer no longer counted>
+}
+```
+
+Offer forwarding is **skipped** on a stopped announce regardless of whether the announce carried offers (which it should not, but the server defensively ignores them).
+
+#### 4. Offer forwarding: random pick, one offer per existing peer, capped at the offer count
+
+When a peer announces with `offers: [...]`, the server selects existing peers in the room (excluding the announcer itself) in **random order** and forwards one offer per selected peer until either the offer array runs out or the candidate list runs out. Each forwarded message is shaped:
+
+```jsonc
+{
+  "action":    "announce",
+  "info_hash": "...",
+  "peer_id":   "<announcer's peer_id, NOT recipient's>",
+  "offer":     { "type": "offer", "sdp": "..." },
+  "offer_id":  "..."
+}
+```
+
+The recipient uses the inbound `peer_id + offer_id` to know who to address the answer back to via `to_peer_id`.
+
+`numwant` is informational from the announce; the actual forwarding count is `min(offers.length, candidates.length)`. The reference does not pad with empty offers and does not duplicate-assign.
+
+#### 5. Reconnect with same `peer_id`: clean overwrite
+
+When a peer reconnects (new WebSocket) and announces with the same `peer_id` for the same `info_hash`, the room's peer-id-to-socket binding is overwritten cleanly. The previous socket (if still alive) does not receive any forwarded offer for the new announce; only the current socket is registered as that peer.
+
+#### 6. Room isolation: strict per-`info_hash` partitioning
+
+A peer's announce only affects the room keyed by its `info_hash`. The same peer can be in multiple rooms simultaneously by announcing with different info hashes — these are tracked independently; no cross-room offer leakage.
+
+#### 7. `event=completed` and `left=0` mark the peer as a seeder for swarm-stats purposes
+
+`complete` in the response counts peers that have either announced `event=completed` at some point in their session OR currently report `left=0`. `incomplete` counts everyone else.
+
+#### 8. Frame size limit
+
+The reference and SpawnDev.RTC.Server both cap an inbound frame at 1 MiB (`MaxMessageBytes` default, configurable). Frames exceeding this cap are dropped silently (the connection may be closed by the server depending on implementation).
+
+#### 9. `action=scrape` over WebSocket
+
+The reference accepts a JSON scrape message (`{action: "scrape", info_hash: "..."}` or array form) and replies with a `{action: "scrape", files: { ... }}` per-info-hash counts response. SpawnDev.RTC.Server's `TrackerSignalingServer` does not currently dispatch `action=scrape` — incoming scrape frames hit the "unknown action" branch and are silently ignored. WebTorrent JS clients fall back to assuming scrape unsupported. Tracked as a follow-up.
+
+#### Parity harness
+
+The harness driving these findings lives at:
+
+```
+D:\users\tj\Projects\SpawnDev.WebTorrent\tracker-debug\
+  verify-tracker-parity.mjs   - Six scenarios (A/B/C/D/E/F) head-to-head
+                                 against the live hub AND a fresh local
+                                 bittorrent-tracker reference. Diffs every
+                                 captured frame and reports per-scenario
+                                 divergences.
+  verify-offer-flow.mjs        - Three-peer offer/forward flow against an
+                                 explicit tracker URL.
+  verify-offer-flow-local.mjs  - Same but co-runs the JS reference and
+                                 captures both server-side and client-side
+                                 traffic.
+```
+
+Run before any change to `TrackerSignalingServer.HandleAnnounceAsync` or the wire-message DTOs. Run after any redeploy of `hub.spawndev.com`. The harness is fast (<10s end-to-end) and produces a clean PASS/FAIL summary.
+
 ---
 
 ## Implementation Notes for SpawnDev.WebTorrent

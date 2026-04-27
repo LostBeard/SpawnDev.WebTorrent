@@ -73,5 +73,10 @@ Environment=RTC__StunTurn__TrackerGated=true
 Environment=RTC__StunTurn__RelayPortRangeStart=49200
 Environment=RTC__StunTurn__RelayPortRangeEnd=49299
 
+# --- Tracker diagnostic log (temporary, for hub-vs-local divergence root-cause) ---
+# Writes one line per WS lifecycle event + frame parse + dispatch + send to a
+# rolling text file. Remove this Environment line once the divergence is solved.
+Environment=RTC_TRACKER_DEBUG_LOG=/srv/spawndev_hub/tracker-debug.log
+
 [Install]
 WantedBy=multi-user.target

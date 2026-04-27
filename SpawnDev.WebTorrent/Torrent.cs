@@ -948,6 +948,35 @@ public partial class Torrent : IAsyncDisposable
 
                         // Keep the wire with lexicographically SMALLER channel label.
                         // Both sides see the same labels on both wires → both agree.
+                        //
+                        // SAFETY: only apply the rule when BOTH labels are populated. The
+                        // responder's SimplePeer.ChannelName starts as "" and only fills in
+                        // when RtcPeer.OnDataChannel fires; if OnHandshake fires inside that
+                        // race window on one side and not the other, the two sides would
+                        // compare different label pairs (one with the real label, one with
+                        // the per-side fallback peer.Id) and arrive at OPPOSITE keep/destroy
+                        // decisions - leaving both physical wires destroyed bilaterally.
+                        // When either label is unknown we let both wires live; the consumer
+                        // (e.g. P2PWebRtcBridge for sd_compute) dedupes by remote BitTorrent
+                        // peer id so stack-level state stays correct, and one of the wires
+                        // closes naturally as Wire.Destroy / Peer.Destroy fire elsewhere.
+                        bool labelsComparable =
+                            !string.IsNullOrEmpty(newLabel) &&
+                            !string.IsNullOrEmpty(existingLabel) &&
+                            // A label that fell back to peer.Id (the per-side local id) is
+                            // not cross-side stable; only the real ChannelName from the data
+                            // channel is shared between sides.
+                            !ReferenceEquals(newLabel, peer.Id) &&
+                            !ReferenceEquals(existingLabel, existingPeer?.Id);
+                        if (!labelsComparable)
+                        {
+                            if (WebTorrentClient.VerboseLogging)
+                                Console.WriteLine(
+                                    $"[Torrent.OnHandshake] DUP-SKIP: labels not cross-side stable yet " +
+                                    $"(newLabel='{newLabel}' existingLabel='{existingLabel}'). " +
+                                    $"Both wires live; consumer-layer dedup will collapse them.");
+                            return;
+                        }
                         bool keepNew = string.Compare(newLabel, existingLabel, StringComparison.Ordinal) < 0;
                         if (keepNew)
                         {

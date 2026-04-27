@@ -1,5 +1,21 @@
 # Changelog
 
+## 3.2.2-rc.1 (2026-04-28)
+
+SCTP backpressure + duplicate-handshake hardening. Two bugs surfaced by Captain's deployed P2P compute demo on GitHub Pages, both in the wire-establishment / wire-teardown paths shared by every P2P consumer.
+
+### 1. `RtcPeer.Send` now applies SCTP backpressure
+
+Before: `RtcPeer.Send` called `_dc.Send(data)` synchronously with no check on `_dc.BufferedAmount`. WebRTC's `RTCDataChannel.send()` does not throw when the SCTP send buffer is saturated - it queues unbounded internally. Once the remote receive side detected the runaway buffer, it closed the channel with `sctpCauseCode=12` (User-Initiated Abort). Symptom in the demo: heavy buffer push-back during P2P compute (e.g. Mandelbrot strip auto-push, multi-MB tensor result buffers) intermittently killed the wire.
+
+After: `Send` is now `async`. Before each `_dc.Send`, if `BufferedAmount > MaxBufferedAmount` (64 KB), `Send` awaits `OnBufferedAmountLow`. The data channel's `BufferedAmountLowThreshold` is set to 64 KB in `WireDataChannel`, so the event fires when the queue drops below the gate. A 30-second ceiling on the wait protects against deadlocks on a stalled wire. Sends after `Destroyed` or `ReadyState != "open"` throw a clear "Data channel closed during backpressure wait" error rather than silently failing.
+
+### 2. `Torrent.OnHandshake` duplicate-detection skips when labels are not cross-side stable
+
+Before: the duplicate-detection rule fell back to `peer.Id` (per-side local) when `SimplePeer.ChannelName` was empty. The responder's `ChannelName` starts as `""` and only fills in when `RtcPeer.OnDataChannel` fires. If `OnHandshake` fires inside that race window on one side and not the other, the two sides compare DIFFERENT label pairs (one with the real channel label, one with the per-side fallback `peer.Id`) and arrive at OPPOSITE keep/destroy decisions - bilaterally destroying both physical wires.
+
+After: when either label is empty or fell back to the per-side `peer.Id`, the destroy is skipped and both wires live. Consumer-layer dedup (e.g. `P2PWebRtcBridge` deduping by remote BitTorrent peer id) collapses the duplication invisibly to the consumer; one of the wires closes naturally as `Wire.Destroy` / `Peer.Destroy` fire elsewhere.
+
 ## 3.2.0 (2026-04-25)
 
 First minor cut since 3.1.0. Bundles five additive features on top of 3.1.7's wire-level seeder correctness fix. Zero behavior change for consumers who don't opt in to any of the new surfaces; existing 3.1.x code keeps running unchanged.

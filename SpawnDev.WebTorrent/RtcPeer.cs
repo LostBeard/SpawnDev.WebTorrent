@@ -149,6 +149,23 @@ public class RtcPeer : SimplePeer
 
     private void WireDataChannel(IRTCDataChannel channel)
     {
+        // SCTP backpressure: ask the data channel to fire OnBufferedAmountLow once the
+        // outbound queue drops below MaxBufferedAmount. Send() awaits that signal when
+        // BufferedAmount exceeds the threshold instead of blindly stuffing bytes into
+        // an already-saturated SCTP send buffer. Prior to this gate, multi-MB push-back
+        // (Mandelbrot strip auto-push, 1MB+ output buffers) would saturate SCTP and
+        // surface as User-Initiated Abort (cause 12) on the remote end - the remote
+        // browser closes the channel when its receive side detects the runaway buffer.
+        channel.BufferedAmountLowThreshold = MaxBufferedAmount;
+        channel.OnBufferedAmountLow += () =>
+        {
+            // Replace the TCS with a fresh one so the next batch starts a fresh wait.
+            // Multiple awaiters would each have their own TCS captured at await time;
+            // signal them all by completing the current TCS and clearing it.
+            var tcs = System.Threading.Interlocked.Exchange(ref _bufferedAmountLowTcs, null);
+            tcs?.TrySetResult(true);
+        };
+
         channel.OnOpen += () =>
         {
             if (WebTorrentClient.VerboseLogging)
@@ -288,7 +305,7 @@ public class RtcPeer : SimplePeer
         }
     }
 
-    public override Task Send(byte[] data)
+    public override async Task Send(byte[] data)
     {
         if (_dc == null || _dc.ReadyState != "open")
         {
@@ -296,15 +313,42 @@ public class RtcPeer : SimplePeer
                 Console.WriteLine($"[RtcPeer] Send BLOCKED: dc={_dc?.ReadyState ?? "null"} len={data.Length}");
             throw new InvalidOperationException("Data channel is not open.");
         }
+
+        // SCTP backpressure: if the outbound queue is already saturated, wait for it
+        // to drain below MaxBufferedAmount before stuffing more bytes in. WebRTC's
+        // RTCDataChannel.send() does not throw on a full SCTP buffer - it queues
+        // unbounded internally, and once the remote receive side detects the runaway
+        // it closes the channel with sctpCauseCode=12 (User-Initiated Abort). Awaiting
+        // OnBufferedAmountLow keeps the in-flight payload bounded. The 30-second
+        // ceiling guards against a stalled wire deadlocking the send path.
+        while (_dc.BufferedAmount > MaxBufferedAmount && !Destroyed && _dc.ReadyState == "open")
+        {
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            // Atomically install the wait TCS. If OnBufferedAmountLow already fired
+            // before we got here (race between our threshold check and event delivery),
+            // the existing TCS would be the just-completed one - replace it so the next
+            // wait starts cleanly.
+            System.Threading.Interlocked.Exchange(ref _bufferedAmountLowTcs, tcs);
+            // Re-check after subscribing in case the buffered amount dropped between the
+            // outer check and the subscription. Without the recheck a fast-draining
+            // send could leave us blocked on an event that already fired.
+            if (_dc.BufferedAmount <= MaxBufferedAmount) break;
+            await tcs.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+        }
+
+        if (Destroyed || _dc.ReadyState != "open")
+            throw new InvalidOperationException(
+                "Data channel closed during backpressure wait.");
+
         if (WebTorrentClient.VerboseLogging && !_firstSendLogged)
         {
             _firstSendLogged = true;
             Console.WriteLine($"[RtcPeer] First Send {data.Length} bytes");
         }
         _dc.Send(data);
-        return Task.CompletedTask;
     }
 
+    private TaskCompletionSource<bool>? _bufferedAmountLowTcs;
     private bool _firstSendLogged;
     private static bool _firstOfferLogged;
 

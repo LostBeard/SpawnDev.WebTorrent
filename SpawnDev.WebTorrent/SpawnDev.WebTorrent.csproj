@@ -9,8 +9,8 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-		<Version>3.2.1</Version>
-		<PackageReleaseNotes>v3.2.1 stable: dependency-metadata fix only - no code changes. Bumps `SpawnDev.RTC` PackageReference from 1.1.6 to 1.1.7 to inherit RTC's clean `SpawnDev.MultiMedia 0.2.0` stable dep (was previously transitively pulling `SpawnDev.MultiMedia 0.2.0-rc.1` through RTC, triggering NU1603 on consumers without local-feed access). Closes the deploy-blocker for downstream Blazor projects with strict warning-as-error policies.</PackageReleaseNotes>
+		<Version>3.2.2-rc.1</Version>
+		<PackageReleaseNotes>v3.2.2-rc.1: SCTP backpressure + duplicate-handshake hardening. (1) RtcPeer.Send now awaits OnBufferedAmountLow when the data channel's BufferedAmount exceeds MaxBufferedAmount (64 KB) before pushing more bytes, preventing User-Initiated Abort (sctpCauseCode=12) on the remote end during multi-MB push-back (e.g. 1 MB+ tensor result buffers in P2P compute pipelines). (2) Torrent.OnHandshake duplicate-detection now skips the destroy when either ChannelName label is empty/falls back to the per-side peer.Id - those labels are not cross-side stable, so applying the rule could destroy opposing wires bilaterally and kill the connection. Both wires live in that case; consumer-layer dedup (e.g. P2PWebRtcBridge) collapses them by remote BitTorrent peer id.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>

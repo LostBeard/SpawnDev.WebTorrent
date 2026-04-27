@@ -606,6 +606,23 @@ Client                                    Tracker
 **Transport:** WebSocket (wss://) with JSON messages  
 **Source:** https://github.com/webtorrent/bittorrent-tracker
 
+### Client coverage
+
+The WebSocket tracker is a WebTorrent-ecosystem extension. Mainline BitTorrent clients (libtorrent family) do NOT support it — verified 2026-04-27 against qBittorrent 5.1.4 / libtorrent 2.0.11 which returned status `4` "unsupported URL protocol" when given a `wss://` tracker URL.
+
+| Client | WS tracker | WebRTC peer-wire | TCP/uTP peer-wire |
+|---|---|---|---|
+| Browser SpawnDev.WebTorrent | ✓ | ✓ | ✗ |
+| Browser webtorrent.js / Brave Browser | ✓ | ✓ | ✗ |
+| Node.js `webtorrent@^2` | ✓ | ✓ | ✗ |
+| Node.js `webtorrent-hybrid` | ✓ | ✓ | ✓ (bridge) |
+| WebTorrent Desktop | ✓ | ✓ | ✓ (bridge) |
+| Desktop SpawnDev.WebTorrent | ✓ | ✓ | ✓ (bridge) |
+| qBittorrent / libtorrent 2.0 | ✗ | ✗ | ✓ |
+| Transmission / Deluge / rqbit | ✗ | ✗ | ✓ |
+
+Browser-only WebTorrent peers and TCP-only mainline peers cannot reach each other directly — they need a "bridge" peer (Desktop SpawnDev.WebTorrent, `webtorrent-hybrid`, or WebTorrent Desktop) that speaks both transports.
+
 The WebSocket tracker protocol was designed for WebTorrent to enable browser-based BitTorrent peers. Since browsers cannot use UDP or make raw TCP connections, the tracker serves a dual purpose: peer discovery AND WebRTC signaling relay.
 
 ### Overview

@@ -9,8 +9,8 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-		<Version>3.2.2-rc.4</Version>
-		<PackageReleaseNotes>v3.2.2-rc.4: SpawnDev.RTC 1.1.8-rc.2 dep bump. RTC rc.2 adds a `BrowserRTCPeerConnection` connection-state polling fallback for the case where Chromium fails to fire `connectionstatechange` when a remote tab closes via Playwright `page.close()`. Without that fallback `RtcPeer.OnConnectionStateChange` never sees the "failed"/"closed" transition, never calls `EmitClose`, and `Wire.OnClose` never fires - leaving consumers (e.g. `SpawnDev.ILGPU.P2P.P2PWebRtcBridge`) stuck believing the peer is alive. With the fallback, the polled state-change synthesises the same `OnConnectionStateChange` invocation that the missing native event would have. WebTorrent code unchanged from rc.3.</PackageReleaseNotes>
+		<Version>3.2.2-rc.6</Version>
+		<PackageReleaseNotes>v3.2.2-rc.6: SpawnDev.RTC 1.1.8-rc.4 dep bump. rc.4 adds the opt-in `BrowserRTCPeerConnection.DiagnosticsEnabled` flag for debugging the polling-fallback path; default-false keeps zero overhead in production. WebTorrent code unchanged from rc.5.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>
@@ -51,7 +51,7 @@
 		     standalone SpawnDev.WebTorrent checkout - they don't have the sibling RTC repo.
 		     1.1.1 is the minimum version: 1.1.0 declared a dep on public SIPSorcery 10.0.4-pre
 		     which doesn't exist on nuget.org; 1.1.1 bundles the fork DLLs inline (ILGPU pattern). -->
-		<PackageReference Include="SpawnDev.RTC" Version="1.1.8-rc.2" />
+		<PackageReference Include="SpawnDev.RTC" Version="1.1.8-rc.4" />
 	</ItemGroup>
 
 	<ItemGroup>

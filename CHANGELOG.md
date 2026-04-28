@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.2.2-rc.6 (2026-04-29)
+
+SpawnDev.RTC 1.1.8-rc.4 dep bump. No code changes. Pulls in the opt-in `BrowserRTCPeerConnection.DiagnosticsEnabled` flag for debugging the polling-fallback path. Used by SpawnDev.ILGPU.Demo for PMT P2PSwarm.TwoTab_PeerDiscovery diagnostics.
+
 ## 3.2.2-rc.3 (2026-04-29)
 
 SpawnDev.RTC dep bump to 1.1.8-rc.1. The rc.2 SCTP backpressure multi-awaiter fix was correct on its own but turned out to be insufficient on desktop because `SpawnDev.RTC` 1.1.7's `DesktopRTCDataChannel.OnBufferedAmountLow` was declared but never fired (SipSorcery has no native event hook). 1.1.8-rc.1 emulates the spec'd edge-triggered semantics via a 20ms-tick poller. Together the two fixes:

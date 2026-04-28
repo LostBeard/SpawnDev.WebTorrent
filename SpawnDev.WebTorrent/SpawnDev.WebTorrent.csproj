@@ -9,8 +9,8 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-		<Version>3.2.2-rc.3</Version>
-		<PackageReleaseNotes>v3.2.2-rc.3: SCTP backpressure multi-awaiter fix + SpawnDev.RTC 1.1.8-rc.1 dep bump. `RtcPeer.Send`'s `_bufferedAmountLowTcs` slot is now a SHARED TCS that every concurrent awaiter references (the rc.1 design used `Interlocked.Exchange` to install per-awaiter TCSes, silently orphaning all but the most recent waiter); `OnBufferedAmountLow` completes the shared TCS to release ALL awaiters at once, then atomically installs a fresh TCS for the next round. The rc.2 multi-awaiter fix on its own was insufficient on desktop because SpawnDev.RTC 1.1.7's `DesktopRTCDataChannel.OnBufferedAmountLow` was declared but never raised (SipSorcery has no native event). SpawnDev.RTC 1.1.8-rc.1 adds an emulated edge-triggered poller that fires `OnBufferedAmountLow` when `bufferedAmount` transitions from above-threshold to at-or-below-threshold. Together: SCTP backpressure now waits and resumes correctly on desktop. Manifested in `SpawnDev.ILGPU.P2P` as "No healthy peers available for dispatch" / 90s dispatch timeouts on every 1MB+ buffer transfer (`LargeBuffer_1MB/10MB/100MB`, `DataIntegrity_SHA256`) before the fix.</PackageReleaseNotes>
+		<Version>3.2.2-rc.4</Version>
+		<PackageReleaseNotes>v3.2.2-rc.4: SpawnDev.RTC 1.1.8-rc.2 dep bump. RTC rc.2 adds a `BrowserRTCPeerConnection` connection-state polling fallback for the case where Chromium fails to fire `connectionstatechange` when a remote tab closes via Playwright `page.close()`. Without that fallback `RtcPeer.OnConnectionStateChange` never sees the "failed"/"closed" transition, never calls `EmitClose`, and `Wire.OnClose` never fires - leaving consumers (e.g. `SpawnDev.ILGPU.P2P.P2PWebRtcBridge`) stuck believing the peer is alive. With the fallback, the polled state-change synthesises the same `OnConnectionStateChange` invocation that the missing native event would have. WebTorrent code unchanged from rc.3.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>
@@ -51,7 +51,7 @@
 		     standalone SpawnDev.WebTorrent checkout - they don't have the sibling RTC repo.
 		     1.1.1 is the minimum version: 1.1.0 declared a dep on public SIPSorcery 10.0.4-pre
 		     which doesn't exist on nuget.org; 1.1.1 bundles the fork DLLs inline (ILGPU pattern). -->
-		<PackageReference Include="SpawnDev.RTC" Version="1.1.8-rc.1" />
+		<PackageReference Include="SpawnDev.RTC" Version="1.1.8-rc.2" />
 	</ItemGroup>
 
 	<ItemGroup>

@@ -159,11 +159,13 @@ public class RtcPeer : SimplePeer
         channel.BufferedAmountLowThreshold = MaxBufferedAmount;
         channel.OnBufferedAmountLow += () =>
         {
-            // Replace the TCS with a fresh one so the next batch starts a fresh wait.
-            // Multiple awaiters would each have their own TCS captured at await time;
-            // signal them all by completing the current TCS and clearing it.
-            var tcs = System.Threading.Interlocked.Exchange(ref _bufferedAmountLowTcs, null);
-            tcs?.TrySetResult(true);
+            // ALL concurrent Send() callers reference the SAME _bufferedAmountLowTcs
+            // by capture; OnBufferedAmountLow completes the shared TCS to release
+            // every awaiter at once, then atomically installs a fresh TCS for the
+            // next round of waiters.
+            var fresh = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var completed = System.Threading.Interlocked.Exchange(ref _bufferedAmountLowTcs, fresh);
+            completed?.TrySetResult(true);
         };
 
         channel.OnOpen += () =>
@@ -323,15 +325,7 @@ public class RtcPeer : SimplePeer
         // ceiling guards against a stalled wire deadlocking the send path.
         while (_dc.BufferedAmount > MaxBufferedAmount && !Destroyed && _dc.ReadyState == "open")
         {
-            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            // Atomically install the wait TCS. If OnBufferedAmountLow already fired
-            // before we got here (race between our threshold check and event delivery),
-            // the existing TCS would be the just-completed one - replace it so the next
-            // wait starts cleanly.
-            System.Threading.Interlocked.Exchange(ref _bufferedAmountLowTcs, tcs);
-            // Re-check after subscribing in case the buffered amount dropped between the
-            // outer check and the subscription. Without the recheck a fast-draining
-            // send could leave us blocked on an event that already fired.
+            var tcs = EnsureBufferedAmountLowTcs();
             if (_dc.BufferedAmount <= MaxBufferedAmount) break;
             await tcs.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
         }
@@ -351,6 +345,23 @@ public class RtcPeer : SimplePeer
     private TaskCompletionSource<bool>? _bufferedAmountLowTcs;
     private bool _firstSendLogged;
     private static bool _firstOfferLogged;
+
+    /// <summary>
+    /// Lazily install the shared backpressure TCS. Called from <see cref="Send"/>
+    /// before each await; ensures the slot is non-null even if no
+    /// OnBufferedAmountLow event has fired yet (e.g., the first Send hits the
+    /// threshold before any drain has occurred).
+    /// </summary>
+    private TaskCompletionSource<bool> EnsureBufferedAmountLowTcs()
+    {
+        var existing = System.Threading.Volatile.Read(ref _bufferedAmountLowTcs);
+        if (existing != null && !existing.Task.IsCompleted) return existing;
+        var fresh = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var prior = System.Threading.Interlocked.CompareExchange(ref _bufferedAmountLowTcs, fresh, existing);
+        // If CompareExchange lost the race, prior holds whatever the winner installed.
+        // Either way, the live TCS for any other awaiter is the current slot value.
+        return System.Threading.Volatile.Read(ref _bufferedAmountLowTcs)!;
+    }
 
     public override async Task WaitForOpenAsync(CancellationToken ct = default)
     {

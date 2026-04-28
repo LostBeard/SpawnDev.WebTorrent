@@ -9,8 +9,8 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-		<Version>3.2.2-rc.1</Version>
-		<PackageReleaseNotes>v3.2.2-rc.1: SCTP backpressure + duplicate-handshake hardening. (1) RtcPeer.Send now awaits OnBufferedAmountLow when the data channel's BufferedAmount exceeds MaxBufferedAmount (64 KB) before pushing more bytes, preventing User-Initiated Abort (sctpCauseCode=12) on the remote end during multi-MB push-back (e.g. 1 MB+ tensor result buffers in P2P compute pipelines). (2) Torrent.OnHandshake duplicate-detection now skips the destroy when either ChannelName label is empty/falls back to the per-side peer.Id - those labels are not cross-side stable, so applying the rule could destroy opposing wires bilaterally and kill the connection. Both wires live in that case; consumer-layer dedup (e.g. P2PWebRtcBridge) collapses them by remote BitTorrent peer id.</PackageReleaseNotes>
+		<Version>3.2.2-rc.3</Version>
+		<PackageReleaseNotes>v3.2.2-rc.3: SCTP backpressure multi-awaiter fix + SpawnDev.RTC 1.1.8-rc.1 dep bump. `RtcPeer.Send`'s `_bufferedAmountLowTcs` slot is now a SHARED TCS that every concurrent awaiter references (the rc.1 design used `Interlocked.Exchange` to install per-awaiter TCSes, silently orphaning all but the most recent waiter); `OnBufferedAmountLow` completes the shared TCS to release ALL awaiters at once, then atomically installs a fresh TCS for the next round. The rc.2 multi-awaiter fix on its own was insufficient on desktop because SpawnDev.RTC 1.1.7's `DesktopRTCDataChannel.OnBufferedAmountLow` was declared but never raised (SipSorcery has no native event). SpawnDev.RTC 1.1.8-rc.1 adds an emulated edge-triggered poller that fires `OnBufferedAmountLow` when `bufferedAmount` transitions from above-threshold to at-or-below-threshold. Together: SCTP backpressure now waits and resumes correctly on desktop. Manifested in `SpawnDev.ILGPU.P2P` as "No healthy peers available for dispatch" / 90s dispatch timeouts on every 1MB+ buffer transfer (`LargeBuffer_1MB/10MB/100MB`, `DataIntegrity_SHA256`) before the fix.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>
@@ -51,7 +51,7 @@
 		     standalone SpawnDev.WebTorrent checkout - they don't have the sibling RTC repo.
 		     1.1.1 is the minimum version: 1.1.0 declared a dep on public SIPSorcery 10.0.4-pre
 		     which doesn't exist on nuget.org; 1.1.1 bundles the fork DLLs inline (ILGPU pattern). -->
-		<PackageReference Include="SpawnDev.RTC" Version="1.1.7" />
+		<PackageReference Include="SpawnDev.RTC" Version="1.1.8-rc.1" />
 	</ItemGroup>
 
 	<ItemGroup>

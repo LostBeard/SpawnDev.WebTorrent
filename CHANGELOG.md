@@ -1,5 +1,42 @@
 # Changelog
 
+## 3.2.2-rc.2 (2026-04-29)
+
+Critical follow-up to rc.1's SCTP backpressure work. The rc.1 implementation correctly added the `OnBufferedAmountLow` wait gate but used `Interlocked.Exchange` to install the awaiter's TCS into a single shared slot - which meant every concurrent `Send()` caller orphaned the previous one. Diagnosed against `SpawnDev.ILGPU.P2P`'s `LargeBuffer_1MB_DispatchedOverRealWebRtc_BitExact` reproduction: the test hung for 109s across 3 retries with "No healthy peers available for dispatch", traced via stack-trace instrumentation to `RtcPeer.Send` line 336 (`tcs.Task.WaitAsync`) firing `TimeoutException` after 30 seconds when the OnBufferedAmountLow signal never arrived for the orphaned awaiters.
+
+### The race in rc.1
+
+```csharp
+// In Send (rc.1)
+var tcs = new TaskCompletionSource<bool>(...);
+System.Threading.Interlocked.Exchange(ref _bufferedAmountLowTcs, tcs);  // overwrite
+await tcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+// In OnBufferedAmountLow (rc.1)
+var tcs = System.Threading.Interlocked.Exchange(ref _bufferedAmountLowTcs, null);
+tcs?.TrySetResult(true);  // only signals the LATEST awaiter
+```
+
+Send_1 installs `tcs1`. Send_2 fires concurrently (e.g. P2P's 8-chunk pipeline), installs `tcs2`, displacing `tcs1` into limbo. When `OnBufferedAmountLow` fires it grabs `tcs2` from the slot and signals it; `tcs1` is unreachable and times out 30s later. The `TimeoutException` propagates out of `Send`, the AsyncTaskMethodBuilder calls `SetException` on the consuming wire's pending task, the wire's `OnConnected` await chain catches it and calls `Peer.Destroy(err)`, which calls `Wire.Destroy()` and fires `wire.OnClose`. Consumers (e.g. `P2PWebRtcBridge.AttachToSwarm`) interpret the close as a real peer departure and unregister the peer mid-buffer-transfer. Net: every multi-MB tensor send that fanned out concurrent chunks broke the wire, which manifested upstack as "No healthy peers available for dispatch."
+
+### The fix
+
+`_bufferedAmountLowTcs` is now a SHARED TCS that every concurrent awaiter references at the time of their await. `OnBufferedAmountLow` completes that shared TCS to release ALL awaiters at once, then atomically installs a fresh TCS for the next round of waiters. New helper `EnsureBufferedAmountLowTcs()` lazily creates the slot the first time `Send` hits the threshold (before any drain has occurred), guarded by `Interlocked.CompareExchange`.
+
+```csharp
+// Send (rc.2)
+var tcs = EnsureBufferedAmountLowTcs();
+if (_dc.BufferedAmount <= MaxBufferedAmount) break;
+await tcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+// OnBufferedAmountLow (rc.2)
+var fresh = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+var completed = System.Threading.Interlocked.Exchange(ref _bufferedAmountLowTcs, fresh);
+completed?.TrySetResult(true);  // releases EVERY current awaiter
+```
+
+Verified: `LargeBuffer_1MB_DispatchedOverRealWebRtc_BitExact` passes with the surviving wire intact through the entire 1 MB transfer + dispatch + result return.
+
 ## 3.2.2-rc.1 (2026-04-28)
 
 SCTP backpressure + duplicate-handshake hardening. Two bugs surfaced by Captain's deployed P2P compute demo on GitHub Pages, both in the wire-establishment / wire-teardown paths shared by every P2P consumer.

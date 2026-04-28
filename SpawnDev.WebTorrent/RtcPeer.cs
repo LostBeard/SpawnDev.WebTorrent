@@ -322,13 +322,64 @@ public class RtcPeer : SimplePeer
         // RTCDataChannel.send() does not throw on a full SCTP buffer - it queues
         // unbounded internally, and once the remote receive side detects the runaway
         // it closes the channel with sctpCauseCode=12 (User-Initiated Abort). Awaiting
-        // OnBufferedAmountLow keeps the in-flight payload bounded. The 30-second
-        // ceiling guards against a stalled wire deadlocking the send path.
+        // OnBufferedAmountLow keeps the in-flight payload bounded.
+        //
+        // The per-await ceiling guards against a stalled wire deadlocking the send
+        // path. NOT a wall-clock budget for the whole transfer - each iteration
+        // resets, so a steadily-draining wire keeps making progress for as long as
+        // the consumer wants. The ceiling needs to be long enough for one chunk's
+        // worth of SCTP drain even under congestion: at ~1 MB/s effective desktop
+        // SCTP throughput, draining 64 KB takes ~64 ms; the 120-second per-await
+        // ceiling absorbs CPU stalls, multi-PC handshake thrashing, and similar
+        // transient pressure (the prior 30 s ceiling fired during legitimate slow
+        // drain on `LargeBuffer_100MB_DispatchedOverRealWebRtc_BitExact`, which
+        // pushed back ~256 KB chunks at ~1 MB/s during heavy duplicate-handshake
+        // cleanup; the timeout would trip mid-drain and Destroy the peer with
+        // "TimeoutException: The operation has timed out").
+        // Polling-based backpressure wait: the OnBufferedAmountLow event is best-
+        // effort. On desktop the poller in DesktopRTCDataChannel fires only on a
+        // strict above->below transition observed between two ~20ms polls; if
+        // BufferedAmount overshoots threshold and drains back BETWEEN poll ticks
+        // (rapid SCTP drain), the poller misses the transition entirely and
+        // wasAboveThreshold stays false. The event then never fires for the next
+        // wait cycle even after the buffer has fully drained. Diagnosed
+        // 2026-04-29 against `LargeBuffer_100MB_DispatchedOverRealWebRtc_BitExact`:
+        // BufferedAmount=0 at the 120-second timeout, ReadyState=open - buffer
+        // drained, no event ever fired.
+        //
+        // Fix: combine the event with a 50ms polling re-check. The event is still
+        // honored (resolves the wait promptly when it fires); the poll guarantees
+        // forward progress when the event is missed. Each iteration of the loop
+        // body waits at most 50ms, so the worst-case overhead is bounded. The
+        // 120s ceiling now covers wall-clock-stalled SCTP rather than relying on
+        // an event we can't trust.
+        var sendStart = DateTime.UtcNow;
         while (_dc.BufferedAmount > MaxBufferedAmount && !Destroyed && _dc.ReadyState == "open")
         {
             var tcs = EnsureBufferedAmountLowTcs();
             if (_dc.BufferedAmount <= MaxBufferedAmount) break;
-            await tcs.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            try
+            {
+                // Race the event against a short polling tick. Whichever wakes
+                // first wins; the loop's top-of-iteration BufferedAmount check
+                // then either breaks out (drained) or installs a new TCS (still
+                // saturated) for the next wait round.
+                await Task.WhenAny(tcs.Task, Task.Delay(50)).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Defensive: WhenAny shouldn't throw, but if it does, fall through
+                // to the loop check rather than killing the peer.
+            }
+            // Wall-clock guard: 120 seconds with NO observed drain progress is a
+            // legitimate stall, not just a missed event. Throw so the caller
+            // (Peer.SendRaw) can Destroy the wire and let the dispatcher retry.
+            if ((DateTime.UtcNow - sendStart).TotalSeconds >= 120)
+            {
+                Console.WriteLine($"[RtcPeer][BACKPRESSURE-STALL] BufferedAmount={_dc.BufferedAmount} MaxBuffered={MaxBufferedAmount} elapsed={((DateTime.UtcNow - sendStart).TotalSeconds):F1}s ReadyState={_dc.ReadyState} dataLen={data.Length}");
+                throw new TimeoutException(
+                    $"SCTP backpressure stall: BufferedAmount={_dc.BufferedAmount} stayed above {MaxBufferedAmount} for 120s.");
+            }
         }
 
         if (Destroyed || _dc.ReadyState != "open")

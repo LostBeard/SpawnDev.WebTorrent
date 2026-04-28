@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.2.2-rc.3 (2026-04-29)
+
+SpawnDev.RTC dep bump to 1.1.8-rc.1. The rc.2 SCTP backpressure multi-awaiter fix was correct on its own but turned out to be insufficient on desktop because `SpawnDev.RTC` 1.1.7's `DesktopRTCDataChannel.OnBufferedAmountLow` was declared but never fired (SipSorcery has no native event hook). 1.1.8-rc.1 emulates the spec'd edge-triggered semantics via a 20ms-tick poller. Together the two fixes:
+
+- rc.2: shared TCS pattern releases ALL concurrent `Send()` callers when OnBufferedAmountLow fires (was orphaning all but the most recent via Interlocked.Exchange).
+- 1.1.8-rc.1: actually emits OnBufferedAmountLow on desktop (was silent in 1.1.7).
+
+Without 1.1.8-rc.1 the rc.2 multi-awaiter improvement was a no-op on desktop because there was no signal to wait on; the 30-second WaitAsync timeout fired regardless of how clever the awaiter pattern was. Diagnosed via `[RtcPeer-DIAG]` instrumentation on `SpawnDev.ILGPU.P2P`'s `LargeBuffer_1MB_DispatchedOverRealWebRtc_BitExact`: the timeout fired with `BufferedAmount=0` and `ReadyState=open`, proving SCTP had drained and the only thing missing was the signal.
+
+After both fixes: 1MB transfer passes 3/3 standalone in ~135s; 10MB passes (eventually) in 155-260s. Browser side unchanged - JS WebRTC fires OnBufferedAmountLow natively.
+
+Cleanup: also reverts the temporary `[Peer] Destroy` stack-trace logging that was added during rc.2 diagnosis.
+
 ## 3.2.2-rc.2 (2026-04-29)
 
 Critical follow-up to rc.1's SCTP backpressure work. The rc.1 implementation correctly added the `OnBufferedAmountLow` wait gate but used `Interlocked.Exchange` to install the awaiter's TCS into a single shared slot - which meant every concurrent `Send()` caller orphaned the previous one. Diagnosed against `SpawnDev.ILGPU.P2P`'s `LargeBuffer_1MB_DispatchedOverRealWebRtc_BitExact` reproduction: the test hung for 109s across 3 retries with "No healthy peers available for dispatch", traced via stack-trace instrumentation to `RtcPeer.Send` line 336 (`tcs.Task.WaitAsync`) firing `TimeoutException` after 30 seconds when the OnBufferedAmountLow signal never arrived for the orphaned awaiters.

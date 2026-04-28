@@ -108,8 +108,8 @@ public class RtcPeer : SimplePeer
 
         _pc.OnConnectionStateChange += state =>
         {
-            if (WebTorrentClient.VerboseLogging)
-                Console.WriteLine($"[RtcPeer] PC state={state} dcReady={_dc?.ReadyState ?? "null"}");
+            if (WebTorrentClient.VerboseLogging || (state == "failed" || state == "closed"))
+                Console.WriteLine($"[RtcPeer][PC-DIAG] state={state} dcReady={_dc?.ReadyState ?? "null"} channelName={ChannelName}");
 
             if (state == "disconnected")
             {
@@ -196,16 +196,17 @@ public class RtcPeer : SimplePeer
 
         channel.OnClose += () =>
         {
-            if (WebTorrentClient.VerboseLogging)
-                Console.WriteLine($"[RtcPeer] DataChannel CLOSE");
+            // Always emit on close - this is a terminal signal worth capturing in
+            // production logs to diagnose mid-dispatch peer disconnects (data
+            // channel closes are the most common cause).
+            Console.WriteLine($"[RtcPeer][CH-CLOSE-DIAG] label={channel.Label} bufferedAmount={channel.BufferedAmount} channelName={ChannelName}");
             EmitDisconnect();
             EmitClose();
         };
 
         channel.OnError += err =>
         {
-            if (WebTorrentClient.VerboseLogging)
-                Console.WriteLine($"[RtcPeer] DataChannel ERROR: {err}");
+            Console.WriteLine($"[RtcPeer][CH-ERROR-DIAG] err={err} channelName={ChannelName}");
             EmitError(new Exception(err));
         };
 

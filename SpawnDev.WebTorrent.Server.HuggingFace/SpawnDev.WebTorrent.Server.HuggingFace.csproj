@@ -5,8 +5,8 @@
 		<LangVersion>latest</LangVersion>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
-		<Version>3.2.0</Version>
-		<PackageReleaseNotes>v3.2.0 stable: Version-sync with SpawnDev.WebTorrent + SpawnDev.WebTorrent.Server 3.2.0. No source changes in WebTorrent.Server.HuggingFace itself. The HuggingFace proxy continues to serve model files from HuggingFace's CDN with local caching, automatic torrent generation, and per-model stats. See SpawnDev.WebTorrent 3.2.0 release notes for the underlying client / server changes (TCP listener tracker advertising, pluggable IPieceHashEngine, BandwidthPolicy enum, SipSorcery fork StreamStatus public setter).</PackageReleaseNotes>
+		<Version>3.2.2</Version>
+		<PackageReleaseNotes>v3.2.2 stable: version-sync with SpawnDev.WebTorrent + SpawnDev.WebTorrent.Server 3.2.2. No source changes in HuggingFace itself - the WebTorrent 3.2.2 SCTP backpressure improvements and SpawnDev.RTC 1.1.8 stable dep flow through transitively. See SpawnDev.WebTorrent 3.2.2 release notes.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>

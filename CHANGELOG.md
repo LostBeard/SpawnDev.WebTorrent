@@ -1,5 +1,67 @@
 # Changelog
 
+## 3.2.2 (2026-04-28)
+
+Stable rollup of `3.2.2-rc.1`, `3.2.2-rc.2`, `3.2.2-rc.3`, and the polling-based SCTP backpressure fix shipped in commit `7fd70c5`. Five SCTP / wire correctness improvements over `3.2.1`. **No breaking changes.** Verified via SpawnDev.ILGPU.P2P real-WebRTC integration tests (1MB / 10MB / 100MB / multi-peer scenarios).
+
+Pulls in **SpawnDev.RTC 1.1.8 stable** which is the OTHER half of the SCTP backpressure story (Desktop `OnBufferedAmountLow` now actually fires; was silent in 1.1.7). Without RTC 1.1.8 the backpressure wait pattern below has nothing to wait on.
+
+### SCTP backpressure shared-TCS multi-awaiter fix (rc.2 origin)
+
+`_bufferedAmountLowTcs` is now a SHARED `TaskCompletionSource` that every concurrent `Send` caller references at the time of their await. `OnBufferedAmountLow` completes the shared TCS to release ALL awaiters at once, then atomically installs a fresh TCS for the next round. Replaces the rc.1 `Interlocked.Exchange` pattern that orphaned all but the latest concurrent awaiter and timed out at 30s in P2P's 8-chunk pipeline.
+
+### `RtcPeer.Send` polling-based SCTP backpressure wait (commit `7fd70c5`)
+
+`OnBufferedAmountLow` is best-effort even with the rc.2 multi-awaiter fix. `DesktopRTCDataChannel`'s 20ms-tick poller fires only on a strict above-then-below transition observed between consecutive ticks; rapid SCTP drains miss the transition entirely and the event never fires for the next wait cycle.
+
+`Send` now races the event TCS against a 50ms `Task.Delay`:
+
+```csharp
+await Task.WhenAny(tcs.Task, Task.Delay(50)).ConfigureAwait(false);
+```
+
+The event is still honored (resolves promptly when it fires); the 50ms poll guarantees forward progress when the event is missed. The loop's top-of-iteration `BufferedAmount` re-check then either breaks out (drained) or installs a new TCS for the next round. The 120-second wall-clock ceiling now covers genuinely-stalled SCTP rather than relying on an event we can't trust.
+
+Diagnosed via `[RtcPeer][BACKPRESSURE-DIAG]` against `LargeBuffer_100MB_DispatchedOverRealWebRtc_BitExact`: `BufferedAmount=0` at the prior 30s/120s timeout, `ReadyState=open` - buffer drained, no event fired. After the fix: 100MB PASSES in ~5 min (was failing reliably with `TimeoutException` at 1m37s-7m7s across 3 prior runs).
+
+### Duplicate-handshake hardening (rc.1 origin)
+
+Phantom destroyed-wire entries no longer inflate `isLastWireForCanonical` to `false` indefinitely. The bridge filter `wireSet.RemoveWhere(w => w.Destroyed)` runs before counting in `wire.OnClose`. Closes the SpawnDev.ILGPU.P2P `P2PSwarm.TwoTab_PeerDiscovery` regression where `coord.peerCount` stayed at 1 for the full 90s budget after the worker tab closed.
+
+### SpawnDev.RTC 1.1.8 stable dep bump
+
+Replaces the prior 1.1.8-rc.4 transitive. RTC 1.1.8 has three additive fixes:
+- Desktop `OnBufferedAmountLow` now actually fires (was silent in 1.1.7)
+- `BrowserRTCPeerConnection` connection-state polling fallback (Chromium-under-Playwright)
+- Opt-in `BrowserRTCPeerConnection.DiagnosticsEnabled` flag
+
+## 3.2.2-rc.7 (2026-04-29) (superseded by 3.2.2 stable)
+
+### Polling-based SCTP backpressure wait closes LargeBuffer_100MB regression
+
+`RtcPeer.Send` no longer relies solely on the `OnBufferedAmountLow` event to wake from a backpressure wait. The event is best-effort on desktop - `DesktopRTCDataChannel`'s poller fires only on a strict above-then-below transition observed between 20ms polls. If `BufferedAmount` overshoots threshold and drains back BETWEEN poll ticks (rapid SCTP drain on 100MB+ transfers), the poller's `wasAboveThreshold` flag stays false and the event NEVER fires for the next wait cycle.
+
+The previous 30s/120s `WaitAsync` would then fire a TimeoutException despite `BufferedAmount=0` and `ReadyState=open`. The exception cascaded into `Peer.SendRaw` -> `peer.Destroy(null)` -> wire close cascade -> dispatcher `HandlePeerLost` -> "P2P dispatch failed, no peers for retry: Peer X disconnected".
+
+Diagnosed 2026-04-29 against SpawnDev.ILGPU.P2P's `LargeBuffer_100MB_DispatchedOverRealWebRtc_BitExact` via `[RtcPeer][BACKPRESSURE-DIAG]` instrumentation:
+
+```
+Wait timeout iter=1 BufferedAmount=0 MaxBuffered=65536 elapsed=120.0s
+ReadyState=open dataLen=261663 bufferDelta=1
+```
+
+Buffer fully drained, channel healthy, event never fired.
+
+**Fix:** `Send` races the event TCS against a 50ms `Task.Delay`:
+
+```csharp
+await Task.WhenAny(tcs.Task, Task.Delay(50)).ConfigureAwait(false);
+```
+
+The event is still honored (resolves promptly when it fires); the 50ms poll guarantees forward progress when the event is missed. The loop's top-of-iteration `BufferedAmount` re-check then either breaks out (drained) or installs a new TCS for the next round. The 120-second wall-clock ceiling now covers genuinely-stalled SCTP rather than relying on an event we can't trust. `BACKPRESSURE-STALL` diagnostic fires only on the rare 120s stall (real wire failure).
+
+**Result:** `LargeBuffer_100MB_DispatchedOverRealWebRtc_BitExact` PASSES in ~5 min (was failing reliably at 1m37s-7m7s with `TimeoutException` across 3 prior runs).
+
 ## 3.2.2-rc.6 (2026-04-29)
 
 SpawnDev.RTC 1.1.8-rc.4 dep bump. No code changes. Pulls in the opt-in `BrowserRTCPeerConnection.DiagnosticsEnabled` flag for debugging the polling-fallback path. Used by SpawnDev.ILGPU.Demo for PMT P2PSwarm.TwoTab_PeerDiscovery diagnostics.

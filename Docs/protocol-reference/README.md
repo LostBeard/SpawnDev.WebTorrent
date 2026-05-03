@@ -26,3 +26,4 @@ Generated: 2026-04-15T03:15:49.732Z
 5. [Metadata Exchange](05-metadata-exchange.md) - ut_metadata (BEP 9)
 6. [Piece Exchange](06-piece-exchange.md) - Request, piece data, download completion
 7. [Full Session Transcript](07-full-transcript.md) - Every event in chronological order
+8. [Offer Pairing and Duplicate-PC Prevention](08-offer-pairing-and-dedup.md) - Tracker offer pool, positional pairing, client-side dedup invariants, our gaps as of 2026-05-03

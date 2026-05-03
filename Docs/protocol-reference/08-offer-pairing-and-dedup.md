@@ -1,0 +1,113 @@
+# Offer Pairing and Duplicate-PC Prevention
+
+This document captures **observed protocol behavior of the JS WebTorrent / bittorrent-tracker reference** and the corresponding rules our C# implementation must follow to interoperate correctly without forming redundant `RTCPeerConnection`s.
+
+## TL;DR
+
+- A peer announces with up to `numwant` offers in the `offers` array (JS reference caps at **5**, NOT 10).
+- The tracker matches incoming offers to candidate peers **positionally** — `peers[i]` gets `params.offers[i]`. Each candidate peer is selected **at most once** per pairing round (random LRU walk; no peer is paired with multiple offers in the same announce).
+- The tracker forwards offers ONE-AT-A-TIME via separate `announce` messages (each carrying `peer_id`, `offer`, `offer_id`).
+- The CLIENT-SIDE invariant that prevents duplicate PCs is: **never create a second `RTCPeerConnection` to a `remotePeerId` we already have a connection (or pending offer) for.** The JS WebTorrent client does NOT explicitly enforce this at the offer-relay layer — it relies on the BT-handshake-level dedup (which JS WebTorrent also runs) to collapse the duplicates after the fact. In Chromium, that post-PC dedup triggers an SCTP cascade across PCs to the same remote (verified 2026-05-03 in Stable + Canary), so we MUST dedup earlier.
+
+## Reference protocol (bittorrent-tracker JS)
+
+Source: `tracker-debug/node_modules/bittorrent-tracker/`. Captured live in `Docs/protocol-reference/07-full-transcript.md`.
+
+### Numwant cap
+
+`lib/client/websocket-tracker.js:60-69` — JS client caps `numwant = Math.min(opts.numwant, 5)`. The 5 ceiling is hard-coded. Our `MaxOffers = 10` (TrackerSignalingClient.cs:31) and `Numwant = 10` (WebSocketTracker.cs:354) defaults DOUBLE the offer-pool size compared to the reference.
+
+### Server pairing strategy
+
+`server.js:522-535` — when an announce arrives with N offers:
+
+1. `peers = _getPeers(numwant - 1)` — random walk of swarm LRU (excluding self), at most `numwant - 1` candidates.
+2. `peers.forEach((peer, i) => peer.socket.send({ ..., offer: params.offers[i].offer, offer_id: params.offers[i].offer_id, peer_id: announcer.peer_id }))`.
+
+Each candidate peer is pulled at most once per round (random LRU walk). The announcer's offer pool is matched **positionally** against the candidate list; surplus offers (when `offers.length > peers.length`) are discarded silently for that round.
+
+### Offer relay shape
+
+Each forwarded offer arrives as a separate WebSocket frame:
+
+```json
+{
+  "action": "announce",
+  "info_hash": "...",
+  "peer_id": "<announcer's peer_id>",
+  "offer": { "type": "offer", "sdp": "..." },
+  "offer_id": "<20 raw bytes binary string>"
+}
+```
+
+The receiver:
+1. Looks up or creates an `RTCPeerConnection` for the offer.
+2. Calls `setRemoteDescription` with the SDP, `createAnswer`, `setLocalDescription`.
+3. Sends an `announce` back with `to_peer_id = announcer.peer_id`, `answer`, and the same `offer_id`.
+
+### Answer relay shape
+
+`server.js:537-548` — when an answer arrives:
+
+1. Server looks up the target peer by `params.to_peer_id`.
+2. Forwards the answer with `peer_id` set to the answerer's id and `offer_id` echoed back.
+
+The original offerer correlates by `offer_id` (kept in its own pending-offer table) and applies the answer to the correct `RTCPeerConnection`.
+
+### Multi-offer-per-pair behavior in practice
+
+Reference behavior in a 2-peer steady state where each side announces with `numwant=5`:
+
+- A's announce → tracker has A's 5 offers parked.
+- B announces → tracker forwards up to 5 of A's offers to B (positional pairing). B answers each.
+- B's announce ALSO contains B's 5 offers → tracker forwards up to 5 of B's offers to A. A answers each.
+- Net result: **up to 10 RTCPeerConnections exist between A and B** (5 from A's offers, 5 from B's). Each pair is a complete WebRTC handshake with its own DTLS/SCTP stack.
+
+The JS reference DOES form these duplicate PCs. JS WebTorrent's BT-handshake-level dedup (matching on canonical BT peer_id post-handshake) collapses them at the BT layer — destroying the loser `Peer` objects. In libwebrtc/Chromium, destroying one PC's data channel after both sides have completed BT handshake **triggers `sctp-failure | User-Initiated Abort | sctpCauseCode=12` on the SURVIVING PC's data channel** (verified Chrome Stable + Chrome Canary, 2026-05-03). Both sides observe the cascade simultaneously and lose all PCs to the canonical remote. RenderMandelbrot in `lostbeard.github.io` reproduces it 100% with coord=Stable, worker=Canary.
+
+## Required client-side behavior to interoperate
+
+To match the reference protocol AND avoid the Chromium SCTP cascade, our client MUST enforce this invariant at the **offer-relay layer**, BEFORE constructing an `RTCPeerConnection`:
+
+> **An offer received from `remotePeerId` X is processed only if we have NO existing or pending RTCPeerConnection for X. Otherwise, the offer is silently dropped.**
+
+Symmetrically, on outbound:
+
+> **When generating offers for the announce pool, we may generate up to `numwant` offers but not more. The tracker's positional-pairing rule guarantees each offer goes to a distinct candidate peer; our duplicate-PC formation comes from the INCOMING side, not the outgoing.**
+
+Numwant should be **5 to match the reference**. Larger values (we currently default 10) double the duplicate-PC formation rate without any benefit — the tracker will just discard surplus offers when fewer candidates exist, and forward 1-to-N pairings when many candidates exist (where N is the incoming peer's count).
+
+## Our implementation gaps (as of 2026-05-03)
+
+### Gap 1: No remote-peer_id dedup on incoming offer
+
+`SpawnDev.WebTorrent.WebSocketTracker.SimplePeerRoomHandler.HandleOfferAsync` (WebSocketTracker.cs:289-328): creates a fresh `SimplePeer` via `_factory(false)` for every incoming offer with NO check against the per-room remote peer set. The non-WebTorrent path `SpawnDev.RTC.Signaling.RtcPeerConnectionRoomHandler.HandleOfferAsync` (RtcPeerConnectionRoomHandler.cs:107-130) already has the correct pattern: `if (_peers.ContainsKey(remoteHex)) return null; // already paired`. We need the equivalent in the WebTorrent flavor.
+
+### Gap 2: Numwant divergence
+
+Our defaults are 10 (TrackerSignalingClient.cs:31, WebSocketTracker.cs:354). JS reference is 5. Fix: lower to 5 to match.
+
+### Gap 3: Outbound-offer race window
+
+When two peers announce within a tracker pairing window, BOTH may end up generating offers for the same remote (because at offer-generation time we don't know who the offer will be matched with — the tracker decides). Even with Gap 1 fixed on the inbound side, we can still generate 5 outbound offers + receive 5 inbound offers = up to 5 incoming PCs accepted via Gap 1 dedup but the FIRST inbound passes (no dedup state yet) AND all 5 outbound pair with the remote's incoming side.
+
+The mitigation is a **two-phase acceptance**: track `pendingOutbound` peer ids (populated at HandleAnswerAsync time when we know who answered) and add Gap 1 dedup to also check `pendingOutbound`. Combined with the BT-handshake-level dedup as a final safety net, this collapses the duplicate-PC count from 5+5=10 to at most 1.
+
+## Server-side check
+
+`SpawnDev.RTC.Server.TrackerSignalingServer` (TrackerSignalingServer.cs:373-400): positional pairing matches the JS reference. NOT the bug. Our server is correct.
+
+## Verification harness
+
+`tracker-debug/verify-tracker-parity.mjs` validates server-side behavior matches JS reference. It does NOT test client-side dedup or duplicate-PC count. To verify Gap 1 + Gap 2 fixes we should add a client-side parity test that runs the C# client against the JS reference server and asserts at most 1 RTCPeerConnection per remote peer_id after a 2-peer pairing round.
+
+## Pointers (file:line)
+
+- Reference: `tracker-debug/node_modules/bittorrent-tracker/lib/client/websocket-tracker.js:60-69` (numwant cap = 5)
+- Reference: `tracker-debug/node_modules/bittorrent-tracker/server.js:522-535` (positional pairing)
+- Our (correct dedup): `SpawnDev.RTC/SpawnDev.RTC/Signaling/RtcPeerConnectionRoomHandler.cs:107-130`
+- Our (missing dedup): `SpawnDev.WebTorrent/SpawnDev.WebTorrent/WebSocketTracker.cs:289-328`
+- Our (outbound generator): `SpawnDev.WebTorrent/SpawnDev.WebTorrent/WebSocketTracker.cs:226-287`
+- Our (numwant defaults): `SpawnDev.RTC/SpawnDev.RTC/Signaling/TrackerSignalingClient.cs:31`, `SpawnDev.WebTorrent/SpawnDev.WebTorrent/WebSocketTracker.cs:354`
+- Server pairing (correct): `SpawnDev.RTC/SpawnDev.RTC.Server/TrackerSignalingServer.cs:373-400`
+- BT-level dedup (the post-PC cleanup): `SpawnDev.WebTorrent/SpawnDev.WebTorrent/Torrent.cs:891-997` — this still runs as a safety net but should rarely trigger if Gap 1 is fixed.

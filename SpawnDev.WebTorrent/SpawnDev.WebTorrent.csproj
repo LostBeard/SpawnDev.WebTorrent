@@ -9,8 +9,8 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-		<Version>3.2.4-rc.1</Version>
-		<PackageReleaseNotes>v3.2.4-rc.1: closes the duplicate-handshake-destroy SCTP cascade. `Torrent.OnHandshake`'s duplicate-detection no longer calls `Destroy()` on either peer — both wires stay alive and the consumer layer (notably `SpawnDev.ILGPU.P2P.P2PWebRtcBridge`) dedupes by canonical BT peerId. Empirically, on Chrome Stable AND Canary, calling `_pc.Close()` on the loser PC caused Chromium to emit `sctp-failure | User-Initiated Abort | sctpCauseCode=12` on the SURVIVOR's data channel, killing the entire peer-to-peer connection. Both sides observed the cascade. Rationale + verification in commit message.</PackageReleaseNotes>
+		<Version>3.2.4-rc.2</Version>
+		<PackageReleaseNotes>v3.2.4-rc.2: prevents duplicate `RTCPeerConnection` formation at the offer-relay layer. `SimplePeerRoomHandler.HandleOfferAsync` and `HandleAnswerAsync` now dedupe by remote peer_id (mirrors the existing pattern in `SpawnDev.RTC.Signaling.RtcPeerConnectionRoomHandler.cs:111`). Per the JS bittorrent-tracker reference, the tracker's positional pairing can deliver up to `numwant` offers from the same logical remote within one announce round; without this dedup we created N parallel `RTCPeerConnection`s per logical peer, then collapsed them at the BT-handshake layer — and the collapse triggers Chromium's `sctp-failure | User-Initiated Abort` cascade across PCs to the same remote (verified Stable + Canary, 2026-05-03). Combined with rc.1's "don't destroy duplicate" change at the BT layer, duplicates are now both prevented at the source AND tolerated as a fallback. SpawnDev.RTC dep bumped 1.1.8 -&gt; 1.1.9-rc.1 (its `TrackerSignalingClient.MaxOffers` was lowered 10 -&gt; 5 to match the JS reference). See `Docs/protocol-reference/08-offer-pairing-and-dedup.md`.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>
@@ -51,7 +51,7 @@
 		     standalone SpawnDev.WebTorrent checkout - they don't have the sibling RTC repo.
 		     1.1.1 is the minimum version: 1.1.0 declared a dep on public SIPSorcery 10.0.4-pre
 		     which doesn't exist on nuget.org; 1.1.1 bundles the fork DLLs inline (ILGPU pattern). -->
-		<PackageReference Include="SpawnDev.RTC" Version="1.1.8" />
+		<PackageReference Include="SpawnDev.RTC" Version="1.1.9-rc.1" />
 	</ItemGroup>
 
 	<ItemGroup>

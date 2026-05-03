@@ -202,6 +202,22 @@ public class WebSocketTracker : IAsyncDisposable
         // timer callbacks race to remove them.
         private readonly ConcurrentDictionary<string, (SimplePeer peer, Timer? timer)> _pendingOffers = new();
 
+        // Remote peer IDs (hex, lowercase) we have already accepted an offer from OR
+        // sent an answer to. Used to dedupe duplicate offers from the same remote within
+        // one announce-pairing window — the JS bittorrent-tracker server pairs up to
+        // `numwant` of OUR offers with up to `numwant` of THEIR offers per round, so the
+        // same logical remote can show up in our HandleOfferAsync N times if we haven't
+        // dedupe'd yet. Without this set, we create N RTCPeerConnections to the same
+        // remote, then collapse them at the BT-handshake layer (Torrent.cs:891+) — but
+        // collapsing in libwebrtc/Chromium triggers `sctp-failure | User-Initiated Abort`
+        // on the SURVIVING PC, killing the entire peer-to-peer connection (verified
+        // 2026-05-03 Stable + Canary). Dedupe at the offer-relay layer, BEFORE PC
+        // creation, eliminates the cascade. Mirrors the pattern in
+        // `SpawnDev.RTC.Signaling.RtcPeerConnectionRoomHandler.HandleOfferAsync` line 111
+        // (`if (_peers.ContainsKey(remoteHex)) return null;`). See
+        // `Docs/protocol-reference/08-offer-pairing-and-dedup.md` for the full protocol.
+        private readonly ConcurrentDictionary<string, byte> _remotePeerIds = new();
+
         public SimplePeerRoomHandler(Func<bool, SimplePeer> factory, Action<SimplePeer> onPeer, Action<TrackerUpdate>? onUpdate, Action<string>? onWarning, Action<string>? trackerOnWarning)
         {
             _factory = factory;
@@ -288,6 +304,19 @@ public class WebSocketTracker : IAsyncDisposable
 
         public async Task<string?> HandleOfferAsync(byte[] remotePeerId, byte[] offerId, string offerSdp, CancellationToken ct)
         {
+            // Dedupe: silently drop offers from a remote we already have a (or pending)
+            // SimplePeer for. The JS bittorrent-tracker server pairs up to `numwant`
+            // offers with `numwant` candidates per round; the same logical remote can
+            // show up here multiple times within one pairing window. Creating one
+            // RTCPeerConnection per offer leads to N parallel PCs which we then collapse
+            // at the BT layer — and that collapse triggers Chromium's
+            // `sctp-failure | User-Initiated Abort` cascade across PCs to the same
+            // remote. Drop early, BEFORE PC creation. Mirrors
+            // `RtcPeerConnectionRoomHandler.HandleOfferAsync` line 111.
+            var remoteHex = Convert.ToHexString(remotePeerId).ToLowerInvariant();
+            if (!_remotePeerIds.TryAdd(remoteHex, 0))
+                return null;
+
             SimplePeer? peer = null;
             try
             {
@@ -299,6 +328,10 @@ public class WebSocketTracker : IAsyncDisposable
                 {
                     if (s.Type == "answer") answerTcs.TrySetResult(s);
                 }
+
+                // Cleanup: when the SimplePeer disconnects, free the dedup slot so a
+                // subsequent re-pairing with the same remote can establish a fresh PC.
+                peer.OnClose += () => _remotePeerIds.TryRemove(remoteHex, out _);
 
                 await peer.InitAsync().ConfigureAwait(false);
 
@@ -316,10 +349,12 @@ public class WebSocketTracker : IAsyncDisposable
             }
             catch (OperationCanceledException)
             {
+                _remotePeerIds.TryRemove(remoteHex, out _);
                 return null;
             }
             catch (Exception ex)
             {
+                _remotePeerIds.TryRemove(remoteHex, out _);
                 _onWarning?.Invoke($"Answer generation failed: {ex.Message}");
                 _trackerOnWarning?.Invoke($"Answer generation failed: {ex.Message}");
                 if (peer is not null) await peer.DisposeAsync().ConfigureAwait(false);
@@ -334,6 +369,22 @@ public class WebSocketTracker : IAsyncDisposable
                 return Task.CompletedTask;
 
             entry.timer?.Dispose();
+
+            // Dedupe: if we already have a SimplePeer for this remote (e.g. an earlier
+            // offer-pairing round resolved first), dispose this one and don't deliver
+            // it to the consumer. Otherwise we'd end up with N PCs to the same remote
+            // and trigger the Chromium SCTP cascade when the BT-layer dedup collapses
+            // them. Same rationale as HandleOfferAsync's TryAdd.
+            var remoteHex = Convert.ToHexString(remotePeerId).ToLowerInvariant();
+            if (!_remotePeerIds.TryAdd(remoteHex, 0))
+            {
+                _ = entry.peer.DisposeAsync();
+                return Task.CompletedTask;
+            }
+
+            // Cleanup: when the SimplePeer disconnects, free the dedup slot.
+            entry.peer.OnClose += () => _remotePeerIds.TryRemove(remoteHex, out _);
+
             _onPeer(entry.peer);
             _ = entry.peer.Signal(new SignalData { Type = "answer", Sdp = answerSdp });
             return Task.CompletedTask;
@@ -351,7 +402,11 @@ public class AnnounceOptions
     public long Downloaded { get; set; }
     public long Left { get; set; }
     public string? Event { get; set; }
-    public int Numwant { get; set; } = 10; // JS: MAX_ANNOUNCE_PEERS = 10
+    // JS bittorrent-tracker reference caps client-side numwant at 5
+    // (lib/client/websocket-tracker.js:61: `numwant = Math.min(opts.numwant, 5)`).
+    // Our previous default of 10 was double and inflated duplicate-PC formation 2x.
+    // See `Docs/protocol-reference/08-offer-pairing-and-dedup.md` for the protocol details.
+    public int Numwant { get; set; } = 5;
     /// <summary>
     /// TCP listener port to advertise to the tracker. Mainline trackers
     /// (HTTP/UDP) include this in their compact peer list so other clients can

@@ -1,5 +1,26 @@
 # Changelog
 
+## 3.2.3-rc.2 (2026-05-03)
+
+### Phantom-alive wire detection (synthesis-aware)
+
+New `SimplePeer.IsTransportDead` virtual property (default `false`), overridden in `RtcPeer` to return `true` when the underlying transport is no longer reachable. `Wire` exposes a `SimplePeer` back-reference set in `Peer.OnConnected` so consumers walking `torrent.Wires` (notably `SpawnDev.ILGPU.P2P.P2PWebRtcBridge`) can detect transport death without scanning a separate collection.
+
+`RtcPeer.IsTransportDead` consults a new `_lastObservedPcState` field FIRST (captured inside the `_pc.OnConnectionStateChange` event handler, which fires for both real native transitions AND synthesised `"failed"` from `SpawnDev.RTC.Browser.BrowserRTCPeerConnection`'s 15s iceDisconnected debounce poller). Falls back to the native `_pc.ConnectionState` query only if the field hasn't been populated yet. The native query lies on Chromium-under-Playwright: when the poller invokes `OnConnectionStateChange("failed")` synthetically, the underlying JS native `connectionState` stays stuck at `"connected"` indefinitely.
+
+`_dcEverOpen` is set inside `WireDataChannel`'s `channel.OnOpen` (and the defensive "already open at subscribe time" branch), enabling `IsTransportDead` to distinguish "channel never opened (handshake)" from "channel was open and closed (terminal)" — when the data channel transitioned away from `"open"` after once being open, the transport is dead.
+
+### What this closes
+
+The 4.9.2-rc.34 known-issue from the SpawnDev.ILGPU.P2P 2026-04-29 EOD: `P2PSwarm.TwoTab_PeerDiscovery` failed at the 90s timeout because the bridge filter `wireSet.RemoveWhere(w => w.Destroyed)` couldn't distinguish phantom-alive wires (whose underlying transport was gone but whose `Destroyed` flag had not yet been set, because the close-event chain was still propagating) from real live wires. Result: peer never unregisters, `coord.peerCount` stuck at 1, test times out.
+
+With the new accessor, the bridge can walk `torrent.Wires` and skip `wire.SimplePeer?.IsTransportDead == true` alongside the existing `Destroyed` skip. Verified: `TwoTab_PeerDiscovery` PASS in 1m 37s standalone (was failing in rc.34); `LargeBuffer_100MB_DispatchedOverRealWebRtc_BitExact` PASS in 3m 37s standalone (no regression vs rc.34).
+
+### Companion bumps
+
+- `SpawnDev.WebTorrent.Server 3.2.3-rc.2`: version-sync bump only.
+- `SpawnDev.WebTorrent.Server.HuggingFace 3.2.3-rc.2`: version-sync bump only.
+
 ## 3.2.2 (2026-04-28)
 
 Stable rollup of `3.2.2-rc.1`, `3.2.2-rc.2`, `3.2.2-rc.3`, and the polling-based SCTP backpressure fix shipped in commit `7fd70c5`. Five SCTP / wire correctness improvements over `3.2.1`. **No breaking changes.** Verified via SpawnDev.ILGPU.P2P real-WebRTC integration tests (1MB / 10MB / 100MB / multi-peer scenarios).

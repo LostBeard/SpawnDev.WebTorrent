@@ -91,9 +91,12 @@ public class WebSocketTracker : IAsyncDisposable
     // ========================
     // CONSTRUCTOR
     // ========================
+    private readonly string _localPeerIdHex;
+
     private WebSocketTracker(string announceUrl, byte[] peerId, Func<bool, SimplePeer> createPeerFunc)
     {
         _defaultFactory = createPeerFunc;
+        _localPeerIdHex = Convert.ToHexString(peerId).ToLowerInvariant();
         _signal = TrackerSignalingClient.GetOrCreate(announceUrl, peerId);
 
         _signal.OnConnected += () => OnAnnounce?.Invoke();
@@ -120,7 +123,7 @@ public class WebSocketTracker : IAsyncDisposable
     {
         var room = RoomKey.FromBytes(infoHash);
         var wire = room.ToWireString();
-        var handler = new SimplePeerRoomHandler(peerFactory ?? _defaultFactory, onPeer, onUpdate, onWarning, OnWarning);
+        var handler = new SimplePeerRoomHandler(_localPeerIdHex, peerFactory ?? _defaultFactory, onPeer, onUpdate, onWarning, OnWarning);
         _handlers[wire] = handler;
         _signal.Subscribe(room, handler);
     }
@@ -191,6 +194,7 @@ public class WebSocketTracker : IAsyncDisposable
     // ========================
     private sealed class SimplePeerRoomHandler : ISignalingRoomHandler
     {
+        private readonly string _localPeerIdHex;
         private readonly Func<bool, SimplePeer> _factory;
         private readonly Action<SimplePeer> _onPeer;
         private readonly Action<TrackerUpdate>? _onUpdate;
@@ -203,23 +207,27 @@ public class WebSocketTracker : IAsyncDisposable
         private readonly ConcurrentDictionary<string, (SimplePeer peer, Timer? timer)> _pendingOffers = new();
 
         // Remote peer IDs (hex, lowercase) we have already accepted an offer from OR
-        // sent an answer to. Used to dedupe duplicate offers from the same remote within
-        // one announce-pairing window — the JS bittorrent-tracker server pairs up to
-        // `numwant` of OUR offers with up to `numwant` of THEIR offers per round, so the
-        // same logical remote can show up in our HandleOfferAsync N times if we haven't
-        // dedupe'd yet. Without this set, we create N RTCPeerConnections to the same
-        // remote, then collapse them at the BT-handshake layer (Torrent.cs:891+) — but
-        // collapsing in libwebrtc/Chromium triggers `sctp-failure | User-Initiated Abort`
-        // on the SURVIVING PC, killing the entire peer-to-peer connection (verified
-        // 2026-05-03 Stable + Canary). Dedupe at the offer-relay layer, BEFORE PC
-        // creation, eliminates the cascade. Mirrors the pattern in
-        // `SpawnDev.RTC.Signaling.RtcPeerConnectionRoomHandler.HandleOfferAsync` line 111
-        // (`if (_peers.ContainsKey(remoteHex)) return null;`). See
-        // `Docs/protocol-reference/08-offer-pairing-and-dedup.md` for the full protocol.
+        // sent an answer to. Combined with a cross-side-stable peer_id tiebreaker
+        // (lex-compare on hex strings; larger peer_id is canonical answerer-side,
+        // smaller is canonical offerer-side) this prevents both:
+        //   (1) the same logical remote occupying two RTCPeerConnections after one
+        //       announce round (the JS tracker can pair the same candidate against
+        //       multiple of our positional offers when surplus offers exist), and
+        //   (2) the cross-side mismatch when both peers announce simultaneously and
+        //       race their HandleOfferAsync vs HandleAnswerAsync paths to opposite
+        //       PCs - which leaves both data channels orphaned (peerCount = 0).
+        // Without offer-relay dedup we collapse duplicates at the BT-handshake layer
+        // (Torrent.cs:891+), and that collapse triggers Chromium's
+        // `sctp-failure | User-Initiated Abort` cascade on the SURVIVING PC, killing
+        // the entire peer-to-peer connection (verified 2026-05-03 Stable + Canary).
+        // Mirrors and extends the pattern in
+        // `SpawnDev.RTC.Signaling.RtcPeerConnectionRoomHandler.HandleOfferAsync:111`.
+        // See `Docs/protocol-reference/08-offer-pairing-and-dedup.md`.
         private readonly ConcurrentDictionary<string, byte> _remotePeerIds = new();
 
-        public SimplePeerRoomHandler(Func<bool, SimplePeer> factory, Action<SimplePeer> onPeer, Action<TrackerUpdate>? onUpdate, Action<string>? onWarning, Action<string>? trackerOnWarning)
+        public SimplePeerRoomHandler(string localPeerIdHex, Func<bool, SimplePeer> factory, Action<SimplePeer> onPeer, Action<TrackerUpdate>? onUpdate, Action<string>? onWarning, Action<string>? trackerOnWarning)
         {
+            _localPeerIdHex = localPeerIdHex;
             _factory = factory;
             _onPeer = onPeer;
             _onUpdate = onUpdate;
@@ -304,16 +312,24 @@ public class WebSocketTracker : IAsyncDisposable
 
         public async Task<string?> HandleOfferAsync(byte[] remotePeerId, byte[] offerId, string offerSdp, CancellationToken ct)
         {
-            // Dedupe: silently drop offers from a remote we already have a (or pending)
-            // SimplePeer for. The JS bittorrent-tracker server pairs up to `numwant`
-            // offers with `numwant` candidates per round; the same logical remote can
-            // show up here multiple times within one pairing window. Creating one
-            // RTCPeerConnection per offer leads to N parallel PCs which we then collapse
-            // at the BT layer — and that collapse triggers Chromium's
-            // `sctp-failure | User-Initiated Abort` cascade across PCs to the same
-            // remote. Drop early, BEFORE PC creation. Mirrors
-            // `RtcPeerConnectionRoomHandler.HandleOfferAsync` line 111.
             var remoteHex = Convert.ToHexString(remotePeerId).ToLowerInvariant();
+
+            // Cross-side-stable tiebreaker: the LARGER peer_id (lex-compared) is the
+            // canonical answerer-side. If we are smaller, drop this offer-relay and
+            // wait for our own pending offer (sent during our own announce) to be
+            // answered via HandleAnswerAsync. Both peers apply the same comparison
+            // and converge on the SAME pair (offerer-side at the smaller, answerer-
+            // side at the larger). Without this, when both peers announce in the same
+            // window, the TryAdd race below produces NON-deterministic per-side
+            // choices that can leave the two sides on OPPOSITE PCs (PC1_A ↔ PC2_B
+            // mismatch, both data-channels never open, peerCount stays 0). See
+            // `Docs/protocol-reference/08-offer-pairing-and-dedup.md`.
+            if (string.CompareOrdinal(_localPeerIdHex, remoteHex) < 0)
+                return null;
+
+            // Dedupe (defense in depth): drop the second offer if the same logical
+            // remote shows up twice in one pairing window (rare; tiebreaker normally
+            // prevents this).
             if (!_remotePeerIds.TryAdd(remoteHex, 0))
                 return null;
 
@@ -370,19 +386,25 @@ public class WebSocketTracker : IAsyncDisposable
 
             entry.timer?.Dispose();
 
-            // Dedupe: if we already have a SimplePeer for this remote (e.g. an earlier
-            // offer-pairing round resolved first), dispose this one and don't deliver
-            // it to the consumer. Otherwise we'd end up with N PCs to the same remote
-            // and trigger the Chromium SCTP cascade when the BT-layer dedup collapses
-            // them. Same rationale as HandleOfferAsync's TryAdd.
             var remoteHex = Convert.ToHexString(remotePeerId).ToLowerInvariant();
+
+            // Cross-side-stable tiebreaker (matched to HandleOfferAsync): the SMALLER
+            // peer_id is the canonical offerer-side. If we are larger, dispose this
+            // pending peer and wait for the offer-relay from the smaller peer (which
+            // we will accept via HandleOfferAsync). See HandleOfferAsync above.
+            if (string.CompareOrdinal(_localPeerIdHex, remoteHex) > 0)
+            {
+                _ = entry.peer.DisposeAsync();
+                return Task.CompletedTask;
+            }
+
+            // Dedupe (defense in depth): rare with tiebreaker in place.
             if (!_remotePeerIds.TryAdd(remoteHex, 0))
             {
                 _ = entry.peer.DisposeAsync();
                 return Task.CompletedTask;
             }
 
-            // Cleanup: when the SimplePeer disconnects, free the dedup slot.
             entry.peer.OnClose += () => _remotePeerIds.TryRemove(remoteHex, out _);
 
             _onPeer(entry.peer);

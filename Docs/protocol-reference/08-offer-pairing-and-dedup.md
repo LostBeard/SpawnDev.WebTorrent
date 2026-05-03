@@ -93,6 +93,39 @@ When two peers announce within a tracker pairing window, BOTH may end up generat
 
 The mitigation is a **two-phase acceptance**: track `pendingOutbound` peer ids (populated at HandleAnswerAsync time when we know who answered) and add Gap 1 dedup to also check `pendingOutbound`. Combined with the BT-handshake-level dedup as a final safety net, this collapses the duplicate-PC count from 5+5=10 to at most 1.
 
+## Fix landed (3.2.4-rc.3, 2026-05-03)
+
+Two layers, both in `SpawnDev.WebTorrent.WebSocketTracker.SimplePeerRoomHandler`:
+
+### Layer 1: offer-relay dedup (rc.2)
+
+A `_remotePeerIds` `ConcurrentDictionary<string, byte>` tracks the set of remote peer_ids we have an active or pending `SimplePeer` for. `HandleOfferAsync` `TryAdd`s before creating any PC; if the slot is taken (e.g. an earlier `HandleOfferAsync` or `HandleAnswerAsync` for the same remote got there first) the offer is silently dropped. `HandleAnswerAsync` does the same and disposes the duplicate `SimplePeer` if it loses the race. `peer.OnClose +=` cleans up the slot when the connection ends so re-pairing after a real disconnect still works. Mirrors `SpawnDev.RTC.Signaling.RtcPeerConnectionRoomHandler.HandleOfferAsync:111`.
+
+### Layer 2: cross-side-stable peer_id tiebreaker (rc.3)
+
+Layer 1 prevents one peer from creating duplicate PCs to the same remote. But when **both** peers announce within the same tracker pairing window, each side races its `HandleOfferAsync` (incoming offer-relay from the remote's announce) vs its `HandleAnswerAsync` (incoming answer to its own pending offer). The "first runner wins" rule is non-deterministic per side, and when the two sides' coin flips disagree, they end up holding **different halves** of the duplicate pair — A keeps its `as-offerer` PC while B keeps its `as-offerer` PC, and neither pair has both endpoints alive. peerCount stays at 0 on both sides. `P2PSwarm.DemoPath_MandelbrotChunk_OutputOnlyBuffer_OverRealWebRtc_BitExact` failed against rc.2 with exactly this pattern (Coordinator peers: 0, Worker peers: 0 after 60s).
+
+Fix: lex-compare hex peer_ids and let the comparison decide which side keeps which PC.
+
+> **The LARGER peer_id is the canonical answerer-side. The SMALLER peer_id is the canonical offerer-side.**
+
+Implemented by gating each handler on the comparison BEFORE the TryAdd:
+
+- `HandleOfferAsync(X for offer from Y)` — accept only if `X.peer_id > Y.peer_id`. Otherwise drop.
+- `HandleAnswerAsync(X for answer from Y)` — accept only if `X.peer_id < Y.peer_id`. Otherwise dispose pending peer.
+
+Both sides apply the same comparison and converge on the **same** pair (PC1: A-as-offerer ↔ B-as-answerer, when A < B). The Layer 1 TryAdd dedup is kept as a defense-in-depth net for the rare case where the same logical remote shows up twice in one round.
+
+`WebSocketTracker` now stores the local peer_id hex (`_localPeerIdHex`) and passes it to each `SimplePeerRoomHandler` ctor.
+
+### Asymmetric-announce note
+
+When ONLY the larger peer announces, the smaller peer's `HandleOfferAsync` drops (per the rule above), and the larger peer's pending offer times out. No connection forms that round. The connection succeeds on the next round when the smaller peer's announce fires (peers announce periodically, default interval 120s but typically forced to seconds during initial swarm join). This is the cost of cross-side-stable convergence — non-deterministic ordering in exchange for guaranteed pair-matching.
+
+### `MaxOffers` / `Numwant` align
+
+Both `TrackerSignalingClient.MaxOffers` and `WebSocketTracker.AnnounceOptions.Numwant` defaults lowered 10 → 5 to match the JS reference cap (`Math.min(opts.numwant, 5)` in `lib/client/websocket-tracker.js:61`). The previous 10 doubled the duplicate-PC formation rate without any benefit because the tracker's positional pairing only matches at most one offer per candidate peer per round; surplus offers were silently discarded.
+
 ## Server-side check
 
 `SpawnDev.RTC.Server.TrackerSignalingServer` (TrackerSignalingServer.cs:373-400): positional pairing matches the JS reference. NOT the bug. Our server is correct.

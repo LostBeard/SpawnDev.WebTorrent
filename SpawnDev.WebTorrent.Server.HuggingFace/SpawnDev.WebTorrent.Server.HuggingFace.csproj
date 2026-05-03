@@ -5,8 +5,8 @@
 		<LangVersion>latest</LangVersion>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
-		<Version>3.2.2</Version>
-		<PackageReleaseNotes>v3.2.2 stable: version-sync with SpawnDev.WebTorrent + SpawnDev.WebTorrent.Server 3.2.2. No source changes in HuggingFace itself - the WebTorrent 3.2.2 SCTP backpressure improvements and SpawnDev.RTC 1.1.8 stable dep flow through transitively. See SpawnDev.WebTorrent 3.2.2 release notes.</PackageReleaseNotes>
+		<Version>3.2.3-rc.2</Version>
+		<PackageReleaseNotes>v3.2.3-rc.1: version-sync with SpawnDev.WebTorrent + SpawnDev.WebTorrent.Server 3.2.3-rc.1. No source changes; transitive bump only.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>

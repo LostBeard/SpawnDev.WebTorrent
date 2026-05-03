@@ -14,6 +14,56 @@ public class RtcPeer : SimplePeer
     private IRTCDataChannel? _dc;
     private readonly string[] _iceServers;
     private TaskCompletionSource<bool>? _openTcs;
+    private bool _dcEverOpen;
+
+    /// <summary>
+    /// Last connection state observed via the OnConnectionStateChange event chain. Captures
+    /// synthesised states from <c>SpawnDev.RTC.Browser.BrowserRTCPeerConnection</c>'s
+    /// iceDisconnected debounce poller, which calls <c>OnConnectionStateChange("failed")</c>
+    /// without the underlying JS native <c>connectionState</c> property updating
+    /// (Chromium-under-Playwright bug where the native value stays stuck at <c>"connected"</c>
+    /// forever after remote tab close). The native query in <see cref="IsTransportDead"/>
+    /// can therefore lie about death; this field is the authoritative effective state
+    /// because it observes both real and synthesised transitions.
+    /// </summary>
+    private string? _lastObservedPcState;
+
+    /// <summary>
+    /// Reports the underlying transport as dead when ANY of:
+    /// (1) the last-observed PC state (which captures synthesised "failed" from
+    /// BrowserRTCPeerConnection's poller as well as real native transitions) is
+    /// <c>"failed"</c>/<c>"closed"</c>; (2) the native PC state is terminal (covers
+    /// platforms whose state changes never went through our event chain); (3) the data
+    /// channel was once <c>"open"</c> and is no longer. State <c>"new"</c>/<c>"connecting"</c>
+    /// is NOT reported as dead — those are legitimate handshake transitions. Throws are
+    /// caught and treated as dead (a disposed PC is a dead PC).
+    /// Used by <c>SpawnDev.ILGPU.P2P.P2PWebRtcBridge</c> to filter phantom-alive wires
+    /// whose <see cref="SimplePeer.Destroyed"/> flag has not yet been set because the
+    /// close-event chain is still propagating.
+    /// </summary>
+    public override bool IsTransportDead
+    {
+        get
+        {
+            try
+            {
+                if (_lastObservedPcState == "failed" || _lastObservedPcState == "closed") return true;
+                if (_pc == null) return true;
+                var pcState = _pc.ConnectionState;
+                if (pcState == "failed" || pcState == "closed") return true;
+                if (_dcEverOpen)
+                {
+                    var dcState = _dc?.ReadyState;
+                    if (dcState != "open") return true;
+                }
+                return false;
+            }
+            catch
+            {
+                return true;
+            }
+        }
+    }
 
     /// <summary>
     /// The underlying SpawnDev.RTC <see cref="IRTCPeerConnection"/> for this peer.
@@ -108,6 +158,14 @@ public class RtcPeer : SimplePeer
 
         _pc.OnConnectionStateChange += state =>
         {
+            // Capture the effective state for IsTransportDead. This event fires for both
+            // real native transitions AND synthesised ones (BrowserRTCPeerConnection's
+            // 15s iceDisconnected debounce poller invokes us with "failed" when the JS
+            // native connectionState gets stuck at "connected" / "disconnected" -
+            // Chromium-under-Playwright bug on remote tab close). Reading the native
+            // value at IsTransportDead time would miss the synthesised transition.
+            _lastObservedPcState = state;
+
             if (WebTorrentClient.VerboseLogging || (state == "failed" || state == "closed"))
                 Console.WriteLine($"[RtcPeer][PC-DIAG] state={state} dcReady={_dc?.ReadyState ?? "null"} channelName={ChannelName}");
 
@@ -170,6 +228,7 @@ public class RtcPeer : SimplePeer
 
         channel.OnOpen += () =>
         {
+            _dcEverOpen = true;
             if (WebTorrentClient.VerboseLogging)
                 Console.WriteLine($"[RtcPeer] DataChannel OPEN label={channel.Label} initiator={Initiator}");
             EmitConnect();
@@ -222,6 +281,7 @@ public class RtcPeer : SimplePeer
         // run first so the event has an actual subscriber when it fires.
         if (channel.ReadyState == "open")
         {
+            _dcEverOpen = true;
             if (WebTorrentClient.VerboseLogging)
                 Console.WriteLine($"[RtcPeer] DataChannel was already OPEN at subscribe time — deferring EmitConnect");
             _ = Task.Run(() =>

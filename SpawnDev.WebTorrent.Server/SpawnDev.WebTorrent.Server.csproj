@@ -5,8 +5,8 @@
 		<LangVersion>latest</LangVersion>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
-		<Version>3.2.2</Version>
-		<PackageReleaseNotes>v3.2.2 stable: version-sync with SpawnDev.WebTorrent 3.2.2 stable. No source changes in WebTorrent.Server itself - the WebTorrent 3.2.2 SCTP backpressure improvements and SpawnDev.RTC 1.1.8 stable dep flow through transitively. See SpawnDev.WebTorrent 3.2.2 release notes for the details (shared-TCS multi-awaiter SCTP backpressure, polling-based wait that closes 100MB regression, duplicate-handshake hardening, RTC 1.1.8 stable bump). Consumers running WebTorrent.Server should bump alongside their WebTorrent client.</PackageReleaseNotes>
+		<Version>3.2.3-rc.2</Version>
+		<PackageReleaseNotes>v3.2.3-rc.1: version-sync with SpawnDev.WebTorrent 3.2.3-rc.1. No source changes; transitive bump only.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>

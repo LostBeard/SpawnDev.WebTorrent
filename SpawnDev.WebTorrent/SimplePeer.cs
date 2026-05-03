@@ -34,6 +34,19 @@ public abstract class SimplePeer : IAsyncDisposable
     public string? RemoteAddress { get; protected set; }
     public int? RemotePort { get; protected set; }
 
+    /// <summary>
+    /// True when the underlying transport is no longer reachable, regardless of whether the
+    /// `Destroyed` flag has been set. Default <c>false</c>; subclasses override with concrete
+    /// liveness signals (e.g. <see cref="RtcPeer"/> reports dead when its
+    /// RTCPeerConnection has reached <c>"failed"</c>/<c>"closed"</c> or its data channel
+    /// transitioned out of <c>"open"</c> after once being open).
+    /// Used by SpawnDev.ILGPU.P2P.P2PWebRtcBridge to filter phantom-alive wires whose
+    /// `Destroyed` has not yet been set because the connection-state-change event chain
+    /// did not propagate (Chromium-under-Playwright bug where `connectionstatechange`
+    /// does not fire on remote tab close, leaving Destroyed=false on dead transports).
+    /// </summary>
+    public virtual bool IsTransportDead => false;
+
     // ========================
     // EVENTS
     // ========================

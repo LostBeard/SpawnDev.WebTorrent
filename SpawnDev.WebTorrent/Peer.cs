@@ -132,6 +132,12 @@ public class Peer
         var wire = new Wire(Type);
         WireInstance = wire;
 
+        // Back-reference so the wire (and consumers walking torrent.Wires, e.g.
+        // SpawnDev.ILGPU.P2P.P2PWebRtcBridge) can read transport-level liveness via
+        // simplePeer.IsTransportDead without needing to look the peer up by scanning a
+        // collection. Set unconditionally — null is fine for non-SimplePeer transports.
+        wire.SimplePeer = Conn as SimplePeer;
+
         // Wire up the transport: connection → wire → connection
         if (Conn is SimplePeer simplePeer)
         {

@@ -106,6 +106,15 @@ public class Wire : IAsyncDisposable
     /// <summary>Is the wire destroyed/finished?</summary>
     public bool Destroyed { get; private set; }
 
+    /// <summary>
+    /// Back-reference to the underlying transport peer (set by <see cref="Peer.OnConnected"/>
+    /// when the wire is created). <c>null</c> for web-seed wires (HTTP) and other transports
+    /// without a SimplePeer-shaped backend. Consumers can read <see cref="SimplePeer.IsTransportDead"/>
+    /// to detect phantom-alive wires whose <see cref="Destroyed"/> flag has not yet been set
+    /// because the transport's close-event chain did not propagate.
+    /// </summary>
+    public SimplePeer? SimplePeer { get; internal set; }
+
     // Speed tracking - exponential moving average for smooth display
     internal long _downloadedSinceLastCheck;
     internal long _uploadedSinceLastCheck;

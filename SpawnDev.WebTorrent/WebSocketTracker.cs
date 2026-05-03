@@ -33,13 +33,15 @@ public class WebSocketTracker : IAsyncDisposable
     private static readonly ConcurrentDictionary<string, WebSocketTracker> _pool = new();
 
     /// <summary>Dispose and drop every pooled tracker client. Also clears the
-    /// underlying <see cref="TrackerSignalingClient"/> pool.</summary>
+    /// underlying <see cref="TrackerSignalingClient"/> pool and the cross-tracker
+    /// dedup registry.</summary>
     public static void ClearPool()
     {
         foreach (var t in _pool.Values)
             _ = t.DisposeAsync();
         _pool.Clear();
         TrackerSignalingClient.ClearPool();
+        CrossTrackerDedupRegistry.ClearPool();
     }
 
     /// <summary>
@@ -123,7 +125,15 @@ public class WebSocketTracker : IAsyncDisposable
     {
         var room = RoomKey.FromBytes(infoHash);
         var wire = room.ToWireString();
-        var handler = new SimplePeerRoomHandler(_localPeerIdHex, peerFactory ?? _defaultFactory, onPeer, onUpdate, onWarning, OnWarning);
+        // Cross-tracker dedup: one shared registry per (info_hash, local_peer_id).
+        // Every WebSocketTracker for the same torrent (e.g. when DefaultTrackers
+        // contains multiple URLs) consults the same registry, so a SimplePeer for
+        // a given remote is only created ONCE across all trackers - not once per
+        // tracker. Without this, two trackers connecting the same swarm produce
+        // 2x the RTCPeerConnection count for every logical peer pair.
+        var infoHashHex = Convert.ToHexString(infoHash).ToLowerInvariant();
+        var dedup = CrossTrackerDedupRegistry.GetOrCreate(infoHashHex, _localPeerIdHex);
+        var handler = new SimplePeerRoomHandler(dedup, peerFactory ?? _defaultFactory, onPeer, onUpdate, onWarning, OnWarning);
         _handlers[wire] = handler;
         _signal.Subscribe(room, handler);
     }
@@ -194,7 +204,31 @@ public class WebSocketTracker : IAsyncDisposable
     // ========================
     private sealed class SimplePeerRoomHandler : ISignalingRoomHandler
     {
-        private readonly string _localPeerIdHex;
+        // Cross-tracker dedup registry shared with every other WebSocketTracker for
+        // the same (info_hash, local_peer_id). Holds:
+        //   * the local peer_id hex (for the cross-side-stable lex-compare tiebreaker:
+        //     larger peer_id is canonical answerer-side, smaller is canonical
+        //     offerer-side), and
+        //   * the set of remote peer_ids we have already accepted an offer from OR
+        //     sent an answer to.
+        // Together this prevents:
+        //   (1) the same logical remote occupying two RTCPeerConnections after one
+        //       announce round (the JS tracker can pair the same candidate against
+        //       multiple of our positional offers when surplus offers exist),
+        //   (2) cross-side mismatch when both peers announce simultaneously and
+        //       race HandleOfferAsync vs HandleAnswerAsync to opposite PCs (peerCount
+        //       stays 0/0 - failure mode of rc.2's TryAdd-only dedup), AND
+        //   (3) cross-tracker duplication when the same logical remote announces to
+        //       multiple trackers we are subscribed to - each tracker's offer-relay
+        //       would otherwise produce a fresh PC if the registry were per-tracker.
+        // Without offer-relay dedup we collapse duplicates at the BT-handshake layer
+        // (Torrent.cs:891+), and that collapse triggers Chromium's
+        // `sctp-failure | User-Initiated Abort` cascade on the SURVIVING PC, killing
+        // the entire peer-to-peer connection (verified 2026-05-03 Stable + Canary).
+        // Mirrors and extends the pattern in
+        // `SpawnDev.RTC.Signaling.RtcPeerConnectionRoomHandler.HandleOfferAsync:111`.
+        // See `Docs/protocol-reference/08-offer-pairing-and-dedup.md`.
+        private readonly CrossTrackerDedupRegistry _dedup;
         private readonly Func<bool, SimplePeer> _factory;
         private readonly Action<SimplePeer> _onPeer;
         private readonly Action<TrackerUpdate>? _onUpdate;
@@ -206,28 +240,9 @@ public class WebSocketTracker : IAsyncDisposable
         // timer callbacks race to remove them.
         private readonly ConcurrentDictionary<string, (SimplePeer peer, Timer? timer)> _pendingOffers = new();
 
-        // Remote peer IDs (hex, lowercase) we have already accepted an offer from OR
-        // sent an answer to. Combined with a cross-side-stable peer_id tiebreaker
-        // (lex-compare on hex strings; larger peer_id is canonical answerer-side,
-        // smaller is canonical offerer-side) this prevents both:
-        //   (1) the same logical remote occupying two RTCPeerConnections after one
-        //       announce round (the JS tracker can pair the same candidate against
-        //       multiple of our positional offers when surplus offers exist), and
-        //   (2) the cross-side mismatch when both peers announce simultaneously and
-        //       race their HandleOfferAsync vs HandleAnswerAsync paths to opposite
-        //       PCs - which leaves both data channels orphaned (peerCount = 0).
-        // Without offer-relay dedup we collapse duplicates at the BT-handshake layer
-        // (Torrent.cs:891+), and that collapse triggers Chromium's
-        // `sctp-failure | User-Initiated Abort` cascade on the SURVIVING PC, killing
-        // the entire peer-to-peer connection (verified 2026-05-03 Stable + Canary).
-        // Mirrors and extends the pattern in
-        // `SpawnDev.RTC.Signaling.RtcPeerConnectionRoomHandler.HandleOfferAsync:111`.
-        // See `Docs/protocol-reference/08-offer-pairing-and-dedup.md`.
-        private readonly ConcurrentDictionary<string, byte> _remotePeerIds = new();
-
-        public SimplePeerRoomHandler(string localPeerIdHex, Func<bool, SimplePeer> factory, Action<SimplePeer> onPeer, Action<TrackerUpdate>? onUpdate, Action<string>? onWarning, Action<string>? trackerOnWarning)
+        public SimplePeerRoomHandler(CrossTrackerDedupRegistry dedup, Func<bool, SimplePeer> factory, Action<SimplePeer> onPeer, Action<TrackerUpdate>? onUpdate, Action<string>? onWarning, Action<string>? trackerOnWarning)
         {
-            _localPeerIdHex = localPeerIdHex;
+            _dedup = dedup;
             _factory = factory;
             _onPeer = onPeer;
             _onUpdate = onUpdate;
@@ -314,49 +329,51 @@ public class WebSocketTracker : IAsyncDisposable
         {
             var remoteHex = Convert.ToHexString(remotePeerId).ToLowerInvariant();
 
-            // Cross-side-stable tiebreaker: the LARGER peer_id (lex-compared) is the
-            // canonical answerer-side. If we are smaller, drop this offer-relay and
-            // wait for our own pending offer (sent during our own announce) to be
-            // answered via HandleAnswerAsync. Both peers apply the same comparison
-            // and converge on the SAME pair (offerer-side at the smaller, answerer-
-            // side at the larger). Without this, when both peers announce in the same
-            // window, the TryAdd race below produces NON-deterministic per-side
-            // choices that can leave the two sides on OPPOSITE PCs (PC1_A ↔ PC2_B
-            // mismatch, both data-channels never open, peerCount stays 0). See
-            // `Docs/protocol-reference/08-offer-pairing-and-dedup.md`.
-            if (string.CompareOrdinal(_localPeerIdHex, remoteHex) < 0)
-                return null;
+            // Allocate the responder peer first so the registry can stash a reference
+            // in the slot at claim time (needed for the replace-on-conflict path).
+            // _factory is synchronous; the expensive WebRTC init happens later via
+            // peer.InitAsync. If the slot rejects us we dispose immediately, paying a
+            // SimplePeer allocation but no PC negotiation.
+            var newPeer = _factory(false); // responder
 
-            // Dedupe (defense in depth): drop the second offer if the same logical
-            // remote shows up twice in one pairing window (rare; tiebreaker normally
-            // prevents this).
-            if (!_remotePeerIds.TryAdd(remoteHex, 0))
+            // First-claim wins; only on conflict does the cross-side-stable tiebreaker
+            // (LARGER peer_id is canonical answerer-side) apply. See
+            // CrossTrackerDedupRegistry XML doc for the full state machine.
+            if (!_dedup.TryAcceptOffer(remoteHex, newPeer, out var toDispose))
+            {
+                await newPeer.DisposeAsync().ConfigureAwait(false);
                 return null;
+            }
 
-            SimplePeer? peer = null;
+            // We replaced an existing offerer-side peer (rare: simultaneous-announce
+            // race won by us-as-answerer per tiebreaker). Dispose async; the consumer
+            // already saw the replaced peer via _onPeer earlier and will clean up its
+            // bookkeeping when its OnClose fires (Release at that point is a no-op
+            // since the slot now holds newPeer, not the replaced peer).
+            if (toDispose != null) _ = toDispose.DisposeAsync();
+
             try
             {
-                peer = _factory(false); // responder
-
                 var answerTcs = new TaskCompletionSource<SignalData>(TaskCreationOptions.RunContinuationsAsynchronously);
-                peer.OnSignal += OnSignal;
+                newPeer.OnSignal += OnSignal;
                 void OnSignal(SignalData s)
                 {
                     if (s.Type == "answer") answerTcs.TrySetResult(s);
                 }
 
-                // Cleanup: when the SimplePeer disconnects, free the dedup slot so a
-                // subsequent re-pairing with the same remote can establish a fresh PC.
-                peer.OnClose += () => _remotePeerIds.TryRemove(remoteHex, out _);
+                // Cleanup: when the SimplePeer disconnects, free the slot — but ONLY
+                // if newPeer is still the slot's current owner (Release is no-op if
+                // we were replaced, which is what we want).
+                newPeer.OnClose += () => _dedup.Release(remoteHex, newPeer);
 
-                await peer.InitAsync().ConfigureAwait(false);
+                await newPeer.InitAsync().ConfigureAwait(false);
 
                 // Route the peer to the consumer BEFORE signaling the offer so the
                 // consumer can wire up OnData / OnConnect handlers before traffic
                 // starts flowing.
-                _onPeer(peer);
+                _onPeer(newPeer);
 
-                _ = peer.Signal(new SignalData { Type = "offer", Sdp = offerSdp });
+                _ = newPeer.Signal(new SignalData { Type = "offer", Sdp = offerSdp });
 
                 using var timeout = new CancellationTokenSource(15_000);
                 using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
@@ -365,15 +382,15 @@ public class WebSocketTracker : IAsyncDisposable
             }
             catch (OperationCanceledException)
             {
-                _remotePeerIds.TryRemove(remoteHex, out _);
+                _dedup.Release(remoteHex, newPeer);
                 return null;
             }
             catch (Exception ex)
             {
-                _remotePeerIds.TryRemove(remoteHex, out _);
+                _dedup.Release(remoteHex, newPeer);
                 _onWarning?.Invoke($"Answer generation failed: {ex.Message}");
                 _trackerOnWarning?.Invoke($"Answer generation failed: {ex.Message}");
-                if (peer is not null) await peer.DisposeAsync().ConfigureAwait(false);
+                await newPeer.DisposeAsync().ConfigureAwait(false);
                 return null;
             }
         }
@@ -388,28 +405,181 @@ public class WebSocketTracker : IAsyncDisposable
 
             var remoteHex = Convert.ToHexString(remotePeerId).ToLowerInvariant();
 
-            // Cross-side-stable tiebreaker (matched to HandleOfferAsync): the SMALLER
-            // peer_id is the canonical offerer-side. If we are larger, dispose this
-            // pending peer and wait for the offer-relay from the smaller peer (which
-            // we will accept via HandleOfferAsync). See HandleOfferAsync above.
-            if (string.CompareOrdinal(_localPeerIdHex, remoteHex) > 0)
+            // Mirror of HandleOfferAsync: first-claim wins; tiebreaker only on conflict.
+            // SMALLER peer_id is canonical offerer-side.
+            if (!_dedup.TryAcceptAnswer(remoteHex, entry.peer, out var toDispose))
             {
                 _ = entry.peer.DisposeAsync();
                 return Task.CompletedTask;
             }
 
-            // Dedupe (defense in depth): rare with tiebreaker in place.
-            if (!_remotePeerIds.TryAdd(remoteHex, 0))
-            {
-                _ = entry.peer.DisposeAsync();
-                return Task.CompletedTask;
-            }
+            // Replaced an answerer-side peer (we won as offerer per tiebreaker).
+            if (toDispose != null) _ = toDispose.DisposeAsync();
 
-            entry.peer.OnClose += () => _remotePeerIds.TryRemove(remoteHex, out _);
+            entry.peer.OnClose += () => _dedup.Release(remoteHex, entry.peer);
 
             _onPeer(entry.peer);
             _ = entry.peer.Signal(new SignalData { Type = "answer", Sdp = answerSdp });
             return Task.CompletedTask;
+        }
+    }
+}
+
+// ========================
+// CROSS-TRACKER DEDUP REGISTRY
+// ========================
+/// <summary>
+/// Per-(info_hash, local_peer_id) registry that holds at most ONE
+/// <see cref="SimplePeer"/> per logical remote peer, shared across every
+/// <see cref="WebSocketTracker"/> subscribed to the same torrent.
+/// </summary>
+/// <remarks>
+/// <para>Two competing claim paths exist per remote: <see cref="TryAcceptOffer"/>
+/// fires when an offer-relay arrives (we are responder-side), and
+/// <see cref="TryAcceptAnswer"/> fires when an answer to our pending offer arrives
+/// (we are offerer-side). Each path also fires at most once per (tracker, remote)
+/// — multiple trackers all consult this same registry, so the cross-tracker dedup
+/// is a "first-claim wins" race against the tiebreaker.</para>
+///
+/// <para>The first-arriving claim ALWAYS wins (slot empty → claim succeeds). This
+/// is the asymmetric-announce case: only one peer announces, only one direction
+/// of pairing exists, only one handler fires; we MUST accept it or no connection
+/// forms. The previous (rc.3+rc.4 first-cut) "drop unconditionally if tiebreaker
+/// loses" rule broke this: when only the larger peer announced, the smaller peer
+/// dropped the offer-relay, and the larger peer's pending offer timed out unanswered.
+/// `P2PSwarm.TwoTab_PeerDiscovery` failed ~50% of the time because that side
+/// happened to be the smaller peer.</para>
+///
+/// <para>The cross-side-stable tiebreaker (LARGER peer_id is canonical answerer-side,
+/// SMALLER is canonical offerer-side) only applies on CONFLICT — when the slot is
+/// already claimed by the OTHER path:</para>
+/// <list type="bullet">
+///   <item><b>HandleOfferAsync arrives, slot held by HandleAnswerAsync:</b> the
+///   simultaneous-announce race fired. If WE are the larger (answerer-side per
+///   tiebreaker), REPLACE — dispose the existing offerer-side peer, accept this
+///   offer. If smaller, KEEP the existing offerer-side peer, drop the offer.</item>
+///   <item><b>HandleAnswerAsync arrives, slot held by HandleOfferAsync:</b> mirror.
+///   If WE are smaller (offerer-side per tiebreaker), REPLACE. If larger, KEEP
+///   existing answerer-side peer, dispose this pending peer.</item>
+///   <item><b>Same-type conflict</b> (e.g. two trackers each delivered an offer-relay
+///   for the same remote): the first-arriving is already correct; second-arriving
+///   drops with no replacement.</item>
+/// </list>
+///
+/// <para>Both peers apply the same comparison so they converge on the SAME PC
+/// pair (offerer-side at the smaller peer, answerer-side at the larger).</para>
+///
+/// <para>Without offer-relay dedup we collapse duplicates at the BT-handshake layer
+/// (Torrent.cs:891+), and that collapse triggers Chromium's
+/// <c>sctp-failure | User-Initiated Abort</c> cascade on the SURVIVING PC,
+/// killing the entire peer-to-peer connection (verified Chrome Stable + Canary,
+/// 2026-05-03 against the live RenderMandelbrot demo on lostbeard.github.io).</para>
+///
+/// <para>See <c>Docs/protocol-reference/08-offer-pairing-and-dedup.md</c>.</para>
+/// </remarks>
+internal sealed class CrossTrackerDedupRegistry
+{
+    public enum SlotType { Offer, Answer }
+
+    private sealed class Slot
+    {
+        public SlotType Type;
+        public SimplePeer Peer = default!;
+    }
+
+    private static readonly ConcurrentDictionary<string, CrossTrackerDedupRegistry> _pool = new();
+
+    /// <summary>Get or create the registry for the given (info_hash hex, local peer_id hex) pair.</summary>
+    public static CrossTrackerDedupRegistry GetOrCreate(string infoHashHex, string localPeerIdHex)
+    {
+        var key = infoHashHex + ":" + localPeerIdHex;
+        return _pool.GetOrAdd(key, _ => new CrossTrackerDedupRegistry(localPeerIdHex));
+    }
+
+    /// <summary>Drop every pooled registry. Called from <see cref="WebSocketTracker.ClearPool"/>.</summary>
+    public static void ClearPool() => _pool.Clear();
+
+    public string LocalPeerIdHex { get; }
+    private readonly Dictionary<string, Slot> _slots = new();
+    private readonly object _lock = new();
+
+    private CrossTrackerDedupRegistry(string localPeerIdHex) { LocalPeerIdHex = localPeerIdHex; }
+
+    /// <summary>Try to claim the slot for an incoming offer-relay. Returns false if
+    /// the slot is held by another path that wins the tiebreaker; in that case the
+    /// caller MUST dispose <paramref name="newPeer"/>. Returns true otherwise; if
+    /// <paramref name="toDispose"/> is non-null, an existing peer was REPLACED and
+    /// the caller MUST dispose it (the caller has already wired the new peer into
+    /// the consumer via <c>_onPeer</c> by this point, so the consumer's bookkeeping
+    /// will see the new peer).</summary>
+    public bool TryAcceptOffer(string remoteHex, SimplePeer newPeer, out SimplePeer? toDispose)
+    {
+        toDispose = null;
+        lock (_lock)
+        {
+            if (!_slots.TryGetValue(remoteHex, out var existing))
+            {
+                _slots[remoteHex] = new Slot { Type = SlotType.Offer, Peer = newPeer };
+                return true;
+            }
+            if (existing.Type == SlotType.Answer)
+            {
+                // Conflict: HandleAnswerAsync wired our pending offer to this remote
+                // first. Tiebreaker: LARGER peer_id is canonical answerer-side.
+                if (string.CompareOrdinal(LocalPeerIdHex, remoteHex) > 0)
+                {
+                    toDispose = existing.Peer;
+                    existing.Type = SlotType.Offer;
+                    existing.Peer = newPeer;
+                    return true;
+                }
+                return false; // we are smaller, keep the offerer-side peer
+            }
+            // Same-type conflict: another tracker already delivered an offer for this remote.
+            return false;
+        }
+    }
+
+    /// <summary>Mirror of <see cref="TryAcceptOffer"/> for incoming answers.</summary>
+    public bool TryAcceptAnswer(string remoteHex, SimplePeer pendingPeer, out SimplePeer? toDispose)
+    {
+        toDispose = null;
+        lock (_lock)
+        {
+            if (!_slots.TryGetValue(remoteHex, out var existing))
+            {
+                _slots[remoteHex] = new Slot { Type = SlotType.Answer, Peer = pendingPeer };
+                return true;
+            }
+            if (existing.Type == SlotType.Offer)
+            {
+                // Conflict: HandleOfferAsync accepted this remote's offer-relay first.
+                // Tiebreaker: SMALLER peer_id is canonical offerer-side.
+                if (string.CompareOrdinal(LocalPeerIdHex, remoteHex) < 0)
+                {
+                    toDispose = existing.Peer;
+                    existing.Type = SlotType.Answer;
+                    existing.Peer = pendingPeer;
+                    return true;
+                }
+                return false; // we are larger, keep the answerer-side peer
+            }
+            // Same-type conflict: another tracker already delivered an answer.
+            return false;
+        }
+    }
+
+    /// <summary>Free the slot for the given remote IFF <paramref name="ownerPeer"/>
+    /// is still the slot's current owner. Wired from each accepted SimplePeer's
+    /// <see cref="SimplePeer.OnClose"/>; if the peer was REPLACED before disconnect,
+    /// the slot is held by the replacement and we must NOT free it on the old peer's
+    /// OnClose.</summary>
+    public void Release(string remoteHex, SimplePeer ownerPeer)
+    {
+        lock (_lock)
+        {
+            if (_slots.TryGetValue(remoteHex, out var existing) && ReferenceEquals(existing.Peer, ownerPeer))
+                _slots.Remove(remoteHex);
         }
     }
 }

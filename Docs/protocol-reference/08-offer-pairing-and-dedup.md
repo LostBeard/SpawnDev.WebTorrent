@@ -93,38 +93,74 @@ When two peers announce within a tracker pairing window, BOTH may end up generat
 
 The mitigation is a **two-phase acceptance**: track `pendingOutbound` peer ids (populated at HandleAnswerAsync time when we know who answered) and add Gap 1 dedup to also check `pendingOutbound`. Combined with the BT-handshake-level dedup as a final safety net, this collapses the duplicate-PC count from 5+5=10 to at most 1.
 
-## Fix landed (3.2.4-rc.3, 2026-05-03)
+## Fix landed (3.2.4-rc.5, 2026-05-03)
 
-Two layers, both in `SpawnDev.WebTorrent.WebSocketTracker.SimplePeerRoomHandler`:
+Three layers, all in `SpawnDev.WebTorrent.WebSocketTracker` (the `SimplePeerRoomHandler` plus the file-level `CrossTrackerDedupRegistry`):
 
 ### Layer 1: offer-relay dedup (rc.2)
 
 A `_remotePeerIds` `ConcurrentDictionary<string, byte>` tracks the set of remote peer_ids we have an active or pending `SimplePeer` for. `HandleOfferAsync` `TryAdd`s before creating any PC; if the slot is taken (e.g. an earlier `HandleOfferAsync` or `HandleAnswerAsync` for the same remote got there first) the offer is silently dropped. `HandleAnswerAsync` does the same and disposes the duplicate `SimplePeer` if it loses the race. `peer.OnClose +=` cleans up the slot when the connection ends so re-pairing after a real disconnect still works. Mirrors `SpawnDev.RTC.Signaling.RtcPeerConnectionRoomHandler.HandleOfferAsync:111`.
 
-### Layer 2: cross-side-stable peer_id tiebreaker (rc.3)
+### Layer 2: cross-side-stable peer_id tiebreaker (rc.3 first cut → rc.5 correct design)
 
 Layer 1 prevents one peer from creating duplicate PCs to the same remote. But when **both** peers announce within the same tracker pairing window, each side races its `HandleOfferAsync` (incoming offer-relay from the remote's announce) vs its `HandleAnswerAsync` (incoming answer to its own pending offer). The "first runner wins" rule is non-deterministic per side, and when the two sides' coin flips disagree, they end up holding **different halves** of the duplicate pair — A keeps its `as-offerer` PC while B keeps its `as-offerer` PC, and neither pair has both endpoints alive. peerCount stays at 0 on both sides. `P2PSwarm.DemoPath_MandelbrotChunk_OutputOnlyBuffer_OverRealWebRtc_BitExact` failed against rc.2 with exactly this pattern (Coordinator peers: 0, Worker peers: 0 after 60s).
 
-Fix: lex-compare hex peer_ids and let the comparison decide which side keeps which PC.
+The fix is a lex-compare hex peer_id tiebreaker:
 
 > **The LARGER peer_id is the canonical answerer-side. The SMALLER peer_id is the canonical offerer-side.**
 
-Implemented by gating each handler on the comparison BEFORE the TryAdd:
+#### rc.3 / rc.4 first cut: WRONG — broke the asymmetric-announce case
 
-- `HandleOfferAsync(X for offer from Y)` — accept only if `X.peer_id > Y.peer_id`. Otherwise drop.
-- `HandleAnswerAsync(X for answer from Y)` — accept only if `X.peer_id < Y.peer_id`. Otherwise dispose pending peer.
+rc.3 and rc.4 (cross-tracker variant) gated each handler on the comparison BEFORE the TryAdd:
 
-Both sides apply the same comparison and converge on the **same** pair (PC1: A-as-offerer ↔ B-as-answerer, when A < B). The Layer 1 TryAdd dedup is kept as a defense-in-depth net for the rare case where the same logical remote shows up twice in one round.
+- `HandleOfferAsync(X for offer from Y)` — accept only if `X.peer_id > Y`. Otherwise drop.
+- `HandleAnswerAsync(X for answer from Y)` — accept only if `X.peer_id < Y`. Otherwise dispose pending peer.
 
-`WebSocketTracker` now stores the local peer_id hex (`_localPeerIdHex`) and passes it to each `SimplePeerRoomHandler` ctor.
+This rule failed when only ONE peer announces. With our `WebSocketTracker` doing no periodic re-announce (the announce-interval timer body is intentionally empty), each peer announces ONCE on initial WS connect. In a 2-peer swarm the steady state is **only worker→coord pairing** (worker announced after coord, so the tracker had coord as a candidate; coord's earlier announce had no candidates and its 5 offers were silently dropped by the tracker). For that ONE pairing direction to succeed, coord's `HandleOfferAsync(worker)` MUST accept — but the rc.3+rc.4 rule said "accept only if coord > worker." When coord.peer_id < worker.peer_id (50% probability with random peer_ids), coord dropped the offer-relay; worker's pending offer timed out unanswered; peerCount stayed 0/0. `P2PSwarm.TwoTab_PeerDiscovery` failed deterministically when the random peer_ids ordered the wrong way.
 
-### Asymmetric-announce note
+#### rc.5 correct design: first-claim wins, tiebreaker only on conflict
 
-When ONLY the larger peer announces, the smaller peer's `HandleOfferAsync` drops (per the rule above), and the larger peer's pending offer times out. No connection forms that round. The connection succeeds on the next round when the smaller peer's announce fires (peers announce periodically, default interval 120s but typically forced to seconds during initial swarm join). This is the cost of cross-side-stable convergence — non-deterministic ordering in exchange for guaranteed pair-matching.
+The slot accepts the first arriving handler unconditionally. The tiebreaker fires only when the slot is later claimed by the OTHER path:
+
+- `HandleOfferAsync(X for offer from Y)`:
+  - Slot empty → claim type=Offer with the new responder peer. ACCEPT.
+  - Slot held by `HandleAnswerAsync` (offerer-side peer wired) → tiebreaker. If X > Y (we are answerer-side per tiebreaker), REPLACE: dispose existing peer, claim. If X < Y, DROP, dispose new peer.
+  - Slot held by `HandleOfferAsync` (another tracker accepted first) → DROP, dispose new peer.
+
+- `HandleAnswerAsync(X for answer from Y)` (mirror):
+  - Slot empty → claim type=Answer with the pending offerer peer. ACCEPT.
+  - Slot held by `HandleOfferAsync` (answerer-side peer accepted) → tiebreaker. If X < Y (we are offerer-side per tiebreaker), REPLACE. If X > Y, DROP.
+  - Slot held by `HandleAnswerAsync` → DROP.
+
+**Asymmetric case** (only A announces, A<B or A>B doesn't matter): only one handler per side runs at all, slot always empty when it does, ACCEPT every time. ✓
+
+**Simultaneous case** (both announce, A < B): both sides race their offer-vs-answer paths. Whichever runs first claims the slot; the second hits the tiebreaker. The LARGER peer always converges on answerer-side, the SMALLER on offerer-side, regardless of the per-side race ordering. Both peers end up holding HALVES OF THE SAME PAIR (offerer at smaller, answerer at larger). ✓
+
+#### Implementation notes
+
+`CrossTrackerDedupRegistry` stores `(SlotType type, SimplePeer peer)` per remote. `Release(remoteHex, ownerPeer)` uses `ReferenceEquals` so a stale `OnClose` on a replaced peer doesn't free the new owner's slot. Replace-side cleanup runs the displaced peer's `DisposeAsync` outside the registry lock.
+
+The TryAccept methods take the new SimplePeer at claim time so the slot can stash it atomically (the responder peer is created cheaply via `_factory(false)` BEFORE TryAcceptOffer is called; if the slot rejects us we dispose immediately, paying a SimplePeer allocation but no PC negotiation). Caller checks `out SimplePeer? toDispose`; non-null means the call replaced an existing peer that must be disposed.
+
+`WebSocketTracker` stores `_localPeerIdHex` and passes it through the registry constructor (the local peer_id is needed for the comparison).
 
 ### `MaxOffers` / `Numwant` align
 
 Both `TrackerSignalingClient.MaxOffers` and `WebSocketTracker.AnnounceOptions.Numwant` defaults lowered 10 → 5 to match the JS reference cap (`Math.min(opts.numwant, 5)` in `lib/client/websocket-tracker.js:61`). The previous 10 doubled the duplicate-PC formation rate without any benefit because the tracker's positional pairing only matches at most one offer per candidate peer per round; surplus offers were silently discarded.
+
+### Layer 3: cross-tracker registry (rc.4)
+
+`WebTorrentClientOptions.DefaultTrackers` ships TWO tracker URLs by default — `wss://hub.spawndev.com:44365/announce` AND `wss://tracker.openwebtorrent.com`. Every torrent announces to BOTH. When the same logical remote peer is on both trackers (which is the steady state for a SpawnDev swarm where peers register with the full default set), each tracker independently delivers an offer-relay for that peer. Pre-rc.4 the dedup state (`_remotePeerIds` ConcurrentDictionary) lived inside each `SimplePeerRoomHandler`, and each tracker had its OWN handler with its OWN dict, so the per-tracker dedup didn't see the other tracker's claim. Result: the same logical remote produced N PCs (one per tracker subscription) and the rc.1+rc.2+rc.3 pair-of-PCs math compounded by N — a 2-peer swarm with 2 default trackers produced ~20 PCs (out of which only 1 paired into a working data channel) under rc.3, and 40 under pre-rc.2 numwant=10 (verified against the live RenderMandelbrot demo on lostbeard.github.io, 2026-05-03).
+
+rc.4 lifts the dedup state from per-handler to a `CrossTrackerDedupRegistry` keyed on `(info_hash_hex, local_peer_id_hex)`. Every `WebSocketTracker.Subscribe` for the same torrent looks up the SAME registry instance via `CrossTrackerDedupRegistry.GetOrCreate(infoHashHex, localPeerIdHex)`. The handler's `HandleOfferAsync` and `HandleAnswerAsync` now call `_dedup.TryAcceptOffer(remoteHex)` / `_dedup.TryAcceptAnswer(remoteHex)`, which combine the rc.3 cross-side-stable tiebreaker AND the slot-claim TryAdd into one atomic check.
+
+Result: exactly **one SimplePeer / RTCPeerConnection per logical remote peer**, regardless of how many trackers we are subscribed to. The first tracker to deliver an offer-relay for a remote claims the slot; the second tracker's offer-relay drops at `TryAcceptOffer` without creating a PC.
+
+The same registry enforces the rc.3 tiebreaker across trackers — if peer A and peer B race, all of A's tracker-A and tracker-B offer-relays land at the same registry on B's side and the LARGER peer_id wins exactly once. No tracker-to-tracker race can produce a divergent decision.
+
+`Release(remoteHex)` is called from each accepted SimplePeer's `OnClose` so a real disconnect frees the slot for re-pairing.
+
+`WebSocketTracker.ClearPool()` also drops the registry pool to prevent stale slots leaking across test runs / app restarts.
 
 ## Server-side check
 

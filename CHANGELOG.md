@@ -1,6 +1,12 @@
 # Changelog
 
-## 3.2.3-rc.2 (2026-05-03)
+## 3.2.3 (2026-05-03) — stable rollup of rc.1 + rc.2
+
+Stable cut. Phantom-alive wire detection (synthesis-aware). End-to-end verified against SpawnDev.ILGPU.P2P's `P2PSwarm.TwoTab_PeerDiscovery` (PASS 1m 37s standalone, was 90s timeout in the 4.9.2-rc.34 EOD known issue) AND `LargeBuffer_100MB_DispatchedOverRealWebRtc_BitExact` (PASS 3m 37s standalone, no regression).
+
+Companion bumps: `SpawnDev.WebTorrent.Server 3.2.3` and `SpawnDev.WebTorrent.Server.HuggingFace 3.2.3` (version-sync, no source changes). See the rc.2 section below for the full surface description.
+
+## 3.2.3-rc.2 (2026-05-03) (superseded by 3.2.3 stable)
 
 ### Phantom-alive wire detection (synthesis-aware)
 

@@ -5,8 +5,8 @@
 		<LangVersion>latest</LangVersion>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
-		<Version>3.2.3-rc.2</Version>
-		<PackageReleaseNotes>v3.2.3-rc.1: version-sync with SpawnDev.WebTorrent 3.2.3-rc.1. No source changes; transitive bump only.</PackageReleaseNotes>
+		<Version>3.2.3</Version>
+		<PackageReleaseNotes>v3.2.3 stable: version-sync with SpawnDev.WebTorrent 3.2.3 stable (phantom-alive wire detection). No source changes in this package; transitive bump only.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>

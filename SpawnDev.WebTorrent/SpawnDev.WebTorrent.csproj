@@ -9,8 +9,8 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-		<Version>3.2.3-rc.2</Version>
-		<PackageReleaseNotes>v3.2.3-rc.2: synthesis-aware IsTransportDead. RtcPeer's IsTransportDead now reads from `_lastObservedPcState` (captured in OnConnectionStateChange handler) BEFORE falling back to the native `_pc.ConnectionState` query. The native query lies on Chromium-under-Playwright: when `BrowserRTCPeerConnection`'s 15s iceDisconnected debounce poller invokes `OnConnectionStateChange("failed")`, the underlying JS native connectionState property stays stuck at `"connected"`/`"disconnected"` indefinitely. Consulting the synthesised value via the event handler is the only authoritative source. Same Wire.SimplePeer back-reference plumbing as rc.1.</PackageReleaseNotes>
+		<Version>3.2.3</Version>
+		<PackageReleaseNotes>v3.2.3 stable: phantom-alive wire detection (synthesis-aware). New `SimplePeer.IsTransportDead` virtual property (default false), overridden in `RtcPeer` to consult a `_lastObservedPcState` field captured in the OnConnectionStateChange event handler — fires for both real native transitions AND synthesised `"failed"` from `SpawnDev.RTC.Browser.BrowserRTCPeerConnection`'s 15s iceDisconnected debounce poller. Reading the native `_pc.ConnectionState` getter directly lies on Chromium-under-Playwright (stays stuck at `"connected"` indefinitely after remote tab close); the captured field is the authoritative effective state. Plus `Wire.SimplePeer` back-reference set in `Peer.OnConnected` so consumers walking `torrent.Wires` (notably `SpawnDev.ILGPU.P2P.P2PWebRtcBridge`) can detect transport death without scanning a separate collection. Closes the SpawnDev.ILGPU.P2P 4.9.2-rc.34 known issue: `P2PSwarm.TwoTab_PeerDiscovery` PASS in 1m 37s (was failing 90s timeout). End-to-end verified by SpawnDev.ILGPU.ML's DA3-Small at 4.9.4-rc.2 (Data, 2026-05-03). Stable rollup of 3.2.3-rc.1 + rc.2.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>

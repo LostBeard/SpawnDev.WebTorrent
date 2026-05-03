@@ -946,52 +946,40 @@ public partial class Torrent : IAsyncDisposable
                                 $"Wires=[{wiresDump}]");
                         }
 
-                        // Keep the wire with lexicographically SMALLER channel label.
-                        // Both sides see the same labels on both wires → both agree.
+                        // ALWAYS keep both wires alive when a duplicate handshake is observed.
                         //
-                        // SAFETY: only apply the rule when BOTH labels are populated. The
-                        // responder's SimplePeer.ChannelName starts as "" and only fills in
-                        // when RtcPeer.OnDataChannel fires; if OnHandshake fires inside that
-                        // race window on one side and not the other, the two sides would
-                        // compare different label pairs (one with the real label, one with
-                        // the per-side fallback peer.Id) and arrive at OPPOSITE keep/destroy
-                        // decisions - leaving both physical wires destroyed bilaterally.
-                        // When either label is unknown we let both wires live; the consumer
-                        // (e.g. P2PWebRtcBridge for sd_compute) dedupes by remote BitTorrent
-                        // peer id so stack-level state stays correct, and one of the wires
-                        // closes naturally as Wire.Destroy / Peer.Destroy fire elsewhere.
-                        bool labelsComparable =
-                            !string.IsNullOrEmpty(newLabel) &&
-                            !string.IsNullOrEmpty(existingLabel) &&
-                            // A label that fell back to peer.Id (the per-side local id) is
-                            // not cross-side stable; only the real ChannelName from the data
-                            // channel is shared between sides.
-                            !ReferenceEquals(newLabel, peer.Id) &&
-                            !ReferenceEquals(existingLabel, existingPeer?.Id);
-                        if (!labelsComparable)
-                        {
-                            if (WebTorrentClient.VerboseLogging)
-                                Console.WriteLine(
-                                    $"[Torrent.OnHandshake] DUP-SKIP: labels not cross-side stable yet " +
-                                    $"(newLabel='{newLabel}' existingLabel='{existingLabel}'). " +
-                                    $"Both wires live; consumer-layer dedup will collapse them.");
-                            return;
-                        }
-                        bool keepNew = string.Compare(newLabel, existingLabel, StringComparison.Ordinal) < 0;
-                        if (keepNew)
-                        {
-                            if (WebTorrentClient.VerboseLogging)
-                                Console.WriteLine($"[Torrent.OnHandshake] DUPLICATE (newLabel<existingLabel {newLabel[..Math.Min(8, newLabel.Length)]}<{existingLabel[..Math.Min(8, existingLabel.Length)]}): keep newcomer, destroy existing peer {existingPeer?.Id}");
-                            existingPeer?.Destroy();
-                            return;
-                        }
-                        else
-                        {
-                            if (WebTorrentClient.VerboseLogging)
-                                Console.WriteLine($"[Torrent.OnHandshake] DUPLICATE (newLabel>=existingLabel {newLabel[..Math.Min(8, newLabel.Length)]}>={existingLabel[..Math.Min(8, existingLabel.Length)]}): keep existing, destroy newcomer peer {peer.Id}");
-                            peer.Destroy();
-                            return;
-                        }
+                        // Rationale (2026-05-03, after the RenderMandelbrot bug repro on Chrome
+                        // Stable + Canary): proactively calling Destroy() on the "loser" peer
+                        // closes its underlying RTCPeerConnection, which empirically causes
+                        // Chromium to emit `sctp-failure | User-Initiated Abort | sctpCauseCode=12`
+                        // on the SURVIVOR's data channel. Both sides observe the cascade — the
+                        // worker destroys its loser, the coord destroys its loser, and BOTH lose
+                        // their winner immediately after. The two PCs are spec'd-independent
+                        // (separate ufrag, DTLS fingerprint, UDP port) so this shouldn't happen,
+                        // but it does, on every Chromium version we've tested. Filing-upstream
+                        // is its own task; the fix here is to stop triggering the cascade.
+                        //
+                        // The bridge layer (`SpawnDev.ILGPU.P2P.P2PWebRtcBridge`) already dedupes
+                        // by canonical BT peerId — `_wiresByBtPeerId[canonical]` holds the set of
+                        // wires for a logical peer, and `UnregisterPeer` only fires when the LAST
+                        // wire's `wire.OnClose` fires AND the bridge filter (Destroyed ||
+                        // IsTransportDead) is empty. With both wires alive, the bridge sees one
+                        // logical peer with N wires; consumer-level state stays correct. When the
+                        // remote eventually disconnects, both wires close naturally, bridge cleans
+                        // up. Cost: a small amount of duplicate keepalive traffic over the lifetime
+                        // of the connection (one canonical peer with 2 PCs). Net traffic impact
+                        // is negligible compared to actual dispatch payloads.
+                        //
+                        // Self-connection check above (line 894) is unaffected — that's a real
+                        // self-loop hazard, not a duplicate-of-the-same-remote.
+                        if (WebTorrentClient.VerboseLogging)
+                            Console.WriteLine(
+                                $"[Torrent.OnHandshake] DUP-OBSERVED: incomingPeerId={peerId[..Math.Min(16, peerId.Length)]}... " +
+                                $"newPeer.Id={peer.Id} newLabel='{newLabel?[..Math.Min(8, newLabel?.Length ?? 0)]}...' " +
+                                $"existingPeer.Id={existingPeer?.Id} existingLabel='{existingLabel?[..Math.Min(8, existingLabel?.Length ?? 0)]}...'. " +
+                                $"BOTH wires kept alive; bridge layer will dedupe by canonical peerId. " +
+                                $"Wires.Count={Wires.Count} _peers.Count={_peers.Count}.");
+                        return;
                     }
                     if (WebTorrentClient.VerboseLogging)
                         Console.WriteLine($"[Torrent.OnHandshake] OK: peer {peer.Id} remote={peerId[..Math.Min(16, peerId.Length)]}... accepted (Wires count={Wires.Count})");

@@ -5,8 +5,8 @@
 		<LangVersion>latest</LangVersion>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
-		<Version>3.2.4-rc.6</Version>
-		<PackageReleaseNotes>v3.2.4-rc.6: version-sync with SpawnDev.WebTorrent 3.2.4-rc.6 (cross-tracker dedup registry). No source changes in this package; transitive bump only.</PackageReleaseNotes>
+		<Version>3.2.4-rc.7</Version>
+		<PackageReleaseNotes>v3.2.4-rc.7: version-sync with SpawnDev.WebTorrent 3.2.4-rc.7 (cross-tracker dedup registry). No source changes in this package; transitive bump only.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>

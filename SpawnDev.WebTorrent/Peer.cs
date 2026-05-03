@@ -287,8 +287,35 @@ public class Peer
 
         WireInstance?.Destroy();
 
-        if (Conn is SimplePeer sp)
-            _ = sp.DisposeAsync();
+        // Do NOT call sp.DisposeAsync() here.
+        //
+        // SimplePeer.DisposeAsync (RtcPeer.DisposeAsync line 551) calls `_pc?.Close()`
+        // on the underlying RTCPeerConnection. Closing a PC while another PC to the
+        // same remote peer is alive triggers Chromium's
+        // `sctp-failure | User-Initiated Abort | sctpCauseCode=12` cascade onto the
+        // surviving sibling PC's data channel. Both sides observe the cascade
+        // simultaneously and the entire peer-to-peer connection drops.
+        //
+        // This is the root cause of the 2026-05-03 RenderMandelbrot live repro that
+        // survived the rc.1 BT-layer "don't destroy on duplicate" fix and the rc.2-rc.5
+        // signaling-layer dedup experiments. Captain reproduced it with 1 worker, no
+        // user input, no clicking; the cascade fired within seconds of BT handshake
+        // completion. Chain: HandshakeTimeout (25s) on a duplicate wire whose
+        // OnHandshake race-cancelled too late → Peer.Destroy(TimeoutException) →
+        // sp.DisposeAsync → _pc.Close() → cascade onto the survivor.
+        //
+        // Letting the underlying PC live past Peer.Destroy:
+        //  - Normal disconnect (remote closed): SimplePeer.OnClose fires from the
+        //    REMOTE side; the PC is already closed; no cascade because the close
+        //    didn't originate from us. The PC's IDisposable releases via GC.
+        //  - Timeout / error destroy: Peer is gone from the BT layer, but the PC
+        //    sits alive briefly. Chromium's internal idle/SCTP-heartbeat timeout
+        //    (~30s no traffic) closes it from the inside without firing the
+        //    User-Initiated Abort signal. No cascade.
+        //
+        // Cost: a brief resource leak between Peer.Destroy and the PC's natural
+        // expiration. Net negligible (one PC, ~100KB) compared to the cascade
+        // catastrophe (entire swarm goes to peerCount=0).
 
         OnDisconnect?.Invoke(err);
     }

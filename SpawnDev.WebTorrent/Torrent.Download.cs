@@ -248,6 +248,26 @@ public partial class Torrent
     {
         if (wire.Requests.Count >= maxOutstanding) return true;
 
+        // CRITICAL-FIRST pass: read-awaited pieces (ReadFileAsync / streaming) must be
+        // fetched ahead of the normal rarest/sequential walk. Without this, a piece marked
+        // Critical() that sits late in the walk order waits for the walk to reach it
+        // (observed: browser first-read 21.5s vs desktop 669ms over a web seed). Critical
+        // pieces always allow hotswap so they can steal block reservations from
+        // lower-priority in-flight pieces. RequestBlock already skips have/out-of-range.
+        if (!_critical.IsEmpty)
+        {
+            foreach (var kv in _critical)
+            {
+                int piece = kv.Key;
+                if (!wire.PeerHasPiece(piece)) continue;
+
+                while (RequestBlock(wire, piece, true) &&
+                       wire.Requests.Count < maxOutstanding) { }
+
+                if (wire.Requests.Count >= maxOutstanding) return true;
+            }
+        }
+
         for (int i = 0; i < _selections.Length; i++)
         {
             var next = _selections.Get(i);

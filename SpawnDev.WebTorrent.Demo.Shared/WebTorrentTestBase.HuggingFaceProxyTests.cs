@@ -117,4 +117,57 @@ public abstract partial class WebTorrentTestBase
             await client.DisposeAsync();
         }
     }
+
+    /// <summary>
+    /// Critical-piece prioritization guard. A read marks its pieces <c>Critical()</c>; the picker
+    /// must fetch those AHEAD of the normal rarest/sequential walk, and <c>Critical()</c> must kick
+    /// the request loop immediately. A TAIL-seek read (last piece = last in sequential order) is the
+    /// worst case: before the fix, the read stalled ~21s (browser) because nothing kicked requests
+    /// and the walk hadn't reached the tail. After the fix it resolves the tail piece directly, so
+    /// even over the network + a fresh client it returns well under the old stall. Threshold is
+    /// generous (network + cold metadata) but far below the broken behavior.
+    /// </summary>
+    [TestMethod(Timeout = 240000, RetryCount = 2)]
+    public async Task HuggingFaceProxy_TailSeekRead_IsPrioritized()
+    {
+        using var http = new HttpClient();
+        var magnet = await GetHubMagnetAsync(http);
+
+        var client = new WebTorrentClient();
+        try
+        {
+            using var addCts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            var torrent = await client.AddAsync(magnet, ct: addCts.Token);
+
+            if (torrent.Files == null || torrent.Files.Length < 1 || torrent.Files[0].Length <= 0)
+                throw new Exception("AddAsync returned but Files is empty or zero-length");
+
+            var file = torrent.Files[0];
+            int chunk = (int)Math.Min(4096, file.Length);
+            long tailOffset = file.Length - chunk;
+
+            // Time ONLY the tail read (not the magnet fetch / metadata resolve).
+            using var readCts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            var startUtc = DateTime.UtcNow;
+            var tail = await file.ReadAsync(tailOffset, chunk, readCts.Token);
+            var elapsed = DateTime.UtcNow - startUtc;
+
+            if (tail == null || tail.Length != chunk)
+                throw new Exception($"tail read returned {tail?.Length ?? 0} bytes; expected {chunk}");
+
+            bool anyNonZero = false;
+            foreach (var b in tail) { if (b != 0) { anyNonZero = true; break; } }
+            if (!anyNonZero)
+                throw new Exception($"tail {tail.Length} bytes all zero — read returned a hole, not the prioritized tail piece");
+
+            // Before critical-first prioritization, a cold tail read stalled ~21s+ (browser).
+            if (elapsed > TimeSpan.FromSeconds(15))
+                throw new Exception(
+                    $"tail-seek read took {elapsed.TotalSeconds:F1}s (> 15s) — critical-piece prioritization did not fetch the tail piece ahead of the sequential walk");
+        }
+        finally
+        {
+            await client.DisposeAsync();
+        }
+    }
 }

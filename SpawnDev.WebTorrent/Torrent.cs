@@ -1333,6 +1333,12 @@ public partial class Torrent : IAsyncDisposable
     public void Critical(int start, int end)
     {
         for (int i = start; i <= end; i++) _critical.TryAdd(i, true);
+        // Kick the request loop immediately so read-awaited pieces are fetched now.
+        // Real peers self-trigger requests from piece-completion / unchoke events, but a
+        // read can mark a piece critical when nothing else is driving UpdateWires (a cold
+        // streaming read over a web seed, which has no handshake) - without this the
+        // critical piece waits for the next unrelated trigger. (Select() already does this.)
+        UpdateWires();
     }
 
     // ========================

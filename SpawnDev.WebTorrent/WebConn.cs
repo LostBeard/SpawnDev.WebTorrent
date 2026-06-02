@@ -128,6 +128,9 @@ public class WebConn : IAsyncDisposable
         }
         catch (Exception ex)
         {
+            if (WebTorrentClient.VerboseLogging)
+                Console.WriteLine($"[WebConn] HandleRequest piece={pieceIndex} offset={offset} len={length} FAILED: {ex.GetType().Name}: {ex.Message}");
+
             // On HTTP failure, wait RetryDelay then re-announce the piece
             _ = Task.Run(async () =>
             {
@@ -147,9 +150,16 @@ public class WebConn : IAsyncDisposable
         request.Headers.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue { NoStore = true };
 
         using var cts = new CancellationTokenSource(SocketTimeout);
+        if (WebTorrentClient.VerboseLogging)
+            Console.WriteLine($"[WebConn] GET {url} Range=bytes {start}-{end}");
         using var response = await _http.SendAsync(request, cts.Token);
+        if (WebTorrentClient.VerboseLogging)
+            Console.WriteLine($"[WebConn] {url} -> {(int)response.StatusCode} {response.StatusCode}");
         response.EnsureSuccessStatusCode();
-        return await response.Content.ReadAsByteArrayAsync(cts.Token);
+        var bytes = await response.Content.ReadAsByteArrayAsync(cts.Token);
+        if (WebTorrentClient.VerboseLogging)
+            Console.WriteLine($"[WebConn] {url} read {bytes.Length} bytes");
+        return bytes;
     }
 
     // ========================

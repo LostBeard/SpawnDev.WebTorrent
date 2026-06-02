@@ -1,5 +1,28 @@
 # Changelog
 
+## 3.2.4-rc.8 (2026-06-02) — web-seed-only download + magnet metadata bootstrap
+
+First end-to-end exercise of the HuggingFace-proxy delivery path (magnet from hub → metadata → web-seed download with no peers) surfaced four real gaps. All fixed; covered by new live-hub tests in `WebTorrentTestBase.HuggingFaceProxyTests` (4/4 PASS browser+desktop; full no-regression sweep clean).
+
+### HTTP `xs=` exact-source metadata bootstrap (client)
+`Torrent.ParseMagnet` previously honored only `xs=urn:btpk:` (BEP 46). It now captures an HTTP(S) `xs=` into `Torrent.ExactSourceUrl`, and `InitFromMagnetAsync` fetches that `.torrent` directly (`FetchMetadataFromExactSourceAsync`) to resolve metadata with **zero peers** — verifying the fetched info-hash against the magnet before trusting it. This lets the first client on a web-seed-only swarm (the HuggingFace proxy / a CDN cache) get metadata without a ut_metadata peer.
+
+### `WebTorrentClient.AddAsync(magnet, opts?, ct?)` (client)
+Added the awaitable add documented in the README + `Docs/huggingface.md` but never implemented. Returns the `Torrent` once metadata resolves (via `xs=` fetch or ut_metadata).
+
+### Web-seed-only download now actually downloads (client) — the core fix
+`SetMetadata`'s internal default-select inserted selections via `_selections.Insert(...)` **without calling `UpdateWires()`**. Real peers self-start their request cycle from their bitfield/unchoke handshake; a web seed has no handshake, so the swarm selected every piece yet issued zero requests and stalled forever. Added `UpdateWires()` after the default-select (the public `Select()` already did this). Web-seed-only download now works. Also replaced two silent `catch {}` blocks in the web-seed request path with `VerboseLogging`-gated logging, and added gated `WebConn` fetch diagnostics (URL / range / status / bytes).
+
+### `BuildWebSeedUrl` emits the full file URL (server — SpawnDev.WebTorrent.Server.HuggingFace)
+Previously returned the parent directory of the file, expecting the client to append the torrent name — but BEP 19 clients only append when the URL ends with `/`, so the emitted `ws=` 404'd. Now emits the complete URL-encoded file URL.
+
+### Companion bumps
+- `SpawnDev.WebTorrent.Server 3.2.4-rc.8`: version-sync.
+- `SpawnDev.WebTorrent.Server.HuggingFace 3.2.4-rc.8`: `BuildWebSeedUrl` fix above.
+
+### Known follow-ups (not in this build)
+- Critical-piece prioritization: `ReadAsync` marks `Critical()` but the rarest picker doesn't fetch those pieces first (browser first-read ~21s vs desktop ~0.7s). Functionally correct, latency-suboptimal for seeking.
+
 ## 3.2.3 (2026-05-03) — stable rollup of rc.1 + rc.2
 
 Stable cut. Phantom-alive wire detection (synthesis-aware). End-to-end verified against SpawnDev.ILGPU.P2P's `P2PSwarm.TwoTab_PeerDiscovery` (PASS 1m 37s standalone, was 90s timeout in the 4.9.2-rc.34 EOD known issue) AND `LargeBuffer_100MB_DispatchedOverRealWebRtc_BitExact` (PASS 3m 37s standalone, no regression).

@@ -426,8 +426,64 @@ public partial class Torrent : IAsyncDisposable
             AnnounceUrls = AnnounceUrls.Union(_client.DefaultTrackers).ToArray();
 
         OnInfoHash?.Invoke();
+
+        // Peer-free metadata bootstrap: if the magnet carried an HTTP(S) exact-source (xs=)
+        // URL to the full .torrent, fetch it directly instead of waiting for a peer to serve
+        // ut_metadata. This is what makes a web-seed-only swarm work for the FIRST client —
+        // e.g. the HuggingFace proxy / a CDN cache server hands out magnets with xs=/torrent/...
+        // and there is no peer in the swarm yet. Runs concurrently with discovery; whichever
+        // resolves metadata first wins (SetMetadata is idempotent via the HasMetadata guard).
+        if (!HasMetadata && !string.IsNullOrEmpty(ExactSourceUrl))
+            _ = FetchMetadataFromExactSourceAsync(ExactSourceUrl!);
+
         StartRechoke();
         StartDiscovery();
+    }
+
+    /// <summary>
+    /// Fetch the full .torrent from the magnet's HTTP(S) exact-source (xs=) URL and resolve
+    /// metadata from it — no peers required. The fetched info dict is verified against the
+    /// magnet's info hash before it is trusted, so a hostile exact source cannot inject a
+    /// mismatched torrent. Failures are non-fatal: discovery + ut_metadata remain the fallback.
+    /// </summary>
+    private async Task FetchMetadataFromExactSourceAsync(string url)
+    {
+        try
+        {
+            if (_http == null || Destroyed || HasMetadata) return;
+
+            var torrentBytes = await _http.GetByteArrayAsync(url);
+            if (Destroyed || HasMetadata) return;
+
+            var metadata = TorrentParser.Parse(torrentBytes);
+
+            // Verify the fetched .torrent actually matches the magnet's info hash. Compare on
+            // whichever identifier the magnet carried (v1 InfoHash, else pure-v2 V2InfoHash).
+            bool hashOk;
+            if (!string.IsNullOrEmpty(InfoHash))
+                hashOk = string.Equals(metadata.InfoHash, InfoHash, StringComparison.OrdinalIgnoreCase);
+            else if (!string.IsNullOrEmpty(V2InfoHash))
+                hashOk = string.Equals(metadata.V2InfoHash, V2InfoHash, StringComparison.OrdinalIgnoreCase);
+            else
+                hashOk = false;
+
+            if (!hashOk)
+            {
+                OnWarning?.Invoke(
+                    $"xs= exact-source .torrent info hash mismatch (magnet={WireInfoHashHex}, " +
+                    $"fetched v1={metadata.InfoHash}, v2={metadata.V2InfoHash}); ignoring {url}");
+                return;
+            }
+
+            if (Destroyed || HasMetadata) return;
+            metadata.OriginalTorrentBytes = torrentBytes;
+            SetMetadata(metadata);
+        }
+        catch (Exception ex)
+        {
+            // Non-fatal — fall back to ut_metadata via peers / web-seed discovery.
+            OnWarning?.Invoke($"xs= exact-source metadata fetch failed for {url}: {ex.Message}");
+        }
     }
 
     /// <summary>Initialize torrent from parsed metadata.</summary>
@@ -456,6 +512,15 @@ public partial class Torrent : IAsyncDisposable
 
     /// <summary>Whether this torrent was added via a BEP 46 btpk magnet URI.</summary>
     public bool IsMutableTorrent => BtpkPublicKey != null;
+
+    /// <summary>
+    /// HTTP(S) exact-source URL (the <c>xs=</c> magnet parameter) pointing at the full
+    /// <c>.torrent</c> metainfo. When present, metadata can be bootstrapped with a single
+    /// HTTP GET — no peers required. This is how a web-seed-only swarm (e.g. the HuggingFace
+    /// proxy / a CDN cache server) lets the first client resolve metadata without anyone in
+    /// the swarm to serve ut_metadata. Null if the magnet carries no HTTP exact-source.
+    /// </summary>
+    public string? ExactSourceUrl { get; private set; }
 
     /// <summary>Event fired when BEP 46 detects a new infohash for this mutable torrent.</summary>
     public event Action<string>? OnMutableUpdate; // new infohash hex
@@ -506,13 +571,28 @@ public partial class Torrent : IAsyncDisposable
             }
         }
 
-        // BEP 46: xs=urn:btpk:{public_key_hex} — mutable torrent via DHT
-        var xs = query["xs"];
-        if (xs != null && xs.StartsWith("urn:btpk:"))
+        // A magnet may carry multiple xs= (exact source) params. Two flavors we handle:
+        //   - xs=urn:btpk:{public_key_hex}  → BEP 46 mutable torrent via DHT
+        //   - xs=http(s)://.../file.torrent → exact source: the full .torrent over HTTP,
+        //     used to bootstrap metadata peer-free (see ExactSourceUrl / FetchMetadataFromExactSourceAsync).
+        var xsValues = query.GetValues("xs");
+        if (xsValues != null)
         {
-            var pkHex = xs["urn:btpk:".Length..];
-            if (pkHex.Length == 64) // 32 bytes = 64 hex chars
-                BtpkPublicKey = Convert.FromHexString(pkHex);
+            foreach (var xsVal in xsValues)
+            {
+                if (xsVal.StartsWith("urn:btpk:"))
+                {
+                    var pkHex = xsVal["urn:btpk:".Length..];
+                    if (pkHex.Length == 64) // 32 bytes = 64 hex chars
+                        BtpkPublicKey = Convert.FromHexString(pkHex);
+                }
+                else if (xsVal.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                      || xsVal.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                {
+                    // First HTTP exact source wins; the proxy emits exactly one.
+                    ExactSourceUrl ??= xsVal;
+                }
+            }
         }
 
         var trackers = query.GetValues("tr");
@@ -688,6 +768,13 @@ public partial class Torrent : IAsyncDisposable
             {
                 _selections.Insert(new SelectionItem { From = 0, To = Pieces.Length - 1, Priority = 0 });
             }
+
+            // Drive the request loop now that pieces are selected. The public Select() does
+            // this (Insert + UpdateWires); this internal default-select must too. Real peers
+            // self-start their request cycle from their bitfield/unchoke handshake, but a web
+            // seed has no handshake — without this, a web-seed-only swarm (e.g. the HuggingFace
+            // proxy with no peers) selects every piece yet never issues a single request.
+            UpdateWires();
         }
 
         // BEP 27: Propagate IsPrivate to PEX extensions on wires that connected
@@ -1087,18 +1174,28 @@ public partial class Torrent : IAsyncDisposable
                     int offset = (data[9] << 24) | (data[10] << 16) | (data[11] << 8) | data[12];
                     int length = (data[13] << 24) | (data[14] << 16) | (data[15] << 8) | data[16];
 
+                    if (WebTorrentClient.VerboseLogging)
+                        Console.WriteLine($"[WebSeed SendRaw] {url} request piece={pieceIndex} offset={offset} length={length} (Requests.Count={wire.Requests.Count})");
+
                     // Fire-and-forget HTTP request - don't block the send pipeline
                     _ = Task.Run(async () =>
                     {
                         try
                         {
                             var pendingReq = wire.Requests.ToArray().FirstOrDefault(r => r.Piece == pieceIndex && r.Offset == offset);
-                            if (pendingReq == null) return;
+                            if (pendingReq == null)
+                            {
+                                if (WebTorrentClient.VerboseLogging)
+                                    Console.WriteLine($"[WebSeed SendRaw] piece={pieceIndex} offset={offset}: NO pendingReq in wire.Requests (dropped)");
+                                return;
+                            }
 
                             await webConn.HandleRequestAsync(pieceIndex, offset, length, (err, buf) =>
                             {
                                 try
                                 {
+                                    if (WebTorrentClient.VerboseLogging)
+                                        Console.WriteLine($"[WebSeed respond] piece={pieceIndex} err={(err?.GetType().Name ?? "null")} bytes={(buf?.Length ?? -1)}");
                                     if (buf != null)
                                     {
                                         Interlocked.Add(ref wire._downloadedSinceLastCheck, buf.Length);
@@ -1107,10 +1204,18 @@ public partial class Torrent : IAsyncDisposable
                                     wire.Requests.Remove(pendingReq);
                                     pendingReq.Callback(err, buf);
                                 }
-                                catch { }
+                                catch (Exception cbEx)
+                                {
+                                    if (WebTorrentClient.VerboseLogging)
+                                        Console.WriteLine($"[WebSeed respond] callback threw: {cbEx}");
+                                }
                             });
                         }
-                        catch { }
+                        catch (Exception hrEx)
+                        {
+                            if (WebTorrentClient.VerboseLogging)
+                                Console.WriteLine($"[WebSeed SendRaw] HandleRequest threw: {hrEx}");
+                        }
                     });
                 }
             }

@@ -408,10 +408,15 @@ public class HuggingFaceProxy
     /// </summary>
     internal static string BuildWebSeedUrl(string baseUrl, string filePath)
     {
-        var lastSlash = filePath.LastIndexOf('/');
-        if (lastSlash >= 0)
-            return $"{baseUrl}/{filePath[..lastSlash]}";
-        return baseUrl; // root-level file, no subdirectory to append
+        // BEP 19 web seed for a single-file model torrent must point DIRECTLY at the file.
+        // A BEP 19 client (our WebConn, JS WebTorrent) only appends a name when the URL ends
+        // with '/', so emitting the parent directory (the old behavior) produced a URL the
+        // client fetched verbatim — a directory path that 404'd, failing every web-seed piece
+        // request. Emit the complete file URL with each path segment URL-encoded (slashes kept).
+        var segments = filePath.Split('/');
+        for (int i = 0; i < segments.Length; i++)
+            segments[i] = System.Uri.EscapeDataString(segments[i]);
+        return $"{baseUrl.TrimEnd('/')}/{string.Join("/", segments)}";
     }
 
     /// <summary>

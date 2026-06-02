@@ -294,8 +294,43 @@ public class WebTorrentClient : IAsyncDisposable
     // ========================
 
     /// <summary>
+    /// Add a torrent from a magnet URI (or info hash hex) and await until its metadata is
+    /// resolved, returning the ready <see cref="Torrent"/>. Metadata resolves via the magnet's
+    /// HTTP(S) exact-source (<c>xs=</c>) <c>.torrent</c> when present (one GET, no peers — the
+    /// HuggingFace-proxy / CDN-cache case), otherwise via ut_metadata from peers in the swarm.
+    /// Pass a <paramref name="ct"/> to bound the wait; without one the task completes only when
+    /// metadata arrives (so always supply a timeout token for peer-only magnets).
+    /// </summary>
+    public async Task<Torrent> AddAsync(string magnetOrInfoHash, AddTorrentOptions? opts = null,
+        CancellationToken ct = default)
+    {
+        var torrent = Add(magnetOrInfoHash, opts);
+        if (torrent.HasMetadata) return torrent;
+
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnReady() => tcs.TrySetResult();
+        torrent.OnReady += OnReady;
+        try
+        {
+            // Re-check after subscribing — metadata may have resolved between Add() and the
+            // event hookup (e.g. xs= fetch already completed, or a duplicate add returned a
+            // torrent that was already ready).
+            if (torrent.HasMetadata) return torrent;
+            using (ct.Register(static s => ((TaskCompletionSource)s!).TrySetCanceled(), tcs))
+                await tcs.Task.ConfigureAwait(false);
+        }
+        finally
+        {
+            torrent.OnReady -= OnReady;
+        }
+        return torrent;
+    }
+
+    /// <summary>
     /// Add a torrent to download. Accepts magnet URI or info hash hex.
-    /// Returns the Torrent immediately (metadata may still be resolving via ut_metadata).
+    /// Returns the Torrent immediately (metadata may still be resolving via ut_metadata
+    /// from peers, or via an HTTP exact-source <c>xs=</c> fetch if the magnet carried one).
+    /// Use <see cref="AddAsync(string, AddTorrentOptions?, CancellationToken)"/> to await readiness.
     /// </summary>
     public Torrent Add(string magnetOrInfoHash, AddTorrentOptions? opts = null)
     {

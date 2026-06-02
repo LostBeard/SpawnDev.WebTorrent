@@ -1,6 +1,8 @@
 # Changelog
 
-## 3.2.4-rc.8 (2026-06-02) — web-seed-only download + magnet metadata bootstrap
+## 3.2.4 (2026-06-02) — web-seed-only download + magnet metadata bootstrap (stable)
+
+Stable cut. Rolls up the web-seed/magnet fixes below over the prior 3.2.4-rc line. All four gaps were found and fixed during the first end-to-end run of the HuggingFace-proxy delivery path.
 
 First end-to-end exercise of the HuggingFace-proxy delivery path (magnet from hub → metadata → web-seed download with no peers) surfaced four real gaps. All fixed; covered by new live-hub tests in `WebTorrentTestBase.HuggingFaceProxyTests` (4/4 PASS browser+desktop; full no-regression sweep clean).
 
@@ -17,8 +19,8 @@ Added the awaitable add documented in the README + `Docs/huggingface.md` but nev
 Previously returned the parent directory of the file, expecting the client to append the torrent name — but BEP 19 clients only append when the URL ends with `/`, so the emitted `ws=` 404'd. Now emits the complete URL-encoded file URL.
 
 ### Companion bumps
-- `SpawnDev.WebTorrent.Server 3.2.4-rc.8`: version-sync.
-- `SpawnDev.WebTorrent.Server.HuggingFace 3.2.4-rc.8`: `BuildWebSeedUrl` fix above.
+- `SpawnDev.WebTorrent.Server 3.2.4`: version-sync.
+- `SpawnDev.WebTorrent.Server.HuggingFace 3.2.4`: `BuildWebSeedUrl` fix above.
 
 ### Known follow-ups (not in this build)
 - Critical-piece prioritization: `ReadAsync` marks `Critical()` but the rarest picker doesn't fetch those pieces first (browser first-read ~21s vs desktop ~0.7s). Functionally correct, latency-suboptimal for seeking.

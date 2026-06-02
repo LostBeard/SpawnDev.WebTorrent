@@ -170,4 +170,56 @@ public abstract partial class WebTorrentTestBase
             await client.DisposeAsync();
         }
     }
+
+    /// <summary>
+    /// On-demand inspect guard. Adding a hub model DESELECTED + a small range read must download
+    /// ONLY the touched pieces, not the whole file — this is what lets the Model Inspector read
+    /// graph structure from a multi-GB checkpoint without pulling weights. Without the fix,
+    /// ReadFileAsync auto-selected the entire file (it saw no selections) and downloaded everything.
+    /// Reads the ONNX header and asserts <c>torrent.Downloaded</c> is ~one piece, far below the file.
+    /// </summary>
+    [TestMethod(Timeout = 240000, RetryCount = 2)]
+    public async Task HuggingFaceProxy_DeselectedRead_DownloadsOnlyTouchedPieces()
+    {
+        using var http = new HttpClient();
+        var magnet = await GetHubMagnetAsync(http);
+
+        var client = new WebTorrentClient();
+        try
+        {
+            using var addCts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            var torrent = await client.AddAsync(magnet, new AddTorrentOptions { Deselect = true }, addCts.Token);
+
+            if (torrent.Files == null || torrent.Files.Length < 1 || torrent.Files[0].Length <= 0)
+                throw new Exception("AddAsync returned but Files is empty or zero-length");
+
+            var file = torrent.Files[0];
+            int chunk = (int)Math.Min(4096, file.Length);
+
+            // Read the first 4 KiB (ONNX protobuf header). Deselected, so on-demand picking should
+            // fetch only the head piece(s) via Critical(), not auto-select + download the whole file.
+            var head = await file.ReadAsync(0, chunk, addCts.Token);
+            if (head == null || head.Length != chunk)
+                throw new Exception($"deselected read returned {head?.Length ?? 0} bytes; expected {chunk}");
+
+            bool anyNonZero = false;
+            foreach (var b in head) { if (b != 0) { anyNonZero = true; break; } }
+            if (!anyNonZero)
+                throw new Exception("deselected read returned an all-zero head — not a real on-demand fetch");
+
+            // The whole point of deselect: do NOT download the whole file. A 4 KiB read at offset 0
+            // touches ~1 piece; allow generous slack (3 pieces) for boundary/endgame. This is robust
+            // to model size — a multi-MB model is many pieces, so 3 pieces is a tiny fraction.
+            long downloaded = torrent.Downloaded;
+            long budget = 3L * torrent.PieceLength;
+            if (downloaded > budget)
+                throw new Exception(
+                    $"deselected read downloaded {downloaded} bytes (> {budget} = 3 pieces) of a {file.Length}-byte file " +
+                    "— the whole-file auto-select was not suppressed; on-demand inspect would pull weights");
+        }
+        finally
+        {
+            await client.DisposeAsync();
+        }
+    }
 }

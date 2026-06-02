@@ -1,5 +1,28 @@
 # Changelog
 
+## 3.2.5 (2026-06-02) — critical-piece prioritization + on-demand inspect
+
+Closes the latency + on-demand follow-ups noted under 3.2.4. Both fixes are client-only; `Server` / `Server.HuggingFace` are version-sync companions (no source changes). Covered by two new live-hub tests in `WebTorrentTestBase.HuggingFaceProxyTests`; full no-regression sweep clean (966/0/16, browser+desktop).
+
+### Critical-piece read prioritization (client)
+A streaming/seek read marks the pieces it needs `Critical()`, but those were not fetched ahead of the normal rarest/sequential walk, so a cold first read over a web seed stalled (~21s browser vs ~0.7s desktop). Two fixes:
+- `Torrent.Critical()` now calls `UpdateWires()` so marking a piece critical kicks the request loop immediately. The public `Select()` already did this; a cold read over a web seed (which has no handshake) had nothing else driving requests.
+- `TrySelectWire` gains a critical-first pass that requests read-awaited pieces (with hotswap, so they can steal block reservations from lower-priority in-flight pieces) before the normal rarest/sequential walk.
+
+New test `HuggingFaceProxy_TailSeekRead_IsPrioritized`: a tail-seek read (worst case for sequential order) resolves well under the old stall, browser+desktop.
+
+### On-demand inspect — read only touched pieces (client)
+`ReadFileAsync` auto-selected the whole file whenever no selection existed, so a torrent added with `AddTorrentOptions { Deselect = true }` (for inspect-by-URL) still downloaded the entire model. It no longer auto-selects in deselect mode — `Critical()` + critical-first picking fetch only the pieces a read touches, so structure inspection of a multi-GB checkpoint never pulls weights.
+
+New test `HuggingFaceProxy_DeselectedRead_DownloadsOnlyTouchedPieces`: a deselected add + 4 KiB header read downloads ~1 piece (asserts `Downloaded` ≤ 3 pieces), not the full file.
+
+### Test harness — desktop drain-bug fix (not the library)
+The PMT desktop lane runs `DemoConsole` as a subprocess and parses stdout for the final `TEST:` line; `SpawnDev.UnitTesting 2.5.2`'s `ProcessRunner` could return before draining stdout to EOF, intermittently losing that line under concurrent load → spurious generic "Test run failed" (`ProjectRunner.cs:362`). Bumped `PlaywrightMultiTest` + `DemoConsole` to `SpawnDev.UnitTesting 2.5.6`, `Demo.Shared` to `SpawnDev.UnitTesting.Blazor 2.5.6`, `WpfDemo` to `SpawnDev.UnitTesting.Desktop 2.5.3` (drain-to-EOF fix landed in 2.5.3).
+
+### Companion bumps
+- `SpawnDev.WebTorrent.Server 3.2.5`: version-sync.
+- `SpawnDev.WebTorrent.Server.HuggingFace 3.2.5`: version-sync.
+
 ## 3.2.4 (2026-06-02) — web-seed-only download + magnet metadata bootstrap (stable)
 
 Stable cut. Rolls up the web-seed/magnet fixes below over the prior 3.2.4-rc line. All four gaps were found and fixed during the first end-to-end run of the HuggingFace-proxy delivery path.

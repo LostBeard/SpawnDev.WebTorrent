@@ -1371,13 +1371,17 @@ public partial class Torrent : IAsyncDisposable
         var result = new byte[length];
         int resultPos = 0;
 
-        // Auto-select file pieces and resume if needed — enables on-demand streaming
-        if (Paused || !_selections.Any())
+        // Auto-select + resume for on-demand streaming. In deselect mode (inspect-by-URL)
+        // do NOT select the whole file — Critical() (marked per-piece below) + critical-first
+        // picking fetch only the pieces this read touches, so structure inspection of a
+        // multi-GB checkpoint never pulls weights. In normal mode keep selecting the file so
+        // a plain read still downloads it.
+        if (!_deselect && (Paused || !_selections.Any()))
         {
             // Select this file's piece range so pieces will be requested
             Select(file.StartPiece, file.EndPiece, 1);
-            if (Paused) Resume();
         }
+        if (Paused) Resume();
 
         while (resultPos < length)
         {

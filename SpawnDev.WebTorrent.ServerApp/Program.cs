@@ -76,12 +76,19 @@ var hfOptions = new HuggingFaceProxyOptions
 };
 builder.Services.AddSingleton(new HuggingFaceProxy(hfOptions));
 
-// CORS for browser clients
+// CORS for browser clients.
+// Web-seed piece fetches carry a Range header, which makes them "non-simple" cross-origin
+// requests — the browser issues a CORS preflight (OPTIONS) before EACH one. A large model is
+// thousands of piece GETs, so without preflight caching the browser re-issues an OPTIONS before
+// every single Range GET (observed: ~1300 preflight+GET pairs to load one 330MB model). Setting
+// a long preflight Max-Age lets the browser cache the preflight result and skip the per-piece
+// OPTIONS entirely — the single biggest latency win for streaming a model from the web seed.
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
     {
-        policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader();
+        policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()
+              .SetPreflightMaxAge(TimeSpan.FromHours(24));
     });
 });
 

@@ -241,11 +241,19 @@ public class HuggingFaceProxy
 
         Console.WriteLine($"[HF Proxy] Generating .torrent for: {cacheKey}");
 
+        // Bias toward LARGER pieces for big model files. Models are delivered primarily over the HTTP
+        // web seed, where each piece = one Range GET. The generic auto-calc picks 256KB for a 128MB-512MB
+        // file, so a 330MB model = ~1300 Range GETs. At 4MB pieces that drops to ~82 — ~16x fewer requests
+        // (and, with browser preflight caching now on, ~16x fewer round-trips). Small files (tokenizer/
+        // config) keep the auto-calc so they stay finely pieced.
+        long fileSize = new System.IO.FileInfo(localPath).Length;
+
         var (torrentBytes, metadata) = await TorrentCreator.CreateFromFileAsync(localPath,
             new TorrentCreatorOptions
             {
                 Name = System.IO.Path.GetFileName(filePath),
                 Trackers = _options.TrackerUrls,
+                PieceLength = ModelPieceLength(fileSize),
                 // BEP 17: web seed URL is the base directory — client appends /{torrentName}
                 // e.g., base = /hf/Xenova/distilgpt2 + name = tokenizer.json → /hf/Xenova/distilgpt2/tokenizer.json
                 WebSeeds = new[]
@@ -268,6 +276,19 @@ public class HuggingFaceProxy
         Console.WriteLine($"[HF Proxy] .torrent ready: {cacheKey} ({metadata.PieceHashes.Length} pieces, v1={metadata.InfoHash}, v2={metadata.V2InfoHash})");
 
         return torrentBytes;
+    }
+
+    /// <summary>
+    /// Piece length for a hub model file, tuned for HTTP web-seed delivery (one Range GET per piece).
+    /// Larger pieces for larger files = far fewer requests. All values are powers of two (BEP 52 v2
+    /// requires it). Returns 0 for small files so the generic auto-calc keeps them finely pieced.
+    /// </summary>
+    internal static int ModelPieceLength(long fileSize)
+    {
+        if (fileSize >= 64L * 1024 * 1024) return 4 * 1024 * 1024; // >=64MB → 4MB
+        if (fileSize >= 16L * 1024 * 1024) return 2 * 1024 * 1024; // >=16MB → 2MB
+        if (fileSize >= 4L * 1024 * 1024) return 1 * 1024 * 1024;  // >=4MB  → 1MB
+        return 0; // small files: let TorrentCreator auto-calc (16-256KB)
     }
 
     /// <summary>Get magnet URI for a HuggingFace model file. Creates .torrent if needed.</summary>

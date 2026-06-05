@@ -350,6 +350,55 @@ public abstract partial class WebTorrentTestBase
         await client.DisposeAsync();
     }
 
+    // ── File.ReadUint8ArrayAsync() — zero-copy JS-typed range read ──
+    // Must select+prioritize and assemble exactly like ReadAsync, just landing the bytes in a JS Uint8Array
+    // (in JS memory, no .NET byte[] hop on the OPFS/browser path) instead of a .NET byte[].
+
+    [TestMethod]
+    public async Task File_ReadUint8ArrayAsync_MatchesReadAsync_InBrowser()
+    {
+        if (!OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("ReadUint8ArrayAsync returns a JS Uint8Array — requires browser JS runtime");
+        var client = CreateIsolatedClient();
+        // 64 KB → multiple pieces, so the range below crosses piece boundaries and exercises the
+        // multi-piece JS-side assembly (per-piece Slice + Set into the result Uint8Array).
+        var data = MakeDeterministicData(65536, seed: 9742);
+        var torrent = await client.SeedAsync("readu8.bin", data);
+        var file = torrent.Files![0];
+
+        const long offset = 10000;
+        const int length = 40000;   // 10000..49999 — spans several pieces
+
+        var expected = await file.ReadAsync(offset, length);            // byte[] reference path
+        using var u8 = await file.ReadUint8ArrayAsync(offset, length);  // JS Uint8Array (new)
+        var got = u8.ReadBytes();                                        // .NET copy only to compare
+
+        if (got.Length != length)
+            throw new Exception($"ReadUint8ArrayAsync length {got.Length} != {length}");
+        if (!got.SequenceEqual(expected))
+            throw new Exception("ReadUint8ArrayAsync bytes differ from ReadAsync(byte[])");
+        if (!got.SequenceEqual(data.Skip((int)offset).Take(length)))
+            throw new Exception("ReadUint8ArrayAsync bytes differ from source data");
+
+        await client.DisposeAsync();
+    }
+
+    [TestMethod]
+    public async Task File_ReadUint8ArrayAsync_WholeFile_InBrowser()
+    {
+        if (!OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("ReadUint8ArrayAsync returns a JS Uint8Array — requires browser JS runtime");
+        var client = CreateIsolatedClient();
+        var data = MakeDeterministicData(20000, seed: 9743);
+        var torrent = await client.SeedAsync("readu8full.bin", data);
+
+        using var u8 = await torrent.Files![0].ReadUint8ArrayAsync(0, data.Length);
+        var got = u8.ReadBytes();
+        if (!got.SequenceEqual(data)) throw new Exception("ReadUint8ArrayAsync whole-file bytes differ from source");
+
+        await client.DisposeAsync();
+    }
+
     // ── File.StreamAsync() IAsyncEnumerable ──
 
     [TestMethod]

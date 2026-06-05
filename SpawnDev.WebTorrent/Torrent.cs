@@ -1345,6 +1345,35 @@ public partial class Torrent : IAsyncDisposable
     // FILE READ (for streaming and download)
     // ========================
 
+    // Ensure a range read's pieces will actually download: select the file's piece range (unless in
+    // deselect / inspect mode, where per-piece Critical() drives on-demand fetching) and resume if paused.
+    // Shared by the byte[] and Uint8Array readers so both prioritize identically. In deselect mode do NOT
+    // select the whole file — Critical() (marked per-piece) + critical-first picking fetch only the pieces a
+    // read touches, so structure inspection of a multi-GB checkpoint never pulls weights.
+    private void EnsureReadSelection(TorrentFileInfo file)
+    {
+        if (!_deselect && (Paused || !_selections.Any()))
+            Select(file.StartPiece, file.EndPiece, 1);
+        if (Paused) Resume();
+    }
+
+    // Mark a piece critical (jump the picker queue) and poll until it arrives. Shared on-demand
+    // prioritization for range reads — without it a read would block on pieces nobody requested.
+    private async Task EnsurePieceAsync(int pieceIdx, CancellationToken ct)
+    {
+        if (pieceIdx < Bitfield.Length && !Bitfield[pieceIdx])
+        {
+            Critical(pieceIdx, pieceIdx);
+            while (!Bitfield[pieceIdx] && !Destroyed)
+            {
+                ct.ThrowIfCancellationRequested();
+                await Task.Delay(100, ct);
+            }
+            _critical.TryRemove(pieceIdx, out _);
+            if (Destroyed) throw new OperationCanceledException("Torrent destroyed while waiting for piece");
+        }
+    }
+
     /// <summary>
     /// Read bytes from a file within the torrent. Assembles data across piece boundaries.
     /// If pieces are not yet downloaded, waits for them (supports streaming while downloading).
@@ -1371,17 +1400,7 @@ public partial class Torrent : IAsyncDisposable
         var result = new byte[length];
         int resultPos = 0;
 
-        // Auto-select + resume for on-demand streaming. In deselect mode (inspect-by-URL)
-        // do NOT select the whole file — Critical() (marked per-piece below) + critical-first
-        // picking fetch only the pieces this read touches, so structure inspection of a
-        // multi-GB checkpoint never pulls weights. In normal mode keep selecting the file so
-        // a plain read still downloads it.
-        if (!_deselect && (Paused || !_selections.Any()))
-        {
-            // Select this file's piece range so pieces will be requested
-            Select(file.StartPiece, file.EndPiece, 1);
-        }
-        if (Paused) Resume();
+        EnsureReadSelection(file);
 
         while (resultPos < length)
         {
@@ -1393,24 +1412,7 @@ public partial class Torrent : IAsyncDisposable
             int available = pieceSize - pieceOffset;
             int toRead = Math.Min(available, length - resultPos);
 
-            // Wait for piece if not yet downloaded
-            if (pieceIdx < Bitfield.Length && !Bitfield[pieceIdx])
-            {
-                // Mark as critical to prioritize download
-                Critical(pieceIdx, pieceIdx);
-
-                // Poll until piece arrives (100ms intervals)
-                while (!Bitfield[pieceIdx] && !Destroyed)
-                {
-                    ct.ThrowIfCancellationRequested();
-                    await Task.Delay(100, ct);
-                }
-
-                // Clear critical flag now that piece has arrived
-                _critical.TryRemove(pieceIdx, out _);
-
-                if (Destroyed) throw new OperationCanceledException("Torrent destroyed while waiting for piece");
-            }
+            await EnsurePieceAsync(pieceIdx, ct);
 
             if (pieceIdx < Bitfield.Length && Bitfield[pieceIdx])
             {
@@ -1425,6 +1427,88 @@ public partial class Torrent : IAsyncDisposable
             }
 
             // Piece verified but data missing from store (shouldn't happen)
+            throw new InvalidOperationException($"Piece {pieceIdx} marked as verified but data not in store");
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Read a byte range from a file as a JS <c>Uint8Array</c>, staying in JS memory (no .NET
+    /// <c>byte[]</c> hop) when the chunk store is OPFS-backed. Selects + prioritizes (Critical) the needed
+    /// pieces exactly like <see cref="ReadFileAsync(int,long,int,CancellationToken)"/>, so the read is
+    /// fulfilled on demand. Intended for zero-copy GPU upload (<c>writeBuffer</c>) — the bytes never leave JS.
+    /// </summary>
+    public async Task<SpawnDev.BlazorJS.JSObjects.Uint8Array> ReadFileUint8ArrayAsync(int fileIndex, long offset, int length, CancellationToken ct = default)
+    {
+        // Returns a JS Uint8Array (for zero-copy browser GPU upload), so it needs a JS runtime.
+        // Desktop has none — use ReadFileAsync (byte[]) there instead. Fail fast with a clear message
+        // rather than a cryptic JS-object-creation error.
+        if (!OperatingSystem.IsBrowser())
+            throw new PlatformNotSupportedException(
+                "ReadFileUint8ArrayAsync returns a JS Uint8Array and requires a browser runtime; use ReadFileAsync on desktop.");
+        if (Files == null || fileIndex < 0 || fileIndex >= Files.Length)
+            throw new ArgumentOutOfRangeException(nameof(fileIndex));
+        if (_store == null) throw new InvalidOperationException("No chunk store available");
+
+        var file = Files[fileIndex];
+        if (offset + length > file.Length)
+            length = (int)(file.Length - offset);
+        if (length <= 0) return new SpawnDev.BlazorJS.JSObjects.Uint8Array(0);
+
+        long absOffset = file.Offset + offset;
+        var result = new SpawnDev.BlazorJS.JSObjects.Uint8Array(length);            // JS-side result buffer
+        int resultPos = 0;
+        // Zero-copy JS path only when the store is OPFS-backed and can hand back Uint8Arrays.
+        var opfs = _store as Storage.AsyncFSChunkStore;
+        bool jsPath = opfs != null && opfs.SupportsUint8Array;
+
+        EnsureReadSelection(file);
+
+        while (resultPos < length)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            int pieceIdx = (int)(absOffset / PieceLength);
+            int pieceOffset = (int)(absOffset % PieceLength);
+            int pieceSize = (pieceIdx == PieceCount - 1) ? LastPieceLength : PieceLength;
+            int available = pieceSize - pieceOffset;
+            int toRead = Math.Min(available, length - resultPos);
+
+            await EnsurePieceAsync(pieceIdx, ct);
+
+            if (pieceIdx < Bitfield.Length && Bitfield[pieceIdx])
+            {
+                if (jsPath)
+                {
+                    // Whole piece as a JS Uint8Array → slice the needed sub-range → set into result.
+                    // All three operations stay in JS; the bytes never marshal into .NET.
+                    using var piece = await opfs!.GetUint8ArrayAsync(pieceIdx, ct);
+                    if (piece != null)
+                    {
+                        using var slice = piece.Slice(pieceOffset, pieceOffset + toRead);
+                        result.Set(slice, resultPos);
+                        resultPos += toRead;
+                        absOffset += toRead;
+                        continue;
+                    }
+                }
+                else
+                {
+                    // Desktop / non-OPFS fallback: read .NET bytes and copy them into the JS buffer.
+                    // (No zero-copy win here, but desktop isn't feeding a browser GPU anyway.)
+                    var data = await _store.GetAsync(pieceIdx, pieceOffset, toRead);
+                    if (data != null)
+                    {
+                        result.Set(data, resultPos);
+                        resultPos += data.Length;
+                        absOffset += data.Length;
+                        continue;
+                    }
+                }
+            }
+
+            result.Dispose();
             throw new InvalidOperationException($"Piece {pieceIdx} marked as verified but data not in store");
         }
 
@@ -1612,6 +1696,15 @@ public class TorrentFileInfo
     public Task<byte[]> ReadAsync(long offset, int length, CancellationToken ct = default)
         => Torrent?.ReadFileAsync(Array.IndexOf(Torrent.Files!, this), offset, length, ct)
            ?? Task.FromResult(Array.Empty<byte>());
+
+    /// <summary>
+    /// Read a byte range as a JS <c>Uint8Array</c> — stays in JS memory on OPFS-backed stores (no .NET
+    /// <c>byte[]</c> hop). Selects + prioritizes the needed pieces like <see cref="ReadAsync"/>. Ideal for
+    /// zero-copy GPU upload (<c>writeBuffer</c>): read a weight range, hand the Uint8Array straight to the GPU.
+    /// </summary>
+    public Task<SpawnDev.BlazorJS.JSObjects.Uint8Array> ReadUint8ArrayAsync(long offset, int length, CancellationToken ct = default)
+        => Torrent?.ReadFileUint8ArrayAsync(Array.IndexOf(Torrent.Files!, this), offset, length, ct)
+           ?? Task.FromResult(new SpawnDev.BlazorJS.JSObjects.Uint8Array(0));
 
     /// <summary>
     /// Get a seekable .NET Stream for this file. Pieces download on demand as the

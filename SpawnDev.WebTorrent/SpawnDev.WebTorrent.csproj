@@ -9,8 +9,8 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-		<Version>3.2.6</Version>
-		<PackageReleaseNotes>v3.2.6: Adds TorrentFileInfo.ReadUint8ArrayAsync - a zero-copy JS-typed random-access read (returns a JS Uint8Array, no .NET byte[] hop) for browser GPU upload (writeBuffer), sharing ReadFileAsync's piece selection + Critical() prioritization. Browser-only (throws PlatformNotSupportedException on desktop; use ReadFileAsync there). Foundation for zero-copy GPU model loading in SpawnDev.ILGPU.ML.</PackageReleaseNotes>
+		<Version>3.2.7</Version>
+		<PackageReleaseNotes>v3.2.7: Thread-safety fix for Piece (the per-piece block-download state machine). Piece is a 1:1 port of JS torrent-piece (single-threaded event loop); the C# client drives downloads from multiple threads, so the download loop's Reserve()/ReserveRemaining() could race a concurrent wire-arrival callback's Set()/Flush() (which null the piece buffers) → NullReferenceException on large multi-piece torrents (hit loading a 2.5GB SD-Turbo model). All Piece state mutators are now serialized on a per-Piece re-entrant lock (no-op on single-threaded WASM, atomic on desktop). v3.2.6: Adds TorrentFileInfo.ReadUint8ArrayAsync zero-copy JS-typed random-access read for browser GPU upload.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>

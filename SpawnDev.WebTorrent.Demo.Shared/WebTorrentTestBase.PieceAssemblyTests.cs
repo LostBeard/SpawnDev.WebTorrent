@@ -172,4 +172,35 @@ public abstract partial class WebTorrentTestBase
         if (!SHA1.HashData(piece.Flush()!).SequenceEqual(expectedHash))
             throw new Exception("Exact block size assembly SHA1 mismatch");
     }
+
+    [TestMethod]
+    public async Task Piece_ConcurrentAccess_NoRace()
+    {
+        // REGRESSION GUARD (3.2.7): Piece is a 1:1 port of single-threaded JS torrent-piece, but the C#
+        // client drives it from MULTIPLE threads — the download loop (Reserve/ReserveRemaining/Cancel)
+        // races a wire-arrival callback (Set/Flush, which null _buffer/_cancellations). Before the
+        // per-Piece lock, a Flush() nulling _cancellations between a Reserve()'s Init() and its
+        // _cancellations! deref threw NullReferenceException (hit loading a 2.5GB SD-Turbo torrent).
+        // Hammer all 8 mutators concurrently across many fresh pieces; assert NO exception. (On
+        // single-threaded WASM, Task.Run is cooperative so this cannot truly race — the desktop lanes
+        // exercise the window; the lock is a no-op on WASM and atomic on desktop. No assembly-correctness
+        // assert: under concurrent Flush the buffers are intentionally torn down — the point is no NRE.)
+        Exception? raced = null;
+        void Guard(Action a) { try { a(); } catch (Exception e) { System.Threading.Interlocked.CompareExchange(ref raced, e, null); } }
+        for (int iter = 0; iter < 300 && raced == null; iter++)
+        {
+            var piece = new Piece(40000); // 3 blocks (BlockLength = 16384)
+            var data = new byte[40000];
+            new Random(iter).NextBytes(data);
+            byte[] Block(int b) => data[piece.ChunkOffset(b)..(piece.ChunkOffset(b) + piece.ChunkLength(b))];
+            await Task.WhenAll(
+                Task.Run(() => Guard(() => { for (int k = 0; k < 150; k++) { piece.Reserve(); piece.ReserveRemaining(); piece.Cancel(0); piece.CancelRemaining(0); } })),
+                Task.Run(() => Guard(() => { for (int k = 0; k < 150; k++) { piece.Reserve(); piece.ReserveRemaining(); piece.Get(0); } })),
+                Task.Run(() => Guard(() => { for (int k = 0; k < 60; k++) { for (int b = 0; b < 3; b++) piece.Set(b, Block(b), "w"); piece.Flush(); } })),
+                Task.Run(() => Guard(() => { for (int k = 0; k < 150; k++) { piece.Flush(); piece.Get(0); } }))
+            );
+        }
+        if (raced != null)
+            throw new Exception($"Piece raced under concurrent access (the NRE the 3.2.7 per-Piece lock fixes): {raced.GetType().Name}: {raced.Message}");
+    }
 }

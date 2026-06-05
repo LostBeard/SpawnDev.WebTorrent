@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.2.7 (2026-06-05) — Piece thread-safety (multi-threaded download race fix)
+
+`Piece` (the per-piece block-download state machine) is a 1:1 port of JS `torrent-piece`, which runs on a single-threaded event loop. The C# client drives downloads from MULTIPLE threads — the download loop calls `Reserve()`/`ReserveRemaining()` while a wire-arrival callback on another thread calls `Set()`/`Flush()` (which null `_buffer`/`_cancellations`). That raced: `Init()` returned true, then a concurrent `Flush()` nulled `_cancellations` before the caller dereferenced it → `NullReferenceException` in `Piece.ReserveRemaining()`/`Reserve()` (`Piece.cs:79`). It surfaced loading a large multi-piece torrent (a 2.5GB SD-Turbo model via SpawnDev.ILGPU.ML); the smaller models exercised before never hit the timing window.
+
+Fix: all eight `Piece` state mutators (`Init`, `Reserve`, `ReserveRemaining`, `Cancel`, `CancelRemaining`, `Get`, `Set`, `Flush`) are now serialized on a per-`Piece` re-entrant lock (`_gate`). It is a no-op on single-threaded Blazor WASM and makes the state machine atomic on desktop. No public API change; `Piece.cs` only. No deadlock risk (a single re-entrant lock, no nested foreign locks).
+
+New test guards the concurrent path; **Gate:** full PMT sweep GREEN browser+desktop. `Server` / `Server.HuggingFace` are version-sync companions (no source changes).
+
 ## 3.2.6 (2026-06-04) - zero-copy JS-typed range read (ReadUint8ArrayAsync)
 
 Adds `TorrentFileInfo.ReadUint8ArrayAsync(offset, length)` - a random-access read that returns a JS `Uint8Array` instead of a .NET `byte[]`. On the OPFS path the bytes never marshal through .NET: the GPU upload (`writeBuffer`) use case in SpawnDev.ILGPU.ML wants a JS `Uint8Array` anyway, so a `byte[]` would be a wasted JS->.NET->JS round-trip. It shares `ReadFileAsync`'s exact piece selection + `Critical()` prioritization - factored into shared `EnsureReadSelection` + `EnsurePieceAsync` helpers used by both the `byte[]` and `Uint8Array` readers, so download behavior is identical. Browser-only (returns a JS type, like `BlobAsync`); throws `PlatformNotSupportedException` on desktop - use `ReadFileAsync` there. Foundation for zero-copy GPU model loading.

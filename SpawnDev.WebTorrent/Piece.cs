@@ -26,6 +26,15 @@ public class Piece
     private int _reservations;
     private bool _flushed;
 
+    // Piece is a 1:1 port of JS torrent-piece (single-threaded event loop). The C# client drives
+    // download from MULTIPLE threads concurrently — the download loop calls Reserve()/ReserveRemaining()
+    // while a wire-arrival callback on another thread calls Set()/Flush() (which null _buffer/_cancellations).
+    // That raced: Init() returns true, then _cancellations gets nulled by a concurrent Flush() before the
+    // caller dereferences it → NullReferenceException (hit loading SD-Turbo's large multi-piece torrent).
+    // Serialize ALL state mutators on this gate so the Piece state machine is atomic. Monitor is
+    // re-entrant (the nested Init() re-acquire is safe) and a no-op on single-threaded WASM.
+    private readonly object _gate = new();
+
     public Piece(int length)
     {
         Length = length;
@@ -59,15 +68,18 @@ public class Piece
     /// </summary>
     public int Reserve()
     {
-        if (!Init()) return -1;
-        if (_cancellations!.Count > 0)
+        lock (_gate)
         {
-            var idx = _cancellations[^1];
-            _cancellations.RemoveAt(_cancellations.Count - 1);
-            return idx;
+            if (!Init()) return -1;
+            if (_cancellations!.Count > 0)
+            {
+                var idx = _cancellations[^1];
+                _cancellations.RemoveAt(_cancellations.Count - 1);
+                return idx;
+            }
+            if (_reservations < _chunks) return _reservations++;
+            return -1;
         }
-        if (_reservations < _chunks) return _reservations++;
-        return -1;
     }
 
     /// <summary>
@@ -75,40 +87,52 @@ public class Piece
     /// </summary>
     public int ReserveRemaining()
     {
-        if (!Init()) return -1;
-        if (_cancellations!.Count > 0 || _reservations < _chunks)
+        lock (_gate)
         {
-            int min = _reservations;
-            while (_cancellations.Count > 0)
+            if (!Init()) return -1;
+            if (_cancellations!.Count > 0 || _reservations < _chunks)
             {
-                min = Math.Min(min, _cancellations[^1]);
-                _cancellations.RemoveAt(_cancellations.Count - 1);
+                int min = _reservations;
+                while (_cancellations.Count > 0)
+                {
+                    min = Math.Min(min, _cancellations[^1]);
+                    _cancellations.RemoveAt(_cancellations.Count - 1);
+                }
+                _reservations = _chunks;
+                return min;
             }
-            _reservations = _chunks;
-            return min;
+            return -1;
         }
-        return -1;
     }
 
     /// <summary>Cancel a block reservation (block will be re-requested).</summary>
     public void Cancel(int i)
     {
-        if (!Init()) return;
-        _cancellations!.Add(i);
+        lock (_gate)
+        {
+            if (!Init()) return;
+            _cancellations!.Add(i);
+        }
     }
 
     /// <summary>Cancel all reservations from block i onward.</summary>
     public void CancelRemaining(int i)
     {
-        if (!Init()) return;
-        _reservations = i;
+        lock (_gate)
+        {
+            if (!Init()) return;
+            _reservations = i;
+        }
     }
 
     /// <summary>Get block data at index i, or null.</summary>
     public byte[]? Get(int i)
     {
-        if (!Init()) return null;
-        return _buffer![i];
+        lock (_gate)
+        {
+            if (!Init()) return null;
+            return _buffer![i];
+        }
     }
 
     /// <summary>
@@ -118,27 +142,30 @@ public class Piece
     /// </summary>
     public bool Set(int i, byte[] data, string source)
     {
-        if (!Init()) return false;
-        int len = data.Length;
-        int blocks = (int)Math.Ceiling((double)len / BlockLength);
-        for (int j = 0; j < blocks; j++)
+        lock (_gate)
         {
-            if (_buffer![i + j] == null)
+            if (!Init()) return false;
+            int len = data.Length;
+            int blocks = (int)Math.Ceiling((double)len / BlockLength);
+            for (int j = 0; j < blocks; j++)
             {
-                int offset = j * BlockLength;
-                int end = Math.Min(offset + BlockLength, len);
-                byte[] splitData = new byte[end - offset];
-                Array.Copy(data, offset, splitData, 0, splitData.Length);
-                _buffered++;
-                _buffer[i + j] = splitData;
-                Missing -= splitData.Length;
-                if (!Sources!.Contains(source))
+                if (_buffer![i + j] == null)
                 {
-                    Sources.Add(source);
+                    int offset = j * BlockLength;
+                    int end = Math.Min(offset + BlockLength, len);
+                    byte[] splitData = new byte[end - offset];
+                    Array.Copy(data, offset, splitData, 0, splitData.Length);
+                    _buffered++;
+                    _buffer[i + j] = splitData;
+                    Missing -= splitData.Length;
+                    if (!Sources!.Contains(source))
+                    {
+                        Sources.Add(source);
+                    }
                 }
             }
+            return _buffered == _chunks;
         }
-        return _buffered == _chunks;
     }
 
     /// <summary>
@@ -147,20 +174,23 @@ public class Piece
     /// </summary>
     public byte[]? Flush()
     {
-        if (_buffer == null || _chunks != _buffered) return null;
-        var result = new byte[Length];
-        int pos = 0;
-        for (int i = 0; i < _chunks; i++)
+        lock (_gate)
         {
-            var block = _buffer[i]!;
-            Array.Copy(block, 0, result, pos, block.Length);
-            pos += block.Length;
+            if (_buffer == null || _chunks != _buffered) return null;
+            var result = new byte[Length];
+            int pos = 0;
+            for (int i = 0; i < _chunks; i++)
+            {
+                var block = _buffer[i]!;
+                Array.Copy(block, 0, result, pos, block.Length);
+                pos += block.Length;
+            }
+            _buffer = null;
+            _cancellations = null;
+            Sources = null;
+            _flushed = true;
+            return result;
         }
-        _buffer = null;
-        _cancellations = null;
-        Sources = null;
-        _flushed = true;
-        return result;
     }
 
     /// <summary>
@@ -168,11 +198,14 @@ public class Piece
     /// </summary>
     public bool Init()
     {
-        if (_flushed) return false;
-        if (_buffer != null) return true;
-        _buffer = new byte[_chunks][];
-        _cancellations = new List<int>();
-        Sources = new List<string>();
-        return true;
+        lock (_gate)
+        {
+            if (_flushed) return false;
+            if (_buffer != null) return true;
+            _buffer = new byte[_chunks][];
+            _cancellations = new List<int>();
+            Sources = new List<string>();
+            return true;
+        }
     }
 }

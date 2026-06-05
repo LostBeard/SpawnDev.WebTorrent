@@ -103,11 +103,39 @@ public class HuggingFaceProxy
             var dir = Path.GetDirectoryName(localPath);
             if (dir != null) Directory.CreateDirectory(dir);
 
-            using var stream = await response.Content.ReadAsStreamAsync(ct);
-            using var fileStream = File.Create(localPath);
-            await stream.CopyToAsync(fileStream, ct);
+            // Download to a .part temp and publish atomically ONLY on a verified-complete copy. Two bugs
+            // this fixes (both hit loading SD-Turbo's 1.73GB U-Net): (1) the body copy was bound to the
+            // CALLER's CancellationToken, so when the /magnet poll's client/gateway timed out on the long
+            // multi-GB fetch and disconnected, CopyToAsync was cancelled mid-stream — leaving a PARTIAL
+            // file (the U-Net truncated at ~746MB of 1.73GB). (2) the cache check above is File.Exists
+            // only, so that partial file was then served as "complete" forever → a truncated torrent that
+            // every consumer failed to parse mid-graph. Now the body download runs on a fetch-OWNED timeout
+            // (a disconnected client never truncates the cache), streams to .part, is size-verified against
+            // Content-Length, and only a complete file is atomically renamed into place.
+            long? expectedLen = response.Content.Headers.ContentLength;
+            var tmpPath = localPath + ".part";
+            long fileSize = 0;
+            using (var fetchCts = new CancellationTokenSource(TimeSpan.FromMinutes(30))) // fetch-owned; NOT the client's ct
+            {
+                try
+                {
+                    using (var stream = await response.Content.ReadAsStreamAsync(fetchCts.Token))
+                    using (var fileStream = File.Create(tmpPath))
+                        await stream.CopyToAsync(fileStream, fetchCts.Token);
 
-            var fileSize = new FileInfo(localPath).Length;
+                    fileSize = new FileInfo(tmpPath).Length;
+                    if (expectedLen.HasValue && fileSize != expectedLen.Value)
+                        throw new IOException(
+                            $"Incomplete download for {url}: got {fileSize:N0} of {expectedLen.Value:N0} bytes.");
+
+                    File.Move(tmpPath, localPath, overwrite: true); // atomic publish of a verified-complete file
+                }
+                catch
+                {
+                    try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch { } // never leave a partial behind
+                    throw;
+                }
+            }
             Console.WriteLine($"[HF Proxy] Cached: {localPath} ({fileSize:N0} bytes)");
 
             // Update stats with file size

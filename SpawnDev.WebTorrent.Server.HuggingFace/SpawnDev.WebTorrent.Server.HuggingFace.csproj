@@ -5,8 +5,8 @@
 		<LangVersion>latest</LangVersion>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
-		<Version>3.2.5</Version>
-		<PackageReleaseNotes>v3.2.4-rc.7: version-sync with SpawnDev.WebTorrent + SpawnDev.WebTorrent.Server 3.2.4-rc.7. No source changes; transitive bump only.</PackageReleaseNotes>
+		<Version>3.2.6</Version>
+		<PackageReleaseNotes>v3.2.6: version-sync with SpawnDev.WebTorrent + SpawnDev.WebTorrent.Server 3.2.6 (adds TorrentFileInfo.ReadUint8ArrayAsync — zero-copy JS-typed range read). No source changes; transitive bump only.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>

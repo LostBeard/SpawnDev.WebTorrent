@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.2.6 (2026-06-04) - zero-copy JS-typed range read (ReadUint8ArrayAsync)
+
+Adds `TorrentFileInfo.ReadUint8ArrayAsync(offset, length)` - a random-access read that returns a JS `Uint8Array` instead of a .NET `byte[]`. On the OPFS path the bytes never marshal through .NET: the GPU upload (`writeBuffer`) use case in SpawnDev.ILGPU.ML wants a JS `Uint8Array` anyway, so a `byte[]` would be a wasted JS->.NET->JS round-trip. It shares `ReadFileAsync`'s exact piece selection + `Critical()` prioritization - factored into shared `EnsureReadSelection` + `EnsurePieceAsync` helpers used by both the `byte[]` and `Uint8Array` readers, so download behavior is identical. Browser-only (returns a JS type, like `BlobAsync`); throws `PlatformNotSupportedException` on desktop - use `ReadFileAsync` there. Foundation for zero-copy GPU model loading.
+
+New tests `File_ReadUint8ArrayAsync_MatchesReadAsync_InBrowser` + `_WholeFile_InBrowser`: byte-for-byte parity with `ReadAsync` across piece boundaries + whole file (browser), skipped on desktop. **Gate:** full PMT sweep GREEN browser+desktop. `Server` / `Server.HuggingFace` are version-sync companions (no source changes).
+
 ## 3.2.5 (2026-06-02) — critical-piece prioritization + on-demand inspect
 
 Closes the latency + on-demand follow-ups noted under 3.2.4. Both fixes are client-only; `Server` / `Server.HuggingFace` are version-sync companions (no source changes). Covered by two new live-hub tests in `WebTorrentTestBase.HuggingFaceProxyTests`; full no-regression sweep clean (966/0/16, browser+desktop).

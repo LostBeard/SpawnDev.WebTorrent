@@ -18,7 +18,7 @@ public partial class Torrent
     public const int RechokeInterval = 10_000;
     public const int RechokeOptimisticDuration = 2;  // rechoke cycles
     /// <summary>Max simultaneous web seed connections. Configurable per torrent.</summary>
-    public int MaxWebConns { get; set; } = 4;
+    public int MaxWebConns { get; set; } = 8; // parallel HTTP web-seed range requests (was 4); ~6-8 saturates a LAN. Browser self-caps at ~6/origin on HTTP/1.1.
 
     // ========================
     // DOWNLOAD STATE
@@ -86,8 +86,13 @@ public partial class Torrent
 
         if (index >= Bitfield.Length || Bitfield[index]) return false;
 
+        // Web seed = HTTP range requests. Use a FIXED concurrency (MaxWebConns) to hide per-request latency
+        // and saturate bandwidth. Do NOT gate it on the speed-based piece pipeline: GetPiecePipelineLength is
+        // chicken-and-egg for a web seed — it starts at ~1, so the wire runs one range at a time, so the
+        // measured DownloadSpeed stays low, so the pipeline stays at ~1. Observed as one 4MB piece in flight
+        // → model loads from the hub crawled far below LAN bandwidth.
         int maxOutstanding = isWebSeed
-            ? Math.Min(GetPiecePipelineLength(wire, PipelineMaxDuration, PieceLength), MaxWebConns)
+            ? MaxWebConns
             : GetBlockPipelineLength(wire, PipelineMaxDuration);
 
         if (wire.Requests.Count >= maxOutstanding) return false;

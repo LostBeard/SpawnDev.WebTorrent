@@ -124,6 +124,45 @@ public static class MerkleHasher
     }
 
     /// <summary>
+    /// Computes ONE piece's Merkle root from its already-computed level-0 LEAF hashes, matching
+    /// <see cref="ComputePieceLayer"/>'s per-piece logic exactly (line-for-line: pad empty trailing
+    /// leaf slots with the level-0 zero-pad hash, then <see cref="ComputeRoot"/> at level 0; a
+    /// single-leaf piece returns the leaf hash directly).
+    /// <para>
+    /// This is the .NET half of the ZERO-COPY browser download: the 16 KiB leaves are hashed in JS
+    /// (SubtleCrypto over the fetched <c>Uint8Array</c>, the final partial leaf zero-padded to 16 KiB
+    /// before hashing) so the piece bytes never enter the .NET heap — only the small 32-byte leaf
+    /// hashes cross the boundary to build the tree here. Verified byte-identical to
+    /// <c>ComputePieceLayer(piece)[0]</c> by the MerkleLeafHashSplit guard test.
+    /// </para>
+    /// </summary>
+    /// <param name="actualLeafHashes">Leaf hashes for the leaves holding actual content (count may be
+    /// less than <paramref name="leavesPerPiece"/> for the file's final piece).</param>
+    /// <param name="leavesPerPiece"><c>pieceSize / 16 KiB</c> — a power of two ≥ 1.</param>
+    public static byte[] ComputePieceRootFromLeafHashes(IReadOnlyList<byte[]> actualLeafHashes, int leavesPerPiece)
+    {
+        if (actualLeafHashes == null || actualLeafHashes.Count == 0)
+            throw new ArgumentException("At least one leaf hash is required.", nameof(actualLeafHashes));
+        if (leavesPerPiece < 1 || (leavesPerPiece & (leavesPerPiece - 1)) != 0)
+            throw new ArgumentException("leavesPerPiece must be a power of two >= 1.", nameof(leavesPerPiece));
+        if (actualLeafHashes.Count > leavesPerPiece)
+            throw new ArgumentException("More leaf hashes than leavesPerPiece.", nameof(actualLeafHashes));
+        foreach (var h in actualLeafHashes)
+            if (h == null || h.Length != HashSize)
+                throw new ArgumentException($"All leaf hashes must be exactly {HashSize} bytes.", nameof(actualLeafHashes));
+
+        var pieceLeafHashes = new byte[leavesPerPiece][];
+        int actualLeaves = actualLeafHashes.Count;
+        for (int li = 0; li < actualLeaves; li++) pieceLeafHashes[li] = actualLeafHashes[li];
+        if (actualLeaves < leavesPerPiece)
+        {
+            var zeroLeaf = PadHashAtLevel(0);
+            for (int li = actualLeaves; li < leavesPerPiece; li++) pieceLeafHashes[li] = zeroLeaf;
+        }
+        return leavesPerPiece == 1 ? pieceLeafHashes[0] : ComputeRoot(pieceLeafHashes, level: 0);
+    }
+
+    /// <summary>
     /// Computes the per-piece Merkle-root hashes (the "piece layer") for a file of the given
     /// content and piece size. Each piece contains exactly <c>pieceSize / 16 KiB</c> leaves;
     /// the final piece may cover less than <paramref name="pieceSize"/> bytes of actual file

@@ -50,6 +50,20 @@ public class AsyncFSChunkStore : IChunkStore
         return await _browserFs.ReadUint8Array(path);
     }
 
+    /// <summary>
+    /// Write a chunk from a JS <see cref="Uint8Array"/> to OPFS WITHOUT copying through a .NET byte[].
+    /// The zero-copy download counterpart to <see cref="GetUint8ArrayAsync"/>: a web-seed piece fetched as a
+    /// JS Uint8Array can be hashed (SubtleCrypto) and stored here, never entering the .NET heap. Only valid
+    /// on a browser file system (OPFS). The caller owns/disposes the passed Uint8Array.
+    /// </summary>
+    public async Task PutUint8ArrayAsync(int index, Uint8Array data, CancellationToken ct = default)
+    {
+        if (_browserFs == null)
+            throw new InvalidOperationException("PutUint8ArrayAsync requires a browser file system (OPFS).");
+        await EnsureInitializedAsync();
+        await _browserFs.Write($"{_basePath}/piece_{index}", (TypedArray)data);
+    }
+
     private async Task EnsureInitializedAsync()
     {
         if (_initialized) return;

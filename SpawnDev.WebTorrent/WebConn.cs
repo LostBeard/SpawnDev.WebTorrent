@@ -1,3 +1,6 @@
+using SpawnDev.BlazorJS;
+using SpawnDev.BlazorJS.JSObjects;
+
 namespace SpawnDev.WebTorrent;
 
 /// <summary>
@@ -160,6 +163,34 @@ public class WebConn : IAsyncDisposable
         if (WebTorrentClient.VerboseLogging)
             Console.WriteLine($"[WebConn] {url} read {bytes.Length} bytes");
         return bytes;
+    }
+
+    /// <summary>
+    /// ZERO-COPY browser fetch of a piece's byte range as a JS <see cref="Uint8Array"/> that NEVER enters
+    /// the .NET heap. Uses the browser fetch API directly (<see cref="BlazorJSRuntime"/>), not the .NET
+    /// HttpClient — which would marshal every byte into the WASM heap (the model-download bottleneck). The
+    /// returned Uint8Array is hashed (SubtleCrypto) and stored to OPFS entirely JS-side. Single-file
+    /// torrents only; the caller owns + disposes the returned Uint8Array. Browser-only (BlazorJSRuntime.JS).
+    /// </summary>
+    internal async Task<Uint8Array> FetchPieceUint8ArrayAsync(long start, long end)
+    {
+        var fileUrl = Url;
+        if (fileUrl.EndsWith('/'))
+        {
+            var name = _torrent.Name ?? _torrent.Files?[0]?.Name ?? _torrent.Files?[0]?.Path ?? "";
+            fileUrl = fileUrl + Uri.EscapeDataString(name);
+        }
+        var opts = new FetchOptions { Headers = new Dictionary<string, string> { ["Range"] = $"bytes={start}-{end}" }, Cache = "no-store" };
+        if (WebTorrentClient.VerboseLogging)
+            Console.WriteLine($"[WebConn zero-copy] FETCH {fileUrl} Range=bytes {start}-{end}");
+        using var response = await BlazorJSRuntime.JS.Fetch(fileUrl, opts);
+        int status = response.Status;
+        if (status != 200 && status != 206)
+            throw new HttpRequestException($"[WebConn zero-copy] {fileUrl} -> HTTP {status}");
+        var ab = await response.ArrayBuffer();
+        var ua = new Uint8Array(ab);
+        ab.Dispose();
+        return ua; // caller owns + disposes
     }
 
     // ========================

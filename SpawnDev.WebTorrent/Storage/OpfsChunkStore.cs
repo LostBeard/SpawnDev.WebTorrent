@@ -16,6 +16,13 @@ public class AsyncFSChunkStore : IChunkStore
     private readonly IAsyncBrowserFileSystem? _browserFs;
     private readonly string _basePath;
     private bool _initialized;
+    // Single-piece read cache. A streaming parser reads a piece in many small chunks; GetAsync(index,
+    // offset, length) reads the WHOLE piece file each call. Caching the last whole-piece read makes
+    // consecutive chunk-reads of the same piece slice from memory — one OPFS read per piece, not per chunk
+    // (the SD-Turbo model load was re-reading each piece 16-64x from OPFS). Single reader per store
+    // (sequential stream read), so no lock needed in WASM.
+    private int _cachedIndex = -1;
+    private byte[]? _cachedFull;
 
     public int ChunkLength { get; }
 
@@ -62,6 +69,7 @@ public class AsyncFSChunkStore : IChunkStore
             throw new InvalidOperationException("PutUint8ArrayAsync requires a browser file system (OPFS).");
         await EnsureInitializedAsync();
         await _browserFs.Write($"{_basePath}/piece_{index}", (TypedArray)data);
+        if (_cachedIndex == index) { _cachedIndex = -1; _cachedFull = null; }   // invalidate stale read cache
     }
 
     private async Task EnsureInitializedAsync()
@@ -76,6 +84,7 @@ public class AsyncFSChunkStore : IChunkStore
     {
         await EnsureInitializedAsync();
         await _fs.Write($"{_basePath}/piece_{index}", data.ToArray());
+        if (_cachedIndex == index) { _cachedIndex = -1; _cachedFull = null; }   // invalidate stale read cache
     }
 
     public async Task<byte[]?> GetAsync(int index, CancellationToken ct = default)
@@ -88,7 +97,9 @@ public class AsyncFSChunkStore : IChunkStore
 
     public async Task<byte[]?> GetAsync(int index, int offset, int length, CancellationToken ct = default)
     {
-        var full = await GetAsync(index, ct);
+        byte[]? full;
+        if (_cachedIndex == index && _cachedFull != null) full = _cachedFull;        // slice from the cached piece — no OPFS re-read
+        else { full = await GetAsync(index, ct); _cachedIndex = index; _cachedFull = full; }
         if (full == null) return null;
         if (offset == 0 && length == full.Length) return full;
         int actualLen = Math.Min(length, full.Length - offset);

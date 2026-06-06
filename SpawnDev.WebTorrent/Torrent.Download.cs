@@ -281,28 +281,39 @@ public partial class Torrent
             if (PieceLength < MerkleHasher.LeafSize || PieceLength % MerkleHasher.LeafSize != 0) return false;
             int leavesPerPiece = PieceLength / MerkleHasher.LeafSize;
             int actualLeaves = (pieceLen + MerkleHasher.LeafSize - 1) / MerkleHasher.LeafSize;
-            var leafHashes = new byte[actualLeaves][];
+            // Hash all 16 KiB leaves CONCURRENTLY. The leaf digests are independent, so firing them all and
+            // awaiting one Task.WhenAll lets the native SubtleCrypto overlap them. Awaiting each digest
+            // sequentially (the prior version) was N interop round-trips per piece and cost more than the
+            // byte[] copy it replaced -- the cause of the "identical, if not worse" measurement.
+            var inputs = new Uint8Array[actualLeaves];               // leaf inputs, kept alive until WhenAll
+            var digests = new Task<ArrayBuffer>[actualLeaves];
             for (int li = 0; li < actualLeaves; li++)
             {
                 int leafStart = li * MerkleHasher.LeafSize;
                 int leafLen = Math.Min(MerkleHasher.LeafSize, pieceLen - leafStart);
-                ArrayBuffer hashAb;
-                using (var leafView = pieceData.SubArray(leafStart, leafStart + leafLen))
+                Uint8Array input;
+                if (leafLen == MerkleHasher.LeafSize)
                 {
-                    if (leafLen == MerkleHasher.LeafSize)
-                    {
-                        hashAb = await subtle.Digest("SHA-256", leafView);
-                    }
-                    else
-                    {
-                        using var padded = new Uint8Array(MerkleHasher.LeafSize); // zero-filled
-                        padded.Set(leafView, 0);
-                        hashAb = await subtle.Digest("SHA-256", padded);
-                    }
+                    input = pieceData.SubArray(leafStart, leafStart + leafLen);
                 }
-                using (hashAb)
-                using (var hashUa = new Uint8Array(hashAb))
+                else
+                {
+                    input = new Uint8Array(MerkleHasher.LeafSize);   // zero-filled tail pad
+                    using var tail = pieceData.SubArray(leafStart, leafStart + leafLen);
+                    input.Set(tail, 0);
+                }
+                inputs[li] = input;
+                digests[li] = subtle.Digest("SHA-256", input);
+            }
+
+            var hashBuffers = await Task.WhenAll(digests);
+            var leafHashes = new byte[actualLeaves][];
+            for (int li = 0; li < actualLeaves; li++)
+            {
+                using (hashBuffers[li])
+                using (var hashUa = new Uint8Array(hashBuffers[li]))
                     leafHashes[li] = hashUa.ReadBytes();
+                inputs[li].Dispose();
             }
             var root = MerkleHasher.ComputePieceRootFromLeafHashes(leafHashes, leavesPerPiece);
             return root.AsSpan().SequenceEqual(expected);

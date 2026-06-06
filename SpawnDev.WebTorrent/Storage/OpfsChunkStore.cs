@@ -1,5 +1,6 @@
 using SpawnDev.AsyncFileSystem;
 using SpawnDev.BlazorJS.JSObjects;
+using SpawnDev.BlazorJS.Toolbox;
 
 namespace SpawnDev.WebTorrent.Storage;
 
@@ -82,8 +83,12 @@ public class AsyncFSChunkStore : IChunkStore
 
     public async Task PutAsync(int index, ReadOnlyMemory<byte> data, CancellationToken ct = default)
     {
+        if (_browserFs == null)
+            throw new InvalidOperationException("PutAsync requires a browser file system (OPFS).");
+        using var heapView = HeapView.Create(data);
+        using var uint8ArrayCopy = heapView.To<Uint8Array>();
         await EnsureInitializedAsync();
-        await _fs.Write($"{_basePath}/piece_{index}", data.ToArray());
+        await _browserFs.Write($"{_basePath}/piece_{index}", (TypedArray)uint8ArrayCopy);
         if (_cachedIndex == index) { _cachedIndex = -1; _cachedFull = null; }   // invalidate stale read cache
     }
 

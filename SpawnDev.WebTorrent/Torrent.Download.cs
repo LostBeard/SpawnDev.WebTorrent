@@ -1,3 +1,9 @@
+using SpawnDev.BlazorJS;
+// Narrow aliases (not the whole JSObjects namespace) so JS `Array` doesn't shadow System.Array.
+using Uint8Array = SpawnDev.BlazorJS.JSObjects.Uint8Array;
+using SubtleCrypto = SpawnDev.BlazorJS.JSObjects.SubtleCrypto;
+using ArrayBuffer = SpawnDev.BlazorJS.JSObjects.ArrayBuffer;
+
 namespace SpawnDev.WebTorrent;
 
 /// <summary>
@@ -33,6 +39,9 @@ public partial class Torrent
     private Selections _selections = new();
     private System.Collections.Concurrent.ConcurrentDictionary<int, bool> _critical = new();
     private Dictionary<int, Wire?[]> _reservations = new();
+    /// <summary>Piece indices with an in-flight ZERO-COPY web-seed fetch (browser path). Caps that path's
+    /// concurrency at <see cref="MaxWebConns"/> (the zero-copy path doesn't use wire.Requests).</summary>
+    private readonly HashSet<int> _zeroCopyInFlight = new();
     private int _rechokeNumSlots = 10;  // JS default: opts.uploads || 10
     private Wire? _rechokeOptimisticWire;
     private int _rechokeOptimisticTime;
@@ -85,6 +94,16 @@ public partial class Torrent
         bool isWebSeed = wire.Type == "webSeed";
 
         if (index >= Bitfield.Length || Bitfield[index]) return false;
+
+        // ZERO-COPY browser web-seed path: keep the piece's bytes in JS end to end (fetch -> SubtleCrypto
+        // leaf-hash -> OPFS) so they never cross into the .NET heap — the browser model-download bottleneck.
+        // Only when the store is browser OPFS and the torrent is single-file (the contiguous-range case).
+        if (isWebSeed && _store is Storage.AsyncFSChunkStore { SupportsUint8Array: true }
+            && Files != null && Files.Length == 1)
+        {
+            var wc = _webConns.FirstOrDefault(c => c.WireInstance == wire);
+            if (wc != null) return RequestPieceZeroCopy(wc, index);
+        }
 
         // Web seed = HTTP range requests. Use a FIXED concurrency (MaxWebConns) to hide per-request latency
         // and saturate bandwidth. Do NOT gate it on the speed-based piece pipeline: GetPiecePipelineLength is
@@ -177,6 +196,123 @@ public partial class Torrent
         return true;
     }
 
+    /// <summary>
+    /// ZERO-COPY web-seed piece download (browser): fetch the piece as a JS <see cref="Uint8Array"/>,
+    /// verify it with SubtleCrypto (leaf hashes in JS, Merkle tree in .NET), and store it to OPFS — all
+    /// without the piece bytes ever entering the .NET heap. Concurrency is capped at <see cref="MaxWebConns"/>
+    /// via <see cref="_zeroCopyInFlight"/>. Returns true if a fetch was started for this piece.
+    /// </summary>
+    private bool RequestPieceZeroCopy(WebConn webConn, int index)
+    {
+        if (_zeroCopyInFlight.Contains(index)) return false;          // already fetching this piece
+        if (_zeroCopyInFlight.Count >= MaxWebConns) return false;     // concurrency cap
+        var piece = Pieces[index];
+        int pieceLen = piece.Length;
+        if (pieceLen <= 0) return false;
+
+        _zeroCopyInFlight.Add(index);
+        long rangeStart = (long)index * PieceLength;
+        long rangeEnd = rangeStart + pieceLen - 1;
+        _ = ZeroCopyPieceAsync(webConn, index, piece, rangeStart, rangeEnd, pieceLen);
+        return true;
+    }
+
+    private async Task ZeroCopyPieceAsync(WebConn webConn, int index, Piece piece, long rangeStart, long rangeEnd, int pieceLen)
+    {
+        Uint8Array? ua = null;
+        try
+        {
+            ua = await webConn.FetchPieceUint8ArrayAsync(rangeStart, rangeEnd);
+            if (Done || piece != Pieces[index]) return;              // superseded/finished while fetching
+
+            bool match = await VerifyPieceZeroCopyAsync(index, ua, pieceLen);
+            if (piece != Pieces[index]) return;
+
+            if (match)
+            {
+                if (_store is Storage.AsyncFSChunkStore afs)
+                    await afs.PutUint8ArrayAsync(index, ua);          // JS Uint8Array -> OPFS, no .NET copy
+                Pieces[index] = new Piece(0);                         // mark done (length 0 = flushed)
+                Bitfield[index] = true;
+                foreach (var w in Wires.ToArray()) _ = w.Have(index);
+                OnPieceVerified?.Invoke(index);
+                CheckDone();
+            }
+            else
+            {
+                Pieces[index] = new Piece(piece.Length > 0 ? piece.Length : PieceLength);
+                OnWarning?.Invoke($"Piece {index} failed verification (zero-copy)");
+            }
+        }
+        catch (Exception ex)
+        {
+            if (WebTorrentClient.VerboseLogging)
+                Console.WriteLine($"[ZeroCopy] piece {index} failed: {ex.GetType().Name}: {ex.Message}");
+            // leave the piece unflagged so the picker retries it
+        }
+        finally
+        {
+            ua?.Dispose();
+            _zeroCopyInFlight.Remove(index);
+            UpdateWires();
+        }
+    }
+
+    /// <summary>
+    /// Verifies a fetched piece (JS <see cref="Uint8Array"/>) against its expected hash WITHOUT copying the
+    /// bytes into .NET. v2 (Merkle): hash each 16 KiB leaf with SubtleCrypto over zero-copy Uint8Array views
+    /// (final partial leaf zero-padded to 16 KiB), then build the tree in .NET via
+    /// <see cref="MerkleHasher.ComputePieceRootFromLeafHashes"/>. v1/flat: a single SubtleCrypto digest of
+    /// the whole piece. Only the small (≤32-byte) hashes cross the boundary. Mirrors <see cref="VerifyPieceHash"/>.
+    /// </summary>
+    private async Task<bool> VerifyPieceZeroCopyAsync(int index, Uint8Array pieceData, int pieceLen)
+    {
+        if (index < 0 || index >= _hashes.Length) return false;
+        var expected = _hashes[index];
+        using var subtle = BlazorJSRuntime.JS.Get<SubtleCrypto>("crypto.subtle");
+
+        if (MetaVersion == 2)
+        {
+            if (expected.Length != MerkleHasher.HashSize) return false;
+            if (PieceLength < MerkleHasher.LeafSize || PieceLength % MerkleHasher.LeafSize != 0) return false;
+            int leavesPerPiece = PieceLength / MerkleHasher.LeafSize;
+            int actualLeaves = (pieceLen + MerkleHasher.LeafSize - 1) / MerkleHasher.LeafSize;
+            var leafHashes = new byte[actualLeaves][];
+            for (int li = 0; li < actualLeaves; li++)
+            {
+                int leafStart = li * MerkleHasher.LeafSize;
+                int leafLen = Math.Min(MerkleHasher.LeafSize, pieceLen - leafStart);
+                ArrayBuffer hashAb;
+                using (var leafView = pieceData.SubArray(leafStart, leafStart + leafLen))
+                {
+                    if (leafLen == MerkleHasher.LeafSize)
+                    {
+                        hashAb = await subtle.Digest("SHA-256", leafView);
+                    }
+                    else
+                    {
+                        using var padded = new Uint8Array(MerkleHasher.LeafSize); // zero-filled
+                        padded.Set(leafView, 0);
+                        hashAb = await subtle.Digest("SHA-256", padded);
+                    }
+                }
+                using (hashAb)
+                using (var hashUa = new Uint8Array(hashAb))
+                    leafHashes[li] = hashUa.ReadBytes();
+            }
+            var root = MerkleHasher.ComputePieceRootFromLeafHashes(leafHashes, leavesPerPiece);
+            return root.AsSpan().SequenceEqual(expected);
+        }
+        else
+        {
+            // v1 / Phase 1 flat: single SHA-1 (20B) or SHA-256 (32B) over the whole piece.
+            string alg = expected.Length == MerkleHasher.HashSize ? "SHA-256" : "SHA-1";
+            using var hashAb = await subtle.Digest(alg, pieceData);
+            using var hashUa = new Uint8Array(hashAb);
+            return hashUa.ReadBytes().AsSpan().SequenceEqual(expected);
+        }
+    }
+
     // ========================
     // HOTSWAP (matches JS _hotswap exactly)
     // ========================
@@ -252,6 +388,12 @@ public partial class Torrent
     private bool TrySelectWire(Wire wire, int maxOutstanding, bool hotswap)
     {
         if (wire.Requests.Count >= maxOutstanding) return true;
+
+        // Zero-copy web-seed concurrency is tracked separately (_zeroCopyInFlight, not wire.Requests), so
+        // stop iterating the piece list for this wire once MaxWebConns zero-copy fetches are in flight.
+        if (wire.Type == "webSeed" && _zeroCopyInFlight.Count >= MaxWebConns
+            && _store is Storage.AsyncFSChunkStore { SupportsUint8Array: true })
+            return true;
 
         // CRITICAL-FIRST pass: read-awaited pieces (ReadFileAsync / streaming) must be
         // fetched ahead of the normal rarest/sequential walk. Without this, a piece marked

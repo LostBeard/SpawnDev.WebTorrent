@@ -81,6 +81,57 @@ public abstract partial class WebTorrentTestBase
     }
 
     /// <summary>
+    /// ZERO-COPY browser web-seed download: on an OPFS-backed store (browser), a single-file hub torrent
+    /// downloads with each piece's bytes staying in JS end to end (browser fetch -> SubtleCrypto 16 KiB-leaf
+    /// hashes -> .NET Merkle tree over only the 32-byte hashes -> OPFS write) — the piece data NEVER enters
+    /// the .NET/WASM heap. Asserts the zero-copy path actually fired (ZeroCopyPiecesVerified > 0) and the
+    /// download completed (so every piece passed SubtleCrypto+Merkle verification). Browser/OPFS-only;
+    /// desktop uses the byte[] path (covered by the other HF tests).
+    /// </summary>
+    [TestMethod(Timeout = 240000, RetryCount = 1)]
+    public async Task HuggingFaceProxy_ZeroCopy_BrowserOpfsDownload()
+    {
+        if (!OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("Zero-copy web-seed download is browser/OPFS-only");
+
+        using var http = new HttpClient();
+        var magnet = await GetHubMagnetAsync(http);
+
+        // The shared Client has an OPFS AsyncFileSystem in the browser -> AsyncFSChunkStore
+        // (SupportsUint8Array) -> the zero-copy web-seed path fires for this single-file torrent.
+        var torrent = Client.Add(magnet);
+        try
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(120);
+            while (!torrent.Done && DateTime.UtcNow < deadline)
+                await Task.Delay(200);
+
+            if (!torrent.Done)
+                throw new Exception(
+                    $"zero-copy download did not complete in 120s: Done={torrent.Done} " +
+                    $"progress={torrent.Progress:F3} zeroCopyVerified={torrent.ZeroCopyPiecesVerified} " +
+                    $"peers={torrent.NumPeers} hasMetadata={torrent.HasMetadata}");
+
+            if (torrent.ZeroCopyPiecesVerified <= 0)
+                throw new Exception(
+                    "zero-copy path did not fire (ZeroCopyPiecesVerified=0) — store was not OPFS-backed");
+
+            if (torrent.Files == null || torrent.Files.Length != 1 || torrent.Files[0].Length <= 0)
+                throw new Exception("expected a single non-empty file");
+
+            // Done == true means every piece passed SubtleCrypto+Merkle verification on the zero-copy path.
+            // Read the head back to confirm real content is retrievable from the OPFS store.
+            var head = await torrent.Files[0].ReadAsync(0, 64);
+            if (head.Length != 64)
+                throw new Exception($"head read returned {head.Length} bytes, expected 64");
+        }
+        finally
+        {
+            await Client.RemoveAsync(torrent);
+        }
+    }
+
+    /// <summary>
     /// AddAsync (documented in README + Docs/huggingface.md) must return a ready torrent once
     /// metadata resolves, then a range read must pull real bytes from the HTTP web seed.
     /// </summary>

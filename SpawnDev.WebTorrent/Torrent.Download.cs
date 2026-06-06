@@ -42,6 +42,9 @@ public partial class Torrent
     /// <summary>Piece indices with an in-flight ZERO-COPY web-seed fetch (browser path). Caps that path's
     /// concurrency at <see cref="MaxWebConns"/> (the zero-copy path doesn't use wire.Requests).</summary>
     private readonly HashSet<int> _zeroCopyInFlight = new();
+    /// <summary>Count of pieces verified + stored via the ZERO-COPY browser web-seed path (data never
+    /// entered the .NET heap). Diagnostic + lets tests assert the zero-copy path actually fired.</summary>
+    public int ZeroCopyPiecesVerified { get; private set; }
     private int _rechokeNumSlots = 10;  // JS default: opts.uploads || 10
     private Wire? _rechokeOptimisticWire;
     private int _rechokeOptimisticTime;
@@ -234,6 +237,7 @@ public partial class Torrent
                     await afs.PutUint8ArrayAsync(index, ua);          // JS Uint8Array -> OPFS, no .NET copy
                 Pieces[index] = new Piece(0);                         // mark done (length 0 = flushed)
                 Bitfield[index] = true;
+                ZeroCopyPiecesVerified++;
                 foreach (var w in Wires.ToArray()) _ = w.Have(index);
                 OnPieceVerified?.Invoke(index);
                 CheckDone();

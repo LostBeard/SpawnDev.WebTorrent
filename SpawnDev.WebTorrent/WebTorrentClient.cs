@@ -1036,7 +1036,7 @@ public class AddTorrentOptions
     /// <summary>Skip piece verification on start (trust existing store data).</summary>
     public bool SkipVerify { get; set; }
     /// <summary>Max simultaneous web seed connections for this torrent.</summary>
-    public int MaxWebConns { get; set; } = 8; // parallel HTTP web-seed range requests (was 4); ~6-8 saturates a LAN. Browser self-caps at ~6/origin on HTTP/1.1.
+    public int MaxWebConns { get; set; } = 4; // parallel HTTP web-seed range requests. Kept <= the browser's ~6/origin HTTP/1.1 cap to avoid queueing; browser throughput is bounded by single-thread per-piece processing, not connection count.
     /// <summary>Seconds between "no peers" event checks. Default 30.</summary>
     public int NoPeersIntervalTime { get; set; } = 30;
 }

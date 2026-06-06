@@ -24,7 +24,7 @@ public partial class Torrent
     public const int RechokeInterval = 10_000;
     public const int RechokeOptimisticDuration = 2;  // rechoke cycles
     /// <summary>Max simultaneous web seed connections. Configurable per torrent.</summary>
-    public int MaxWebConns { get; set; } = 8; // parallel HTTP web-seed range requests (was 4); ~6-8 saturates a LAN. Browser self-caps at ~6/origin on HTTP/1.1.
+    public int MaxWebConns { get; set; } = 4; // parallel HTTP web-seed range requests. Kept <= the browser's ~6/origin HTTP/1.1 cap to avoid queueing; browser throughput is bounded by single-thread per-piece processing, not connection count.
 
     // ========================
     // DOWNLOAD STATE
@@ -402,13 +402,15 @@ public partial class Torrent
 
     private bool TrySelectWire(Wire wire, int maxOutstanding, bool hotswap)
     {
-        if (wire.Requests.Count >= maxOutstanding) return true;
-
-        // Zero-copy web-seed concurrency is tracked separately (_zeroCopyInFlight, not wire.Requests), so
-        // stop iterating the piece list for this wire once MaxWebConns zero-copy fetches are in flight.
-        if (wire.Type == "webSeed" && _zeroCopyInFlight.Count >= MaxWebConns
-            && _store is Storage.AsyncFSChunkStore { SupportsUint8Array: true })
-            return true;
+        // Zero-copy web-seed concurrency is tracked in _zeroCopyInFlight, NOT wire.Requests (which stays
+        // PINNED AT 0 on the zero-copy path — RequestBlock returns before wire.Request). The picker's normal
+        // brakes are all keyed on wire.Requests.Count, so they never fire here. This MUST be checked INSIDE
+        // the walk loops too (the breaks below), or the rarest walk re-scans EVERY piece after each
+        // completion — O(pieces^2), GetRarestPiece is an O(pieces) scan — which made SD-Turbo model loads
+        // crawl at ~1.5 pieces/s (~750ms/piece in interpreted WASM). Regression introduced in 4da1613.
+        bool ZeroCopyFull() => wire.Type == "webSeed" && _zeroCopyInFlight.Count >= MaxWebConns
+            && _store is Storage.AsyncFSChunkStore { SupportsUint8Array: true };
+        if (wire.Requests.Count >= maxOutstanding || ZeroCopyFull()) return true;
 
         // CRITICAL-FIRST pass: read-awaited pieces (ReadFileAsync / streaming) must be
         // fetched ahead of the normal rarest/sequential walk. Without this, a piece marked
@@ -426,7 +428,7 @@ public partial class Torrent
                 while (RequestBlock(wire, piece, true) &&
                        wire.Requests.Count < maxOutstanding) { }
 
-                if (wire.Requests.Count >= maxOutstanding) return true;
+                if (wire.Requests.Count >= maxOutstanding || ZeroCopyFull()) return true;
             }
         }
 
@@ -452,7 +454,7 @@ public partial class Torrent
                     while (RequestBlock(wire, piece, _critical.ContainsKey(piece) || hotswap) &&
                            wire.Requests.Count < maxOutstanding) { }
 
-                    if (wire.Requests.Count >= maxOutstanding) return true;
+                    if (wire.Requests.Count >= maxOutstanding || ZeroCopyFull()) return true;
                     tried.Add(piece);
                     tries++;
                 }
@@ -467,7 +469,7 @@ public partial class Torrent
                     while (RequestBlock(wire, piece, _critical.ContainsKey(piece) || hotswap) &&
                            wire.Requests.Count < maxOutstanding) { }
 
-                    if (wire.Requests.Count >= maxOutstanding) return true;
+                    if (wire.Requests.Count >= maxOutstanding || ZeroCopyFull()) return true;
                 }
             }
         }

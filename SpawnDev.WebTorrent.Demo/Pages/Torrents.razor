@@ -761,8 +761,14 @@
 
         torrent.OnPieceVerified += (index) =>
         {
+            // NO per-piece StateHasChanged. The piece-map render (the qb-pieces grid) is O(PieceCount),
+            // and at the endgame pieces are verified in a tight burst - one re-render per piece is
+            // O(PieceCount) x (pieces-in-burst) = O(PieceCount^2) of layout work dumped on the single
+            // Blazor WASM UI thread. THIS was the severe lag when a download finished (it is NOT a hash
+            // recheck - the library verifies each piece once on arrival and never re-hashes on
+            // completion). The 1-second _refreshTimer already re-renders the piece map, progress, and
+            // speeds; OnDone logs completion. We only append to the (capped) activity log here.
             AddLog($"Piece {index} verified ({torrent.CompletedPieces}/{torrent.PieceCount})", "qb-log-piece");
-            _ = InvokeAsync(StateHasChanged);
         };
 
         torrent.OnDone += () =>

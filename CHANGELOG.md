@@ -1,5 +1,42 @@
 # Changelog
 
+## 3.2.8 (2026-06-07) — zero-copy browser download + service-worker seek-while-downloading (stable)
+
+Stable cut. Rolls up the zero-copy download + OPFS store work (3.2.8-local.2 through local.7) plus the service-worker media-streaming unlock and the demo polish, all verified end to end against the live hub and live Sintel. Full PMT sweep GREEN browser+desktop. Depends on `SpawnDev.RTC 1.1.10` + `SpawnDev.BlazorJS 3.5.11`.
+
+### Zero-copy browser web-seed download (client) — the core of this release
+A single-file torrent on a browser OPFS store now keeps each piece's bytes in JS end to end: browser fetch (`BlazorJSRuntime.Fetch`) → JS `Uint8Array` → SubtleCrypto 16 KiB-leaf hashes → .NET Merkle tree over **only** the 32-byte leaf hashes (`MerkleHasher.ComputePieceRootFromLeafHashes`, byte-identical to `ComputePieceLayer`, verified) → OPFS write. The piece data never enters the .NET/WASM heap; per-piece verification is preserved. Desktop is unaffected (keeps the `byte[]` path). Surfaced via a `ZeroCopyPiecesVerified` counter so a consumer can confirm the path actually fires.
+
+Extended to **multi-file** torrents in this release — the service-worker streaming case (Sintel is multi-file). Multi-file zero-copy was the dominant download-speed win there (~35× vs the prior .NET block path).
+
+### Service-worker media streaming: seek-while-downloading (client)
+SW streaming of a still-downloading torrent now works (verified 8/8 cold live-Sintel runs in real Chrome). The fixes, all ours vs the JS WebTorrent reference:
+- `Critical()` → `UpdateWires` debounce: marking the seek target critical now kicks the request loop coalesced instead of per-call, so the `moov` atom actually arrives (it never did before, so playback never started).
+- `_critical` leak-on-cancel: a cancelled streaming read no longer leaves pieces pinned critical forever.
+- Last-piece stranding + FIFO/idle-drain fixes in the request pipeline.
+- PMT launches Chromium with `Channel="chrome"` so the H.264/AAC Sintel fixture actually demuxes (bundled Playwright Chromium lacks those codecs).
+
+### OPFS `AsyncFSChunkStore` performance (client)
+- **Read cache:** `GetAsync(index, offset, length)` cached the last whole-piece read, so a streaming parser reading a piece in many small chunks does one OPFS read per piece instead of re-reading the whole piece 16–64× (the SD-Turbo model-load crawl).
+- **`PutAsync` via `HeapView`:** pins the `ReadOnlyMemory`'s underlying array (one async-safe pinned memcpy) instead of `data.ToArray()` plus the `byte[]`→JS interop serialize — two copies + GC down to one memcpy. OPFS-only; requires `SpawnDev.BlazorJS 3.5.11` (`HeapView` `ReadOnlyMemory`/`ArraySegment` support).
+- **Concurrent leaf hashing:** the 16 KiB SubtleCrypto leaf digests for a piece run via one `Task.WhenAll` (native crypto overlaps) instead of being awaited one-by-one.
+
+### O(pieces²) picker fix on the zero-copy path (client)
+The zero-copy web-seed path returns from `RequestBlock` before `wire.Request`, so `wire.Requests.Count` stays 0 and the rarest-piece picker's brakes (all keyed on it) never fired; the `_zeroCopyInFlight >= MaxWebConns` gate was only checked at `TrySelectWire` entry. So after **each** piece completion the picker re-scanned every piece (`GetRarestPiece` is O(pieces)) → O(pieces²), ~750 ms/piece on a ~1700-piece model on the single WASM thread → ~2.3 MB/s. The budget check now also runs **inside** the rarest/sequential walk loops (the three break points), so the walk stops the instant the fetches are back in flight (O(pieces) per completion). `MaxWebConns` 8→4 (at/under the browser's ~6/origin HTTP/1.1 cap).
+
+### Web-seed download concurrency (client)
+Web seeds pipeline a **fixed** number of parallel range requests (`MaxWebConns`) instead of the prior speed-based pipeline that was chicken-and-egg for HTTP web seeds (started at ~1 in flight → serial → low measured speed → stayed at ~1). Saturates the link (measured ~118 MB/s sustained on a 1 GB LAN).
+
+### Dependency: SpawnDev.RTC 1.1.10
+Periodic re-announce at the **tracker-given** interval. `TrackerSignalingClient`'s announce-interval timer body was empty (announce-once), so a cold-start swarm never grew; `ReAnnounceAll` re-sends a periodic announce (fresh offers per room) at the tracker cadence. Already shipped to nuget.org.
+
+### Demo polish
+- `Torrents.razor` re-rendered per verified piece; the piece-map render is O(pieceCount), so the endgame burst was O(pieceCount²) flooding the WASM UI thread (severe completion lag). Removed the per-piece `StateHasChanged`; the 1 s refresh timer drives the UI. (The lib verifies each piece once on arrival — it does not re-hash on completion.)
+
+### Companion packages
+- `SpawnDev.WebTorrent.Server 3.2.8`: version-sync, no source changes.
+- `SpawnDev.WebTorrent.Server.HuggingFace 3.2.8`: **real fix** — never cache a partial/truncated download. `GetOrFetchAsync` downloaded straight to the final cache path with the body copy bound to the **caller's** `CancellationToken`; when the `/magnet` poll's client/gateway timed out on a long multi-GB fetch and disconnected, `CopyToAsync` cancelled mid-stream and left a partial file (SD-Turbo's 1.73 GB U-Net truncated at ~746 MB). The cache check is `File.Exists` only, so that partial was served as "complete" forever → a truncated torrent every consumer failed to parse mid-graph (broke SpawnDev.ILGPU.ML `/generate`). Now the body downloads to a `.part` temp on a fetch-owned 30-min timeout (decoupled from the client request), is size-verified against `Content-Length`, and is atomically renamed into place only on a verified-complete copy; a failed/short fetch deletes the temp and is never cached.
+
 ## 3.2.7 (2026-06-05) — Piece thread-safety (multi-threaded download race fix)
 
 `Piece` (the per-piece block-download state machine) is a 1:1 port of JS `torrent-piece`, which runs on a single-threaded event loop. The C# client drives downloads from MULTIPLE threads — the download loop calls `Reserve()`/`ReserveRemaining()` while a wire-arrival callback on another thread calls `Set()`/`Flush()` (which null `_buffer`/`_cancellations`). That raced: `Init()` returned true, then a concurrent `Flush()` nulled `_cancellations` before the caller dereferenced it → `NullReferenceException` in `Piece.ReserveRemaining()`/`Reserve()` (`Piece.cs:79`). It surfaced loading a large multi-piece torrent (a 2.5GB SD-Turbo model via SpawnDev.ILGPU.ML); the smaller models exercised before never hit the timing window.

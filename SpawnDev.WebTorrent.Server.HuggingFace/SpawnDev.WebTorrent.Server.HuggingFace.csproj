@@ -5,8 +5,8 @@
 		<LangVersion>latest</LangVersion>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
-		<Version>3.2.7</Version>
-		<PackageReleaseNotes>v3.2.7: version-sync with SpawnDev.WebTorrent + SpawnDev.WebTorrent.Server 3.2.7 (Piece thread-safety fix for multi-threaded downloads). No source changes; transitive bump only.</PackageReleaseNotes>
+		<Version>3.2.8</Version>
+		<PackageReleaseNotes>v3.2.8: HF proxy never caches a partial/truncated download. GetOrFetchAsync downloaded straight to the final cache path with the body copy bound to the CALLER's CancellationToken, so when the /magnet poll's client/gateway timed out on a long multi-GB fetch and disconnected, CopyToAsync was cancelled mid-stream -- leaving a partial file (SD-Turbo's 1.73GB U-Net truncated at ~746MB). The cache check is File.Exists only, so that partial was served as "complete" forever -> a truncated torrent every consumer failed to parse mid-graph (broke SpawnDev.ILGPU.ML /generate). Now the body downloads to a .part temp on a fetch-OWNED 30-min timeout (decoupled from the client request), is size-verified against Content-Length, and is atomically renamed into place only on a verified-complete copy; a failed/short fetch deletes the temp and is never cached. Version-sync with SpawnDev.WebTorrent + SpawnDev.WebTorrent.Server 3.2.8.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>

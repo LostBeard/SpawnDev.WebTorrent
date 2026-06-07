@@ -29,6 +29,10 @@ public abstract partial class WebTorrentTestBase
     private const string SintelStreamMagnet =
         "magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Sintel&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftracker.empire-js.us%3A1337&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&tr=wss%3A%2F%2Fhub.spawndev.com%3A44365%2Fannounce&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Fsintel.torrent";
 
+    // btih of SintelStreamMagnet — used to purge any persisted OPFS copy before the streaming test so it
+    // reliably starts un-downloaded (see the purge in the test for why).
+    private const string SintelInfoHash = "08ada5a7a6183aae1e09d831df6748d566095a10";
+
     // Live REMOTE swarm. The reference (SpawnDev.BlazorJS.WebTorrents) starts downloading this same magnet in
     // <10s, so this MUST be fast too — no inflated timeouts to paper over a slow start.
     [TestMethod(Timeout = 170000, RetryCount = 0)]
@@ -65,6 +69,15 @@ public abstract partial class WebTorrentTestBase
         {
             if (probe.Status != 200)
                 throw new Exception($"service worker is not controlling the page (/webtorrent-sw-check -> HTTP {probe.Status}); SW streaming cannot work");
+        }
+
+        // Force a clean download state. The PMT Chromium profile is persistent, so a prior run's OPFS copy
+        // of this fixed-infohash torrent restores as Done — then file.Done is true before we stream a byte
+        // and we cannot prove streaming-while-downloading (same persistent-profile gotcha handled in
+        // InteropDesktopSeederTests). Clear any persisted copy first.
+        {
+            var stale = Client.Get(SintelInfoHash);
+            if (stale != null) await Client.RemoveWithDataAsync(stale);
         }
 
         // Use the SHARED DI client — it is the one registered with the ServiceWorkerStreamHandler in
@@ -254,7 +267,10 @@ public abstract partial class WebTorrentTestBase
                 try { video.Remove(); } catch { }
                 video.Dispose();
             }
-            try { await Client.RemoveAsync(torrent); } catch { }
+            // RemoveWithDataAsync (not RemoveAsync): purge this run's OPFS pieces so the NEXT run starts
+            // un-downloaded. RemoveAsync left the data behind, so a second run restored Sintel as Done and
+            // failed the "streaming-while-downloading" precondition. Matches the sibling streaming tests.
+            try { await Client.RemoveWithDataAsync(torrent); } catch { }
         }
     }
 

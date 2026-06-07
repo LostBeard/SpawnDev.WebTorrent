@@ -40,4 +40,5 @@ package-lock.json
 package/
 /PlaywrightMultiTest/desktop_seeder.log
 /PlaywrightMultiTest/init_status.log
+/PlaywrightMultiTest/wt_*.log
 interop_test/output/

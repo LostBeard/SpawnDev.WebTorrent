@@ -125,27 +125,25 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
-    public async Task PureV2_Client_UtMetadataFactory_WiresV2Mode()
+    public async Task PureV2_Torrent_UtMetadata_WiresV2Mode()
     {
-        // End-to-end: client.Add(pureV2Magnet) registers the ut_metadata factory. When a
-        // wire is created and ApplyExtensions runs, the factory should produce a
-        // UtMetadataExtension with MetadataVersion=2 and V2InfoHashHex populated from
-        // the torrent's state. rc.17 wired this so pure-v2 magnets actually advertise
-        // metadata_version=2 in their BEP 10 extended handshake.
+        // End-to-end: client.Add(pureV2Magnet) builds a pure-v2 torrent; when it wires ut_metadata
+        // onto a peer (Torrent.SetupMetadataExtension, invoked per-peer on connect) the extension is
+        // v2-mode: MetadataVersion=2, V2InfoHashHex from the torrent, and the BEP 10 extended handshake
+        // advertises metadata_version=2. ut_metadata is registered PER-TORRENT (not via a client-global
+        // factory; the old global factory only made fetchers, so a seed advertised no ut_metadata).
         var client = CreateIsolatedClient();
         try
         {
             var torrent = client.Add($"magnet:?xt=urn:btmh:1220{PureV2MagnetHash}&dn=v2only");
 
-            // Use a Wire directly to fire the extension factory. ApplyExtensions is
-            // internal but the Wire.Use API is what matters — we can invoke the factory
-            // manually to inspect what it produces.
+            // Drive the real per-peer registration path directly on a Wire to inspect what it produces.
             var wire = new SpawnDev.WebTorrent.Wire();
             wire.SendRaw = _ => Task.CompletedTask;
-            client.ApplyExtensions(wire);
+            torrent.SetupMetadataExtension(wire);
 
             var utm = wire.GetExtension<SpawnDev.WebTorrent.UtMetadataExtension>();
-            if (utm is null) throw new Exception("ApplyExtensions didn't register UtMetadataExtension on wire");
+            if (utm is null) throw new Exception("SetupMetadataExtension didn't register UtMetadataExtension on wire");
             if (utm.MetadataVersion != 2)
                 throw new Exception($"pure-v2 torrent should set UtMetadataExtension.MetadataVersion=2, got {utm.MetadataVersion}");
             if (utm.V2InfoHashHex != PureV2MagnetHash)
@@ -336,9 +334,10 @@ public abstract partial class WebTorrentTestBase
     }
 
     [TestMethod]
-    public async Task V1Only_Client_UtMetadataFactory_StaysOnV1()
+    public async Task V1Only_Torrent_UtMetadata_StaysOnV1()
     {
-        // Mirror: v1-only magnet → factory produces a default (v1) UtMetadataExtension.
+        // Mirror: v1-only magnet -> SetupMetadataExtension produces a default (v1) UtMetadataExtension
+        // (no metadata_version key in the extended handshake).
         var v1Hex = "aaaabbbbccccddddeeeeffff1111222233334444";
         var client = CreateIsolatedClient();
         try
@@ -347,10 +346,10 @@ public abstract partial class WebTorrentTestBase
 
             var wire = new SpawnDev.WebTorrent.Wire();
             wire.SendRaw = _ => Task.CompletedTask;
-            client.ApplyExtensions(wire);
+            torrent.SetupMetadataExtension(wire);
 
             var utm = wire.GetExtension<SpawnDev.WebTorrent.UtMetadataExtension>();
-            if (utm is null) throw new Exception("ApplyExtensions didn't register UtMetadataExtension");
+            if (utm is null) throw new Exception("SetupMetadataExtension didn't register UtMetadataExtension");
             if (utm.MetadataVersion != 1)
                 throw new Exception($"v1-only torrent should keep UtMetadataExtension.MetadataVersion=1, got {utm.MetadataVersion}");
             if (!string.IsNullOrEmpty(utm.V2InfoHashHex))

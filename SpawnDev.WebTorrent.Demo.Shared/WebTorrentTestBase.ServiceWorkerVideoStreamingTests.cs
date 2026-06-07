@@ -388,35 +388,6 @@ public abstract partial class WebTorrentTestBase
         await SeedLocalMp4AndDemux("nonfaststart.mp4", 25);
     }
 
-    // DIAGNOSTIC (Rule 4b): measure OUR Sintel startup timeline. The reference starts downloading this same
-    // magnet in <10s. This throws the per-second timeline (metadata-ready, peer count, web-seed count, bytes)
-    // so we can SEE which step is slow instead of guessing. Not a test of behavior — a measurement.
-    [TestMethod(Timeout = 90000, RetryCount = 0)]
-    public async Task Stream_Diag_SintelStartupTimeline()
-    {
-        if (!OperatingSystem.IsBrowser()) throw new UnsupportedTestException("browser-only");
-        var t0 = DateTime.UtcNow;
-        var torrent = Client.Add(SintelStreamMagnet);
-        var log = new List<string>();
-        int metaMs = -1, firstPieceMs = -1;
-        try
-        {
-            for (int i = 0; i < 70; i++)
-            {
-                await Task.Delay(1000);
-                int ms = (int)(DateTime.UtcNow - t0).TotalMilliseconds;
-                bool hasMeta = torrent.HasMetadata;
-                if (hasMeta && metaMs < 0) metaMs = ms;
-                if (torrent.Downloaded > 0 && firstPieceMs < 0) firstPieceMs = ms;
-                log.Add($"{ms / 1000}s:m{(hasMeta ? 1 : 0)} p{torrent.PeerCount} w{torrent.WebSeedCount} dl{torrent.Downloaded}");
-                if (torrent.Downloaded > 1024 * 1024) break;
-            }
-            int totalMs = (int)(DateTime.UtcNow - t0).TotalMilliseconds;
-            throw new Exception($"SINTEL STARTUP: meta@{metaMs}ms firstPiece@{firstPieceMs}ms 1MB@{totalMs}ms | {string.Join(" ", log)}");
-        }
-        finally { try { await Client.RemoveAsync(torrent); } catch { } }
-    }
-
     // BASELINE: plain static /test.webm straight to the <video> (no torrent, no SW stream). Confirms the
     // bundled Chromium can decode VP9 at all — the env-only control for the two tests above. (H.264 mp4s fail
     // here AND in the reference demo under Playwright's Chromium; they need real Chrome's H.264 decoder.)

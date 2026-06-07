@@ -932,7 +932,7 @@ public partial class Torrent : IAsyncDisposable
     /// factory only ever created fetchers, so a SpawnDev.WebTorrent seed advertised no ut_metadata and
     /// a magnet peer could never bootstrap from it.
     /// </summary>
-    private void SetupMetadataExtension(Wire wire)
+    internal void SetupMetadataExtension(Wire wire)
     {
         bool isPureV2 = string.IsNullOrEmpty(InfoHash) && !string.IsNullOrEmpty(V2InfoHash);
         var ext = (HasMetadata && InfoDictBytes != null)

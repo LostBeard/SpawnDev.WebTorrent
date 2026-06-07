@@ -168,21 +168,42 @@ public class WebConn : IAsyncDisposable
     /// <summary>
     /// ZERO-COPY browser fetch of a piece's byte range as a JS <see cref="Uint8Array"/> that NEVER enters
     /// the .NET heap. Uses the browser fetch API directly (<see cref="BlazorJSRuntime"/>), not the .NET
-    /// HttpClient — which would marshal every byte into the WASM heap (the model-download bottleneck). The
-    /// returned Uint8Array is hashed (SubtleCrypto) and stored to OPFS entirely JS-side. Single-file
-    /// torrents only; the caller owns + disposes the returned Uint8Array. Browser-only (BlazorJSRuntime.JS).
+    /// HttpClient — which would marshal every byte into the WASM heap (the streaming/model-download
+    /// bottleneck). The returned Uint8Array is hashed (SubtleCrypto) and stored to OPFS entirely JS-side.
+    /// Works for single-file torrents AND for pieces INTERIOR to one file of a multi-file torrent (the caller,
+    /// <c>RequestBlock</c>, sends boundary pieces down the .NET block path instead). The caller owns +
+    /// disposes the returned Uint8Array. Browser-only (BlazorJSRuntime.JS).
     /// </summary>
     internal async Task<Uint8Array> FetchPieceUint8ArrayAsync(long start, long end)
     {
-        var fileUrl = Url;
-        if (fileUrl.EndsWith('/'))
+        string fileUrl;
+        long fetchStart = start, fetchEnd = end;
+        var files = _torrent.Files;
+        if (files != null && files.Length > 1)
         {
-            var name = _torrent.Name ?? _torrent.Files?[0]?.Name ?? _torrent.Files?[0]?.Path ?? "";
-            fileUrl = fileUrl + Uri.EscapeDataString(name);
+            // Multi-file: the caller guarantees [start,end] is interior to ONE file. Locate it, translate to a
+            // file-relative range, and build its BEP 19 URL (baseUrl/torrentName/filePath) - same mapping as
+            // the .NET block path in HandleRequestAsync.
+            TorrentFileInfo? file = null;
+            foreach (var f in files)
+                if (f.Offset <= start && start <= f.Offset + f.Length - 1) { file = f; break; }
+            if (file == null) throw new InvalidOperationException($"[WebConn zero-copy] no file contains offset {start}");
+            fileUrl = BuildFileUrl(file);
+            fetchStart = start - file.Offset;
+            fetchEnd = end - file.Offset;
         }
-        var opts = new FetchOptions { Headers = new Dictionary<string, string> { ["Range"] = $"bytes={start}-{end}" }, Cache = "no-store" };
+        else
+        {
+            fileUrl = Url;
+            if (fileUrl.EndsWith('/'))
+            {
+                var name = _torrent.Name ?? _torrent.Files?[0]?.Name ?? _torrent.Files?[0]?.Path ?? "";
+                fileUrl = fileUrl + Uri.EscapeDataString(name);
+            }
+        }
+        var opts = new FetchOptions { Headers = new Dictionary<string, string> { ["Range"] = $"bytes={fetchStart}-{fetchEnd}" }, Cache = "no-store" };
         if (WebTorrentClient.VerboseLogging)
-            Console.WriteLine($"[WebConn zero-copy] FETCH {fileUrl} Range=bytes {start}-{end}");
+            Console.WriteLine($"[WebConn zero-copy] FETCH {fileUrl} Range=bytes {fetchStart}-{fetchEnd}");
         using var response = await BlazorJSRuntime.JS.Fetch(fileUrl, opts);
         int status = response.Status;
         if (status != 200 && status != 206)
@@ -191,6 +212,17 @@ public class WebConn : IAsyncDisposable
         var ua = new Uint8Array(ab);
         ab.Dispose();
         return ua; // caller owns + disposes
+    }
+
+    /// <summary>Build the BEP 19 web-seed URL (baseUrl/torrentName/filePath) for one file of a multi-file
+    /// torrent. Mirrors the inline mapping in <see cref="HandleRequestAsync"/>.</summary>
+    private string BuildFileUrl(TorrentFileInfo file)
+    {
+        var filePath = (file.Path ?? file.Name ?? "").Replace('\\', '/');
+        if (_torrent.Name != null && !filePath.StartsWith(_torrent.Name + "/", StringComparison.OrdinalIgnoreCase))
+            filePath = _torrent.Name + "/" + filePath;
+        var encodedPath = string.Join("/", filePath.Split('/').Select(Uri.EscapeDataString));
+        return Url.TrimEnd('/') + "/" + encodedPath;
     }
 
     // ========================

@@ -102,7 +102,7 @@ public partial class Torrent
         // leaf-hash -> OPFS) so they never cross into the .NET heap — the browser model-download bottleneck.
         // Only when the store is browser OPFS and the torrent is single-file (the contiguous-range case).
         if (isWebSeed && _store is Storage.AsyncFSChunkStore { SupportsUint8Array: true }
-            && Files != null && Files.Length == 1)
+            && Files != null && (Files.Length == 1 || !PieceSpansMultipleFiles(index)))
         {
             var wc = _webConns.FirstOrDefault(c => c.WireInstance == wire);
             if (wc != null) return RequestPieceZeroCopy(wc, index);
@@ -165,32 +165,58 @@ public partial class Torrent
 
             // Piece complete — flush and verify hash (v1 SHA-1, Phase 1 flat SHA-256,
             // or BEP 52 v2 Merkle via MetaVersion-aware VerifyPieceHash).
-            var buf = piece.Flush();
-            if (buf == null) { UpdateWires(); return; }
-
-            bool hashMatch = VerifyPieceHash(index, buf);
-
-            if (hashMatch)
+            // This runs inside a fire-and-forget wire.Request callback: an unhandled throw here (e.g. an OPFS
+            // PutAsync failure) used to be silently swallowed, leaving the piece at missing=0 / Bitfield=false
+            // FOREVER — the picker thinks it's still needed but it never re-downloads (observed stranding the
+            // tail moov's last piece, so a non-faststart <video> never got loadedmetadata). Catch + reset so a
+            // failed completion re-requests instead of stranding, and record why for triage.
+            byte[]? buf = null;
+            try
             {
-                // Verified! Store the piece to chunk store for seeding
-                if (_store != null)
-                    await _store.PutAsync(index, buf);
+                buf = piece.Flush();
+                if (buf == null)
+                {
+                    // Set() said complete but Flush() saw _buffered!=_chunks — a concurrent completion (the
+                    // same piece finished on another wire / the zero-copy web-seed path) already flushed it.
+                    if (index == PieceCount - 1) LastCompletionNote = $"p{index} flush=null (already flushed elsewhere)";
+                    UpdateWires();
+                    return;
+                }
 
-                Pieces[index] = new Piece(0); // mark as done (length 0 = flushed)
-                Bitfield[index] = true;
+                bool hashMatch = VerifyPieceHash(index, buf);
 
-                // Announce to all peers
-                foreach (var w in Wires.ToArray())
-                    _ = w.Have(index);
+                if (hashMatch)
+                {
+                    // Verified! Store the piece to chunk store for seeding
+                    if (_store != null)
+                        await _store.PutAsync(index, buf);
 
-                OnPieceVerified?.Invoke(index);
-                CheckDone();
+                    Pieces[index] = new Piece(0); // mark as done (length 0 = flushed)
+                    Bitfield[index] = true;
+                    if (index == PieceCount - 1) LastCompletionNote = $"p{index} OK len={buf.Length}";
+
+                    // Announce to all peers
+                    foreach (var w in Wires.ToArray())
+                        _ = w.Have(index);
+
+                    OnPieceVerified?.Invoke(index);
+                    CheckDone();
+                }
+                else
+                {
+                    // Failed verification — reset piece
+                    if (index == PieceCount - 1) LastCompletionNote = $"p{index} verify-FAIL len={buf.Length}";
+                    Pieces[index] = new Piece(Pieces[index].Length > 0 ? Pieces[index].Length : PieceLength);
+                    OnWarning?.Invoke($"Piece {index} failed verification");
+                }
             }
-            else
+            catch (Exception cex)
             {
-                // Failed verification — reset piece
-                Pieces[index] = new Piece(Pieces[index].Length > 0 ? Pieces[index].Length : PieceLength);
-                OnWarning?.Invoke($"Piece {index} failed verification");
+                // NEVER strand the piece on a completion error — reset it so the picker re-requests it.
+                if (index == PieceCount - 1) LastCompletionNote = $"p{index} THREW (buf={(buf?.Length ?? -1)}): {cex.GetType().Name}: {cex.Message}";
+                if (piece == Pieces[index])
+                    Pieces[index] = new Piece(Pieces[index].Length > 0 ? Pieces[index].Length : PieceLength);
+                OnWarning?.Invoke($"Piece {index} completion error: {cex.GetType().Name}: {cex.Message}");
             }
 
             UpdateWires();
@@ -205,6 +231,25 @@ public partial class Torrent
     /// without the piece bytes ever entering the .NET heap. Concurrency is capped at <see cref="MaxWebConns"/>
     /// via <see cref="_zeroCopyInFlight"/>. Returns true if a fetch was started for this piece.
     /// </summary>
+    /// <summary>True if piece <paramref name="index"/>'s byte range straddles a file boundary in a multi-file
+    /// torrent. Such pieces can't use the single-fetch zero-copy web-seed path (one file range per fetch); they
+    /// fall back to the .NET block path, which already splits a piece across files. Interior pieces (the vast
+    /// majority) return false and stay on the fast zero-copy path.</summary>
+    private bool PieceSpansMultipleFiles(int index)
+    {
+        var files = Files;
+        if (files == null || files.Length <= 1) return false;
+        long s = (long)index * PieceLength;
+        long e = s + Pieces[index].Length - 1;
+        int hits = 0;
+        foreach (var f in files)
+        {
+            if (f.Offset > e || f.Offset + f.Length - 1 < s) continue;
+            if (++hits > 1) return true;
+        }
+        return false;
+    }
+
     private bool RequestPieceZeroCopy(WebConn webConn, int index)
     {
         if (_zeroCopyInFlight.Contains(index)) return false;          // already fetching this piece
@@ -377,8 +422,29 @@ public partial class Torrent
     // UPDATE WIRES (matches JS _updateWire / _updateWireInterest)
     // ========================
 
-    /// <summary>Trigger piece requests on all wires.</summary>
+    private int _updateWiresScheduled;
+
+    /// <summary>
+    /// Trigger piece requests on all wires - DEBOUNCED. Coalesces a burst of triggers (a media-element
+    /// streaming read marking many pieces Critical, plus many block arrivals) into ONE request-loop pass per
+    /// tick. Mirrors JS webtorrent: critical() and block-receipt schedule a queueMicrotask _update rather than
+    /// running the O(wires*selections*pieces) request loop synchronously per trigger (torrent.js:1786). Without
+    /// this, a media element's streaming reads (Critical per piece) hammered the picker and starved the bulk
+    /// download - the live-Sintel moov downloaded far too slowly, so the element gave up before it arrived.
+    /// </summary>
     private void UpdateWires()
+    {
+        if (System.Threading.Interlocked.Exchange(ref _updateWiresScheduled, 1) == 1) return;
+        _ = Task.Run(() =>
+        {
+            System.Threading.Interlocked.Exchange(ref _updateWiresScheduled, 0);
+            try { UpdateWiresNow(); } catch { }
+        });
+    }
+
+    /// <summary>The actual request-loop pass (formerly UpdateWires). Always reached via the debounced
+    /// <see cref="UpdateWires"/> so bursts coalesce into one pass.</summary>
+    private void UpdateWiresNow()
     {
         foreach (var wire in Wires.ToArray())
             UpdateWire(wire);
@@ -418,11 +484,22 @@ public partial class Torrent
         // (observed: browser first-read 21.5s vs desktop 669ms over a web seed). Critical
         // pieces always allow hotswap so they can steal block reservations from
         // lower-priority in-flight pieces. RequestBlock already skips have/out-of-range.
+        //
+        // Order critical pieces by SELECTION PRIORITY (high first). A media player streaming a
+        // non-faststart MP4 reads the front (low-priority selection) AND range-requests the tail moov
+        // (high-priority selection, priority ∝ inverse range size — see RespondWithStream). Both are
+        // critical, but this pass returns as soon as the wire fills (ZeroCopyFull), so arbitrary
+        // _critical iteration let the continuously-advancing front read consume every freed web-seed slot
+        // and starve the tail — the moov request then blocks forever and the video never demuxes. Sorting
+        // by selection priority makes the small tail win the slot. _critical holds only read-awaited pieces
+        // (a few), so this sort is cheap.
         if (!_critical.IsEmpty)
         {
-            foreach (var kv in _critical)
+            var criticalPieces = new List<int>(_critical.Keys);
+            if (criticalPieces.Count > 1)
+                criticalPieces.Sort((a, b) => PiecePriority(b).CompareTo(PiecePriority(a)));
+            foreach (var piece in criticalPieces)
             {
-                int piece = kv.Key;
                 if (!wire.PeerHasPiece(piece)) continue;
 
                 while (RequestBlock(wire, piece, true) &&
@@ -475,6 +552,20 @@ public partial class Torrent
         }
 
         return false;
+    }
+
+    // Effective download priority of a piece = the priority of the highest-priority selection covering it.
+    // _selections is kept priority-ordered (descending), so the first covering selection is the highest.
+    // Used to order the critical-first pass so a high-priority streaming range (tail moov) outranks a
+    // low-priority one (front) when both are read-awaited. Returns int.MinValue if no selection covers it.
+    private int PiecePriority(int piece)
+    {
+        for (int i = 0; i < _selections.Length; i++)
+        {
+            var s = _selections.Get(i);
+            if (s != null && piece >= s.From && piece <= s.To) return s.Priority;
+        }
+        return int.MinValue;
     }
 
     /// <summary>Update interest state for a wire based on available pieces.</summary>

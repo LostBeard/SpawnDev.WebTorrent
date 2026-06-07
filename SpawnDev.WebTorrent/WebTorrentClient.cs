@@ -339,43 +339,12 @@ public class WebTorrentClient : IAsyncDisposable
 
         var torrent = new Torrent();
 
-        // Register ut_metadata extension — how magnet links get metadata. For pure-v2
-        // magnets (no v1 InfoHash, only V2InfoHash from urn:btmh) the extension opts
-        // into v2 mode so the extended handshake advertises metadata_version=2 and
-        // SetMetadata verifies via SHA-256 against the full v2 hash. Hybrid and
-        // v1-only stay on the v1 path (SHA-1 verification against InfoHash).
-        UseExtension((wire) =>
-        {
-            var ext = new UtMetadataExtension();
-            // Per-wire snapshot: whatever the torrent's state is when THIS wire is
-            // being set up. Pure-v2 means only V2InfoHash is set.
-            bool isPureV2 = string.IsNullOrEmpty(torrent.InfoHash) && !string.IsNullOrEmpty(torrent.V2InfoHash);
-            if (isPureV2)
-            {
-                ext.MetadataVersion = 2;
-                ext.V2InfoHashHex = torrent.V2InfoHash;
-            }
-            ext.SetWire(wire);
-            ext.OnMetadata += (infoDictBytes) =>
-            {
-                if (torrent.HasMetadata) return;
-                TorrentMetadata? metadata;
-                if (isPureV2)
-                {
-                    var v2Bytes = Convert.FromHexString(torrent.V2InfoHash ?? "");
-                    metadata = TorrentParser.ParseInfoDictV2(infoDictBytes, v2Bytes);
-                }
-                else
-                {
-                    var infoHashBytes = Convert.FromHexString(torrent.InfoHash ?? "");
-                    metadata = TorrentParser.ParseInfoDict(infoDictBytes, infoHashBytes);
-                }
-                if (metadata != null)
-                    torrent.SetMetadata(metadata);
-            };
-            ext.OnWarning += (msg) => OnWarning?.Invoke(msg);
-            return ext;
-        });
+        // ut_metadata (BEP 9) is registered PER-TORRENT in Torrent.SetupMetadataExtension (called from
+        // Torrent.AddPeer), NOT client-global. The old client-global factory captured a single
+        // torrent's closure (wrong once a client holds >1 torrent) and only ever created FETCHERS — so
+        // a seeded torrent advertised no ut_metadata and a magnet peer could never pull its info dict
+        // (two SpawnDev.WebTorrent clients stalled at hasMetadata=false). The per-torrent registration
+        // serves the info dict when the torrent has it and fetches when it doesn't.
 
         // Start the torrent — parse magnet and begin discovery
         // Default trackers are merged inside InitFromMagnetAsync before StartDiscovery

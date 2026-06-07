@@ -393,9 +393,9 @@
                                                     </select>
                                                 </td>
                                                 <td>
-                                                    @if (f.Done && IsMediaType(f.Type))
+                                                    @if (IsMediaType(f.Type))
                                                     {
-                                                        <button class="qb-play-btn" @onclick="() => PlayMedia(sel, f)" title="Play">&#9654;</button>
+                                                        <button class="qb-play-btn" @onclick="() => PlayMedia(sel, f)" title="@(f.Done ? "Play" : "Stream while downloading")">&#9654;</button>
                                                     }
                                                     @if (f.Done)
                                                     {

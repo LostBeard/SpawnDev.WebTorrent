@@ -103,6 +103,72 @@ public class DesktopWebRtcTest
         WebTorrentClient.VerboseLogging = false;
     }
 
+    [Test, Timeout(90000)]
+    public async Task Desktop_TwoClients_WebRtc_DownloadsCompletely_AndVerifies()
+    {
+        // THE foundation test for the browser's primary transport. The existing
+        // Desktop_TwoClients_DiscoverViaTracker only proves peers FIND each other; it never
+        // downloads. This proves a full end-to-end P2P download over WebRTC (RtcPeer): seeder A
+        // serves every piece, downloader B pulls them all through the local tracker's WebRTC
+        // signaling, reaches Done, and the assembled bytes SHA-256-match the source. Web seeds are
+        // disabled so the ONLY path is the WebRTC wire. Desktop in-process (SpawnDev.RTC desktop =
+        // SipSorcery DTLS/SRTP), deterministic, no public-swarm dependency.
+        await using var tracker = await LocalTrackerFixture.StartAsync();
+        WebTorrentClient.VerboseLogging = true;
+        try
+        {
+            // 128 KiB = 8 pieces of 16 KiB — exercises multi-piece, multi-block request/piece flow.
+            var payload = new byte[131072];
+            for (int i = 0; i < payload.Length; i++) payload[i] = (byte)((i * 31 + 7) & 0xFF);
+            var expectedHash = Convert.ToHexString(SHA256.HashData(payload));
+
+            // ----- Seeder A -----
+            var seeder = new WebTorrentClient();
+            var seederSwarm = await seeder.SeedAsync("webrtc-dl-test.bin", payload,
+                new TorrentCreatorOptions
+                {
+                    PieceLength = 16384,
+                    Trackers = new[] { tracker.WsAnnounceUrl },
+                });
+            Assert.That(seederSwarm.Done, Is.True, "Seeder should be complete before serving");
+
+            // ----- Downloader B (pure P2P: web seeds disabled) -----
+            var downloader = new WebTorrentClient();
+            var dlSwarm = downloader.Add(seederSwarm.ComputedMagnetUri,
+                new AddTorrentOptions { DisableWebSeeds = true });
+
+            // Wait for the FULL download over the WebRTC wire.
+            var deadline = DateTime.UtcNow.AddSeconds(60);
+            while (!dlSwarm.Done && DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(250);
+                Console.WriteLine($"  dl peers={dlSwarm.PeerCount} downloaded={dlSwarm.Downloaded}/{payload.Length} progress={dlSwarm.Progress:P0}");
+            }
+
+            Assert.That(dlSwarm.Done, Is.True,
+                $"Downloader must COMPLETE over WebRTC within 60s — progress={dlSwarm.Progress:P1}, " +
+                $"downloaded={dlSwarm.Downloaded}/{payload.Length}, dlPeers={dlSwarm.PeerCount}, " +
+                $"seederPeers={seederSwarm.PeerCount}, hasMeta={dlSwarm.HasMetadata}");
+
+            // ----- Byte-correctness: the downloaded file SHA-256 must match the seed -----
+            var dlFile = dlSwarm.Files?.FirstOrDefault();
+            Assert.That(dlFile, Is.Not.Null, "Downloader should expose the file after completion");
+            var actual = await dlFile!.ReadAsync(0, (int)dlFile.Length);
+            Assert.That(actual.Length, Is.EqualTo(payload.Length), "Downloaded length mismatch");
+            Assert.That(Convert.ToHexString(SHA256.HashData(actual)), Is.EqualTo(expectedHash),
+                "Downloaded bytes must SHA-256-match the seeded payload (corrupt or incomplete transfer)");
+
+            await dlSwarm.DisposeAsync();
+            await downloader.DisposeAsync();
+            await seederSwarm.DisposeAsync();
+            await seeder.DisposeAsync();
+        }
+        finally
+        {
+            WebTorrentClient.VerboseLogging = false;
+        }
+    }
+
     [Test, Timeout(180000), Retry(3)]
     public async Task Desktop_Download_Sintel_PeersOnly()
     {

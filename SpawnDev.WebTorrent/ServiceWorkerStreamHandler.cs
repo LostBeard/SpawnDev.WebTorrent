@@ -160,6 +160,16 @@ public class StreamRequest
     public MessagePort Port { get; set; } = null!;
     public bool Handled { get; set; }
 
+    /// <summary>Diagnostic: total bytes a stream actually delivered, keyed by its start offset. Lets a test
+    /// tell whether the &lt;video&gt; element pulled (and received) its tail/moov range vs never reading it.</summary>
+    public static readonly System.Collections.Concurrent.ConcurrentDictionary<long, long> DebugBytesByStartOffset = new();
+
+    /// <summary>Diagnostic: per-pull read-flow log (which stream by start offset, the file offset read, bytes
+    /// requested, bytes returned, posted/EOF/cancel). Lets a test see EXACTLY what each stream's pulls did —
+    /// distinguishes "the &lt;video&gt; never pulled the tail" from "it pulled and the read returned 0 bytes".</summary>
+    public static readonly System.Collections.Concurrent.ConcurrentQueue<string> DebugStreamLog = new();
+    private static void DbgLog(string s) { DebugStreamLog.Enqueue(s); while (DebugStreamLog.Count > 160) DebugStreamLog.TryDequeue(out _); }
+
     /// <summary>
     /// Respond with a STREAM for the given torrent file, supporting range requests.
     /// Uses torrent.ReadFileAsync() which works during download (waits for pieces).
@@ -190,13 +200,45 @@ public class StreamRequest
             if (rangeEnd >= totalSize) rangeEnd = totalSize - 1;
         }
 
+        // Open-ended bytes=N- serves through end-of-file (rangeEnd = totalSize-1) — identical to the working
+        // reference (RequestRange.ParseRange: open-ended end = contentLength-1). The element gets the full
+        // extent and seeks the tail moov; the stream is made cancellable/idle-draining (see SW + StreamState)
+        // so an abandoned front releases Chromium's data source.
         var length = rangeEnd - rangeStart + 1;
+
+        // Prioritize THIS request's pieces by INVERSE range size. A non-faststart MP4 keeps its moov at the
+        // end, so the <video> issues a small tail range (e.g. bytes=128614400-) to read metadata; giving a
+        // small range high priority makes the picker fetch the moov ahead of the large front read instead of
+        // waiting for the whole file. The whole-file selection (priority 1, from EnsureReadSelection on the
+        // read path) keeps downloading in the background. Mirrors SpawnDev.com's TorrentFSExtension pattern;
+        // our Selections is already priority-ordered (high first) — we just feed the streaming range into it.
+        int selStart = file.StartPiece, selEnd = file.EndPiece;
+        if (torrent.PieceLength > 0)
+        {
+            selStart = file.StartPiece + (int)(rangeStart / torrent.PieceLength);
+            selEnd = file.StartPiece + (int)(rangeEnd / torrent.PieceLength);
+            if (selStart < file.StartPiece) selStart = file.StartPiece;
+            if (selEnd > file.EndPiece) selEnd = file.EndPiece;
+            long priority = totalSize + 2 - length;   // small range => high priority (tail moov wins)
+            torrent.Select(selStart, selEnd, (int)Math.Min(priority, int.MaxValue), isStreamSelection: true);
+            // Also mark the immediate read need CRITICAL up front so it downloads in PARALLEL right now,
+            // independent of how small the element chunks its pulls (Chromium reads the moov in ~64 KB pulls,
+            // so a per-pull critical mark only fetches ~1 piece at a time and the moov trickles in). For a
+            // small tail-moov range this covers the WHOLE moov, so loadedmetadata isn't gated on its last
+            // piece arriving piece-by-piece; for a large open-ended range (the front read) only the first few
+            // pieces, so it can't starve the moov. critical-first picking is priority-ordered, so the moov
+            // (high-priority selection) still wins over the front's critical pieces.
+            int rangePieces = selEnd - selStart + 1;
+            int critEnd = rangePieces <= 64 ? selEnd : Math.Min(selStart + 7, selEnd);
+            torrent.Critical(selStart, critEnd);
+        }
 
         var responseHeaders = new Dictionary<string, string>
         {
             ["Content-Type"] = contentType,
             ["Accept-Ranges"] = "bytes",
-            ["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0",
+            // No Cache-Control: media elements rely on the browser caching served byte ranges for seeking;
+            // the previous "no-store" forbade that. Matches SpawnDev.com's working FSExtensionBase media path.
             ["Content-Length"] = length.ToString(),
         };
         if (isRange)
@@ -211,7 +253,7 @@ public class StreamRequest
         };
 
         // Wire up pull handler FIRST, then Start, then PostMessage (order matters)
-        var streamState = new StreamState(Port, torrent, fileIndex, rangeStart, (int)Math.Min(length, int.MaxValue));
+        var streamState = new StreamState(Port, torrent, fileIndex, rangeStart, (int)Math.Min(length, int.MaxValue), selStart, selEnd);
         Port.OnMessage += streamState.HandlePull;
         Port.Start();
         Port.PostMessage(response);
@@ -233,16 +275,24 @@ public class StreamRequest
         private readonly Torrent _torrent;
         private readonly int _fileIndex;
         private long _offset;
+        private readonly long _startOffset;
         private int _remaining;
+        private readonly int _startPiece;          // this stream's piece range (released on teardown)
+        private readonly int _endPiece;
+        private readonly CancellationTokenSource _cts = new();   // cancels the blocking read when the video seeks away
         private const int ChunkSize = 65536;
 
-        public StreamState(MessagePort port, Torrent torrent, int fileIndex, long startOffset, int length)
+        public StreamState(MessagePort port, Torrent torrent, int fileIndex, long startOffset, int length, int startPiece, int endPiece)
         {
             _port = port;
             _torrent = torrent;
             _fileIndex = fileIndex;
             _offset = startOffset;
+            _startOffset = startOffset;
             _remaining = length;
+            _startPiece = startPiece;
+            _endPiece = endPiece;
+            DbgLog($"[{startOffset}] NEW len={length} pieces={startPiece}-{endPiece}");
         }
 
         public void HandlePull(MessageEvent pullMsg)
@@ -252,6 +302,8 @@ public class StreamRequest
 
             if (eventType == "cancel" || eventType == "error")
             {
+                DbgLog($"[{_startOffset}] {eventType} (delivered={_offset - _startOffset})");
+                _cts.Cancel();   // abort any in-flight EnsurePieceAsync so a seek can't wedge the read
                 Cleanup();
                 return;
             }
@@ -264,29 +316,43 @@ public class StreamRequest
                 {
                     if (_remaining <= 0)
                     {
+                        DbgLog($"[{_startOffset}] pull@{_offset} done-rem0");
                         _port.PostMessage("");
                         Cleanup();
                         return;
                     }
 
                     var toRead = Math.Min(ChunkSize, _remaining);
-                    var data = await _torrent.ReadFileAsync(_fileIndex, _offset, toRead);
+                    var readOff = _offset;
+                    // Zero-copy: read the chunk straight into a JS Uint8Array and hand it back to the
+                    // service worker WITHOUT the bytes ever entering the .NET/WASM heap. On an OPFS-backed
+                    // store the piece data stays JS-side end to end — this is TJ's design: the window client
+                    // fulfills the SW's torrent-chunk request via ReadFileUint8ArrayAsync, no byte[] hop.
+                    using var uint8 = await _torrent.ReadFileUint8ArrayAsync(_fileIndex, _offset, toRead, _cts.Token);
+                    var read = (int)uint8.Length;
 
-                    if (data == null || data.Length == 0)
+                    if (read == 0)
                     {
+                        DbgLog($"[{_startOffset}] pull@{readOff} toRead={toRead} got=0 -> EOF");
                         _port.PostMessage("");
                         Cleanup();
                         return;
                     }
 
-                    _remaining -= data.Length;
-                    _offset += data.Length;
+                    _remaining -= read;
+                    _offset += read;
 
-                    using var uint8 = new Uint8Array(data);
                     _port.PostMessage(uint8);
+                    DebugBytesByStartOffset.AddOrUpdate(_startOffset, read, (_, v) => v + read);
+                    DbgLog($"[{_startOffset}] pull@{readOff} toRead={toRead} got={read} posted rem={_remaining}");
+                }
+                catch (OperationCanceledException)
+                {
+                    DbgLog($"[{_startOffset}] pull canceled @ {_offset}");   // seek aborted this read; expected
                 }
                 catch (Exception ex)
                 {
+                    DbgLog($"[{_startOffset}] pull ERR {ex.GetType().Name}: {ex.Message}");
                     Console.WriteLine($"[WebTorrent SW Handler] Stream chunk error: {ex}");
                     _port.PostMessage("");
                     Cleanup();
@@ -297,6 +363,12 @@ public class StreamRequest
         private void Cleanup()
         {
             _port.OnMessage -= HandlePull;
+            try { _cts.Cancel(); } catch { }
+            // NOTE: deliberately do NOT Deselect this stream's pieces here. A media element seeking a
+            // non-faststart moov rapidly opens+cancels the SAME tail range several times; deselecting on each
+            // cancel kept yanking the high-priority moov range out of the picker mid-download, so the tail
+            // piece it needs never finished and the element thrashed. The stream selection is low-cost to
+            // leave in place (it's high priority, so the picker completes it fast, then moves on).
         }
     }
 

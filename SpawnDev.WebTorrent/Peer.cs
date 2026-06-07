@@ -15,6 +15,10 @@ public class Peer
     public const int ConnectTimeoutWebrtc = 25_000;
     public const int HandshakeTimeoutMs = 25_000;
 
+    /// <summary>Diagnostic ring buffer of recent peer-drop reasons (why peers leave) for streaming/RTC triage.
+    /// Captured in <see cref="Destroy"/> independent of VerboseLogging (PMT drops high-volume console output).</summary>
+    public static readonly System.Collections.Concurrent.ConcurrentQueue<string> RecentDrops = new();
+
     // Peer types
     public const string TypeTcpIncoming = "tcpIncoming";
     public const string TypeTcpOutgoing = "tcpOutgoing";
@@ -244,6 +248,13 @@ public class Peer
                     Destroy(new TimeoutException($"Connect timeout ({Type})"));
             }
             catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                // Never let this fire-and-forget timeout task fault into an UNOBSERVED task exception (the
+                // browser surfaces that as an uncaught console error with a confusing async stack).
+                if (WebTorrentClient.VerboseLogging)
+                    Console.WriteLine($"[Peer] connect-timeout task error: {ex.GetType().Name}: {ex.Message}");
+            }
         });
     }
 
@@ -260,6 +271,11 @@ public class Peer
                     Destroy(new TimeoutException("Handshake timeout"));
             }
             catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                if (WebTorrentClient.VerboseLogging)
+                    Console.WriteLine($"[Peer] handshake-timeout task error: {ex.GetType().Name}: {ex.Message}");
+            }
         });
     }
 
@@ -276,10 +292,24 @@ public class Peer
         Destroyed = true;
         Connected = false;
 
+        // Record WHY this peer dropped (non-verbose) so peer-stability triage can see it without console logs.
+        {
+            var dr = err != null ? $"{err.GetType().Name}:{err.Message}" : "null";
+            var idShort = !string.IsNullOrEmpty(Id) ? Id[..Math.Min(6, Id.Length)] : "?";
+            RecentDrops.Enqueue($"{idShort}/{Type}={dr}");
+            while (RecentDrops.Count > 24) RecentDrops.TryDequeue(out _);
+        }
+
         if (WebTorrentClient.VerboseLogging)
         {
             var reason = err != null ? $"{err.GetType().Name}: {err.Message}" : "null";
-            Console.WriteLine($"[Peer] Destroy(Id={Id}, err={reason})\n{new System.Diagnostics.StackTrace(1, false)}");
+            // Connect/handshake timeouts are EXPECTED on a public swarm (most peers are unreachable behind
+            // NAT) - log them as a concise one-liner. Reserve the stack dump for UNEXPECTED destroys, where
+            // "who destroyed this peer" is the actual question (the 2026-05-03 sctp-cascade investigation).
+            if (err is TimeoutException)
+                Console.WriteLine($"[Peer] Destroy(Id={Id}, err={reason})");
+            else
+                Console.WriteLine($"[Peer] Destroy(Id={Id}, err={reason})\n{new System.Diagnostics.StackTrace(1, false)}");
         }
 
         CancelConnectTimeout();

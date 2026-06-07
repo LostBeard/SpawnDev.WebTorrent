@@ -192,6 +192,11 @@ namespace PlaywrightMultiTest
                             new BrowserTypeLaunchPersistentContextOptions
                             {
                                 Headless = false,
+                                // Use the installed Google Chrome (NOT Playwright's bundled open-source Chromium,
+                                // which ships WITHOUT the proprietary H.264/AAC decoders). Required so <video>
+                                // media-streaming tests can actually demux real-world H.264 mp4s (e.g. Sintel);
+                                // the bundled Chromium silently stalls at readyState=0 on H.264 with no error.
+                                Channel = "chrome",
                                 Args = new[]
                                 {
                                     "--enable-unsafe-webgpu",

@@ -197,6 +197,14 @@ public partial class Torrent : IAsyncDisposable
     // Pieces
     public Piece[] Pieces { get; set; } = Array.Empty<Piece>();
     public List<Wire> Wires { get; } = new();
+
+    /// <summary>Diagnostic: last-piece completion outcome (OK / verify-FAIL / THREW / flush=null). For streaming triage.</summary>
+    public string? LastCompletionNote;
+
+    /// <summary>Diagnostic: WebRTC peers the factory was asked to create (signaling attempts) vs peers that
+    /// actually reached AddPeer (connected). The gap reveals discovery-found-none vs attempted-but-never-connected.</summary>
+    public int PeersAttempted;
+    public int PeersConnected;
     public TorrentFileInfo[]? Files { get; set; }
 
     // Peers
@@ -643,6 +651,9 @@ public partial class Torrent : IAsyncDisposable
     /// <summary>Original .torrent file bytes for export/re-distribution.</summary>
     public byte[]? TorrentFileBytes { get; set; }
 
+    /// <summary>Raw bencoded info dict — what this torrent serves to magnet peers over ut_metadata (BEP 9).</summary>
+    public byte[]? InfoDictBytes { get; set; }
+
     /// <summary>
     /// Get the .torrent file as a JS Blob (browser) for zero-copy download links.
     /// Returns null if TorrentFileBytes is null or not in browser.
@@ -707,6 +718,10 @@ public partial class Torrent : IAsyncDisposable
 
         // Store optional metadata fields
         TorrentFileBytes = metadata.OriginalTorrentBytes;
+        // Raw bencoded info dict — exactly what ut_metadata (BEP 9) serves to magnet peers.
+        // Without retaining this, a seeded torrent advertises no metadata_size and a magnet
+        // downloader can never pull the info dict from us (the two-SpawnDev-client stall).
+        InfoDictBytes = metadata.InfoDictBytes;
         Comment = metadata.Comment;
         CreatedBy = metadata.CreatedBy;
         CreationDate = metadata.CreationDate;
@@ -856,7 +871,7 @@ public partial class Torrent : IAsyncDisposable
         // Tracker-based discovery (always allowed, even for private torrents per BEP 27)
         _discovery = new Discovery(
             infoHashBytes, _client.PeerIdBuffer, AnnounceUrls,
-            (initiator) => _client.CreatePeer(initiator),
+            (initiator) => { PeersAttempted++; return _client.CreatePeer(initiator); },
             _http!
         );
 
@@ -907,11 +922,46 @@ public partial class Torrent : IAsyncDisposable
         });
     }
 
+    /// <summary>
+    /// Register the ut_metadata (BEP 9) wire extension for THIS torrent on a wire. When the torrent
+    /// already has metadata (a seed, or a magnet that finished bootstrapping) the extension is built
+    /// with the raw info dict so its extended handshake advertises <c>metadata_size</c> and it serves
+    /// piece requests. Otherwise it is a fetcher that pulls the info dict from the peer and feeds it
+    /// to <see cref="SetMetadata"/>. This is registered PER-TORRENT (not via the client-global
+    /// extension factory) so each wire advertises the correct torrent's metadata — the old global
+    /// factory only ever created fetchers, so a SpawnDev.WebTorrent seed advertised no ut_metadata and
+    /// a magnet peer could never bootstrap from it.
+    /// </summary>
+    private void SetupMetadataExtension(Wire wire)
+    {
+        bool isPureV2 = string.IsNullOrEmpty(InfoHash) && !string.IsNullOrEmpty(V2InfoHash);
+        var ext = (HasMetadata && InfoDictBytes != null)
+            ? new UtMetadataExtension(InfoDictBytes)   // serve our info dict to magnet peers
+            : new UtMetadataExtension();               // fetch the info dict from this peer
+        if (isPureV2)
+        {
+            ext.MetadataVersion = 2;
+            ext.V2InfoHashHex = V2InfoHash;
+        }
+        ext.SetWire(wire);
+        ext.OnMetadata += (infoDictBytes) =>
+        {
+            if (HasMetadata) return;
+            TorrentMetadata? metadata = isPureV2
+                ? TorrentParser.ParseInfoDictV2(infoDictBytes, Convert.FromHexString(V2InfoHash ?? ""))
+                : TorrentParser.ParseInfoDict(infoDictBytes, Convert.FromHexString(InfoHash ?? ""));
+            if (metadata != null) SetMetadata(metadata);
+        };
+        ext.OnWarning += (msg) => OnWarning?.Invoke(msg);
+        wire.Use(ext);
+    }
+
     public void AddPeer(SimplePeer simplePeer)
     {
         if (Destroyed) return;
         if (_peers.Count >= (_client?.MaxConns ?? 55)) return;
 
+        PeersConnected++;
         var peer = Peer.CreateWebRTCPeer(simplePeer);
         peer.Swarm = this;
         if (!_peers.TryAdd(peer.Id, peer)) return;
@@ -930,6 +980,11 @@ public partial class Torrent : IAsyncDisposable
             if (peer.WireInstance != null)
             {
                 _client?.ApplyExtensions(peer.WireInstance);
+
+                // Register ut_metadata (BEP 9) for THIS torrent: SERVE our info dict if we have
+                // metadata (seed / post-bootstrap), else FETCH it from this peer (magnet bootstrap).
+                // Per-torrent so the wire advertises this torrent's real metadata_size.
+                SetupMetadataExtension(peer.WireInstance);
 
                 // Set remote address from transport for peer display
                 peer.WireInstance.RemoteAddress = simplePeer.RemoteAddress;
@@ -1319,15 +1374,23 @@ public partial class Torrent : IAsyncDisposable
     // PIECE SELECTION
     // ========================
 
-    public void Select(int start, int end, int priority = 0)
+    public void Select(int start, int end, int priority = 0, bool isStreamSelection = false)
     {
-        _selections.Insert(new SelectionItem { From = start, To = end, Priority = priority });
+        // isStreamSelection=true keeps this range a SEPARATE entry (not concatenated into the whole-file
+        // selection), so its priority is preserved instead of smeared across every piece — required for a
+        // streaming media player's small high-priority tail (moov) request to actually outrank the front.
+        _selections.Insert(new SelectionItem { From = start, To = end, Priority = priority, IsStreamSelection = isStreamSelection });
         UpdateWires();
     }
 
-    public void Deselect(int start, int end)
+    public void Deselect(int start, int end, bool isStreamSelection = false)
     {
-        _selections.Remove(new SelectionItem { From = start, To = end });
+        // Selections.Remove only matches entries whose IsStreamSelection flag equals the item's, so a
+        // streaming priority range (added with isStreamSelection: true) is ONLY removed when this is passed
+        // true. Default false preserves existing whole-file/regular Deselect callers. Re-run the picker so an
+        // abandoned stream's pieces stop being prioritized.
+        _selections.Remove(new SelectionItem { From = start, To = end, IsStreamSelection = isStreamSelection });
+        UpdateWires();
     }
 
     public void Critical(int start, int end)
@@ -1339,6 +1402,41 @@ public partial class Torrent : IAsyncDisposable
         // streaming read over a web seed, which has no handshake) - without this the
         // critical piece waits for the next unrelated trigger. (Select() already does this.)
         UpdateWires();
+    }
+
+    /// <summary>Diagnostic snapshot of the live piece-selection + critical state (for streaming triage).</summary>
+    public string DebugSelectionState()
+    {
+        var sels = new List<string>();
+        for (int i = 0; i < _selections.Length; i++)
+        {
+            var s = _selections.Get(i);
+            if (s != null)
+            {
+                int h = 0;
+                for (int p = s.From; p <= s.To && p < Bitfield.Length; p++) if (Bitfield[p]) h++;
+                sels.Add($"[{s.From}-{s.To}:p{s.Priority}:have{h}/{s.To - s.From + 1}]");
+            }
+        }
+        var crit = new List<int>(_critical.Keys);
+        crit.Sort();
+        int have = 0; for (int i = 0; i < Bitfield.Length; i++) if (Bitfield[i]) have++;
+        var last8 = new System.Text.StringBuilder();
+        for (int p = Math.Max(0, Bitfield.Length - 8); p < Bitfield.Length; p++) last8.Append(Bitfield[p] ? '1' : '0');
+        // Targeted last-piece triage: a partial last piece (e.g. a non-faststart moov ending in it) not
+        // downloading even with a healthy swarm -> is it received at all (missing<len), do wires advertise it,
+        // and is a web seed (which always has every piece) present to fall back on?
+        int lpi = PieceCount - 1;
+        var lp = (lpi >= 0 && lpi < Pieces.Length) ? Pieces[lpi] : null;
+        var wiresArr = Wires.ToArray();
+        int wiresWithLast = 0;
+        foreach (var w in wiresArr) { try { if (w.PeerHasPiece(lpi)) wiresWithLast++; } catch { } }
+        var trackerHosts = new List<string>();
+        foreach (var k in TrackerStats.Keys) { try { trackerHosts.Add(new Uri(k).Host); } catch { trackerHosts.Add(k); } }
+        var lastInfo = $" lastPiece[{lpi}]:len={(lp != null ? lp.Length : -1)},missing={(lp != null ? lp.Missing : -1)},wiresHave={wiresWithLast}/{wiresArr.Length},webSeeds={WebSeedCount} note='{LastCompletionNote}'" +
+            $" peers[att={PeersAttempted},conn={PeersConnected}] trackers={TrackerStats.Count}[{string.Join(",", trackerHosts)}] peerDrops=[{string.Join(" | ", Peer.RecentDrops)}]" +
+            $" zc={ZeroCopyPiecesVerified}";
+        return $"pieces={Bitfield.Length} have={have} last8={last8} sel={{{string.Join(" ", sels)}}} crit={{{string.Join(",", crit)}}}{lastInfo}";
     }
 
     // ========================
@@ -1364,12 +1462,22 @@ public partial class Torrent : IAsyncDisposable
         if (pieceIdx < Bitfield.Length && !Bitfield[pieceIdx])
         {
             Critical(pieceIdx, pieceIdx);
-            while (!Bitfield[pieceIdx] && !Destroyed)
+            try
             {
-                ct.ThrowIfCancellationRequested();
-                await Task.Delay(100, ct);
+                while (!Bitfield[pieceIdx] && !Destroyed)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    await Task.Delay(100, ct);
+                }
             }
-            _critical.TryRemove(pieceIdx, out _);
+            finally
+            {
+                // Always un-mark Critical, even when the read is CANCELLED (a media element seeking away cancels
+                // its prior read). Without the finally, ThrowIfCancellationRequested throws before this line and
+                // the piece leaks into _critical forever - the critical-first pass then burns every pass on stale
+                // pieces and the sort grows unbounded.
+                _critical.TryRemove(pieceIdx, out _);
+            }
             if (Destroyed) throw new OperationCanceledException("Torrent destroyed while waiting for piece");
         }
     }
@@ -1401,6 +1509,17 @@ public partial class Torrent : IAsyncDisposable
         int resultPos = 0;
 
         EnsureReadSelection(file);
+
+        // Mark the ENTIRE read range critical UP FRONT so its pieces download in PARALLEL. Without this the
+        // loop below awaits EnsurePieceAsync one piece at a time (serial), so a multi-piece read - e.g. the
+        // tail moov of a non-faststart mp4 spanning several pieces - fetches piece-by-piece and loses the race
+        // to a concurrent read's critical pieces (the element's autoplay front read), stalling loadedmetadata
+        // on the moov's last piece. Critical() is idempotent + EnsurePieceAsync removes each as it is consumed.
+        {
+            int firstReadPiece = (int)(absOffset / PieceLength);
+            int lastReadPiece = (int)((absOffset + (long)length - 1) / PieceLength);
+            if (lastReadPiece > firstReadPiece) Critical(firstReadPiece, lastReadPiece);
+        }
 
         while (resultPos < length)
         {
@@ -1465,6 +1584,17 @@ public partial class Torrent : IAsyncDisposable
 
         EnsureReadSelection(file);
 
+        // Mark the ENTIRE read range critical UP FRONT so its pieces download in PARALLEL. Without this the
+        // loop below awaits EnsurePieceAsync one piece at a time (serial), so a multi-piece read - e.g. the
+        // tail moov of a non-faststart mp4 spanning several pieces - fetches piece-by-piece and loses the race
+        // to a concurrent read's critical pieces (the element's autoplay front read), stalling loadedmetadata
+        // on the moov's last piece. Critical() is idempotent + EnsurePieceAsync removes each as it is consumed.
+        {
+            int firstReadPiece = (int)(absOffset / PieceLength);
+            int lastReadPiece = (int)((absOffset + (long)length - 1) / PieceLength);
+            if (lastReadPiece > firstReadPiece) Critical(firstReadPiece, lastReadPiece);
+        }
+
         while (resultPos < length)
         {
             ct.ThrowIfCancellationRequested();
@@ -1481,15 +1611,15 @@ public partial class Torrent : IAsyncDisposable
             {
                 if (jsPath)
                 {
-                    // Whole piece as a JS Uint8Array → slice the needed sub-range → set into result.
-                    // All three operations stay in JS; the bytes never marshal into .NET.
-                    using var piece = await opfs!.GetUint8ArrayAsync(pieceIdx, ct);
-                    if (piece != null)
+                    // Read ONLY the needed sub-range directly from the OPFS file (File.slice → ArrayBuffer),
+                    // never the whole piece — memory-bounded, and the bytes stay JS-side (zero-copy).
+                    using var slice = await opfs!.GetUint8ArrayAsync(pieceIdx, pieceOffset, toRead, ct);
+                    if (slice != null)
                     {
-                        using var slice = piece.Slice(pieceOffset, pieceOffset + toRead);
+                        int got = (int)slice.Length;
                         result.Set(slice, resultPos);
-                        resultPos += toRead;
-                        absOffset += toRead;
+                        resultPos += got;
+                        absOffset += got;
                         continue;
                     }
                 }
@@ -1751,14 +1881,13 @@ public class TorrentFileInfo
                     parts.Add(uint8);
                 }
 
-                // Convert Uint8Arrays to byte arrays for Blob construction
-                // (SpawnDev.BlazorJS Blob accepts byte[][] — the conversion is fast
-                // since the Uint8Array is already in JS memory)
-                var byteArrays = new List<byte[]>();
-                foreach (var part in parts)
-                    byteArrays.Add(part.ReadBytes());
+                // Build the Blob DIRECTLY from the JS Uint8Array parts. The JS Blob constructor accepts
+                // ArrayBufferView (TypedArray) parts, so the pieces are concatenated in JS and the bytes
+                // NEVER enter the .NET/WASM heap — the genuine zero-copy this method always claimed.
+                // (Previously it called ReadBytes() to pull every Uint8Array into a .NET byte[] and then
+                // shipped the byte[][] back to JS to build the Blob — a full JS->.NET->JS round-trip.)
                 var blob = new SpawnDev.BlazorJS.JSObjects.Blob(
-                    byteArrays.ToArray(),
+                    parts,
                     new SpawnDev.BlazorJS.JSObjects.BlobOptions { Type = Type });
                 return blob;
             }

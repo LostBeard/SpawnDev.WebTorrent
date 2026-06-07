@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+
 namespace SpawnDev.WebTorrent.Storage;
 
 /// <summary>
@@ -35,7 +37,10 @@ public interface IChunkStore : IAsyncDisposable
 /// </summary>
 public class MemoryChunkStore : IChunkStore
 {
-    private readonly Dictionary<int, byte[]> _chunks = new();
+    // ConcurrentDictionary: multiple peer wires call PutAsync/GetAsync concurrently during a
+    // multi-peer download (the desktop runtime is multi-threaded). A plain Dictionary corrupts
+    // under concurrent writes ("non-concurrent collections must have exclusive access" crash).
+    private readonly ConcurrentDictionary<int, byte[]> _chunks = new();
     public int ChunkLength { get; }
 
     public MemoryChunkStore(int chunkLength)
@@ -65,7 +70,7 @@ public class MemoryChunkStore : IChunkStore
 
     public Task RemoveAsync(int index, CancellationToken ct = default)
     {
-        _chunks.Remove(index);
+        _chunks.TryRemove(index, out _);
         return Task.CompletedTask;
     }
 

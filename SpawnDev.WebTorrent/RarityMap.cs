@@ -97,17 +97,22 @@ public class RarityMap
 
     private void InitWire(Wire wire)
     {
-        wire.OnHave += (index) => { if (index < _pieces.Length) _pieces[index]++; };
+        // Snapshot _pieces locally on every access: Destroy() swaps it to Array.Empty and
+        // Recalculate() reallocates it, both potentially concurrent with these wire-event
+        // callbacks during teardown — reading the field twice (check then index) raced and
+        // threw IndexOutOfRange on dispose. Bound by the snapshot's own length.
+        wire.OnHave += (index) => { var p = _pieces; if (index >= 0 && index < p.Length) p[index]++; };
         wire.OnBitfield += (_) => Recalculate();
         wire.OnClose += () =>
         {
-            if (wire.PeerPieces != null)
+            var pieces = _pieces;
+            var peerPieces = wire.PeerPieces;
+            if (peerPieces == null) return;
+            int n = Math.Min(_numPieces, Math.Min(peerPieces.Length, pieces.Length));
+            for (int i = 0; i < n; i++)
             {
-                for (int i = 0; i < _numPieces && i < wire.PeerPieces.Length; i++)
-                {
-                    if (wire.PeerPieces[i])
-                        _pieces[i] = Math.Max(0, _pieces[i] - 1);
-                }
+                if (peerPieces[i])
+                    pieces[i] = Math.Max(0, pieces[i] - 1);
             }
         };
     }

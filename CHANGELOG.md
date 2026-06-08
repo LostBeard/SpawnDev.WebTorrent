@@ -1,22 +1,5 @@
 # Changelog
 
-## 3.2.9-local.1 (2026-06-08) — jsMerkle: piece-root verification fully in JS (zero-copy download)
-
-The zero-copy browser web-seed download path now computes each piece's BEP-52 Merkle root **entirely in JS** instead of awaiting every leaf digest from .NET.
-
-### What changed
-`Torrent.Download.cs` `VerifyPieceZeroCopyAsync` (v2/Merkle branch) used to: hash each 16 KiB leaf with a separate `crypto.subtle.digest` call awaited from .NET (`Task.WhenAll` over N digests), marshal every 32-byte leaf digest back across the boundary, then build the tree in .NET (`MerkleHasher.ComputePieceRootFromLeafHashes`). For a ~4 MB piece that is ~256 leaves → ~256 `Promise`→`Task` bridges **plus** ~256 per-leaf result copies **per piece**, times the piece count for a multi-GB model.
-
-Now `wwwroot/webtorrent-merkle.js` `computePieceRoot(pieceData, pieceLen, leavesPerPiece)` does the whole thing JS-side - all leaf digests under one `Promise.all`, the BEP-52 tree built in JS - and returns **only the 32-byte root**. The verify is one `.NET↔JS` call per piece; the piece bytes and every intermediate leaf hash stay in JS.
-
-The real per-piece cost was that per-leaf boundary marshaling, **not** the .NET tree math (256 SHA-256s over 64-byte pairs is trivial). `Task.WhenAll` (added in 3.2.8) overlapped the native crypto but still paid one promise bridge + one result copy per leaf; this removes both.
-
-### Correctness
-New browser-only equivalence test (`WebTorrentTestBase.MerkleJsTests`) asserts the JS root is **byte-identical** to the .NET `MerkleHasher.ComputePieceLayer` reference across every shape a real download hits: single full leaf, single partial leaf, multi-leaf full piece, partial final piece with zero-pad leaf slots, and a multi-piece file. Full PMT sweep GREEN (Failed: 0). Desktop and the v1/flat single-digest path are unchanged.
-
-### Scope
-Browser only (the zero-copy path is gated on a browser OPFS `AsyncFSChunkStore` and uses `crypto.subtle`). Desktop keeps the `System.Security.Cryptography` `byte[]` path. No dependency changes vs 3.2.8.
-
 ## 3.2.8 (2026-06-07) — zero-copy browser download + service-worker seek-while-downloading (stable)
 
 Stable cut. Rolls up the zero-copy download + OPFS store work (3.2.8-local.2 through local.7) plus the service-worker media-streaming unlock and the demo polish, all verified end to end against the live hub and live Sintel. Full PMT sweep GREEN browser+desktop. Depends on `SpawnDev.RTC 1.1.10` + `SpawnDev.BlazorJS 3.5.11`.

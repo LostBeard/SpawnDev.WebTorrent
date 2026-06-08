@@ -2,7 +2,7 @@ using SpawnDev.BlazorJS;
 // Narrow aliases (not the whole JSObjects namespace) so JS `Array` doesn't shadow System.Array.
 using Uint8Array = SpawnDev.BlazorJS.JSObjects.Uint8Array;
 using SubtleCrypto = SpawnDev.BlazorJS.JSObjects.SubtleCrypto;
-using Function = SpawnDev.BlazorJS.JSObjects.Function;
+using ArrayBuffer = SpawnDev.BlazorJS.JSObjects.ArrayBuffer;
 
 namespace SpawnDev.WebTorrent;
 
@@ -51,18 +51,6 @@ public partial class Torrent
     private Timer? _rechokeTimer;
     private byte[][] _hashes = Array.Empty<byte[]>();
     private static readonly Random _random = new();
-
-    /// <summary>Cached <c>computePieceRoot</c> export from <c>/webtorrent-merkle.js</c> (browser only). Imported
-    /// once and shared across all torrents; the JS module computes a piece's BEP-52 Merkle root entirely in JS
-    /// so leaf hashing + tree build never marshal per-leaf across the .NET&lt;-&gt;JS boundary (see
-    /// <see cref="VerifyPieceZeroCopyAsync"/>).</summary>
-    private static Task<Function>? _merkleComputeFnTask;
-    private static Task<Function> GetMerkleComputeFnAsync() => _merkleComputeFnTask ??= LoadMerkleComputeFnAsync();
-    private static async Task<Function> LoadMerkleComputeFnAsync()
-    {
-        using var module = await BlazorJSRuntime.JS.Import("/webtorrent-merkle.js");
-        return module.GetExportClass("computePieceRoot");
-    }
 
     // ========================
     // ADAPTIVE PIPELINE (matches JS getBlockPipelineLength exactly)
@@ -321,34 +309,62 @@ public partial class Torrent
 
     /// <summary>
     /// Verifies a fetched piece (JS <see cref="Uint8Array"/>) against its expected hash WITHOUT copying the
-    /// bytes into .NET. v2 (Merkle): the whole BEP-52 piece root - per-16 KiB-leaf SubtleCrypto hashing AND the
-    /// tree build - is computed in ONE call into <c>/webtorrent-merkle.js</c>; only the 32-byte root crosses
-    /// back (no per-leaf Promise->Task bridges or per-leaf result copies). v1/flat: a single SubtleCrypto digest
-    /// of the whole piece. Only the small (≤32-byte) hash crosses the boundary. Mirrors <see cref="VerifyPieceHash"/>.
+    /// bytes into .NET. v2 (Merkle): hash each 16 KiB leaf with SubtleCrypto over zero-copy Uint8Array views
+    /// (final partial leaf zero-padded to 16 KiB), then build the tree in .NET via
+    /// <see cref="MerkleHasher.ComputePieceRootFromLeafHashes"/>. v1/flat: a single SubtleCrypto digest of
+    /// the whole piece. Only the small (≤32-byte) hashes cross the boundary. Mirrors <see cref="VerifyPieceHash"/>.
     /// </summary>
     private async Task<bool> VerifyPieceZeroCopyAsync(int index, Uint8Array pieceData, int pieceLen)
     {
         if (index < 0 || index >= _hashes.Length) return false;
         var expected = _hashes[index];
+        using var subtle = BlazorJSRuntime.JS.Get<SubtleCrypto>("crypto.subtle");
 
         if (MetaVersion == 2)
         {
             if (expected.Length != MerkleHasher.HashSize) return false;
             if (PieceLength < MerkleHasher.LeafSize || PieceLength % MerkleHasher.LeafSize != 0) return false;
             int leavesPerPiece = PieceLength / MerkleHasher.LeafSize;
-            // Compute the BEP-52 piece root ENTIRELY in JS (leaf hashing + tree build) and bring back only the
-            // 32-byte root. The piece bytes and every intermediate leaf digest stay JS-side, so this is ONE
-            // .NET<->JS call per piece instead of ~leavesPerPiece SubtleCrypto Promise->Task bridges plus a
-            // per-leaf 32-byte result copy (the real per-piece cost; the .NET tree math itself was always
-            // cheap). See wwwroot/webtorrent-merkle.js -- byte-identical to
-            // MerkleHasher.ComputePieceRootFromLeafHashes (MerkleJsEquivalence guard test).
-            var computeRoot = await GetMerkleComputeFnAsync();
-            using var rootUa = await computeRoot.CallAsync<Uint8Array>(null, pieceData, pieceLen, leavesPerPiece);
-            return rootUa.ReadBytes().AsSpan().SequenceEqual(expected);
+            int actualLeaves = (pieceLen + MerkleHasher.LeafSize - 1) / MerkleHasher.LeafSize;
+            // Hash all 16 KiB leaves CONCURRENTLY. The leaf digests are independent, so firing them all and
+            // awaiting one Task.WhenAll lets the native SubtleCrypto overlap them. Awaiting each digest
+            // sequentially (the prior version) was N interop round-trips per piece and cost more than the
+            // byte[] copy it replaced -- the cause of the "identical, if not worse" measurement.
+            var inputs = new Uint8Array[actualLeaves];               // leaf inputs, kept alive until WhenAll
+            var digests = new Task<ArrayBuffer>[actualLeaves];
+            for (int li = 0; li < actualLeaves; li++)
+            {
+                int leafStart = li * MerkleHasher.LeafSize;
+                int leafLen = Math.Min(MerkleHasher.LeafSize, pieceLen - leafStart);
+                Uint8Array input;
+                if (leafLen == MerkleHasher.LeafSize)
+                {
+                    input = pieceData.SubArray(leafStart, leafStart + leafLen);
+                }
+                else
+                {
+                    input = new Uint8Array(MerkleHasher.LeafSize);   // zero-filled tail pad
+                    using var tail = pieceData.SubArray(leafStart, leafStart + leafLen);
+                    input.Set(tail, 0);
+                }
+                inputs[li] = input;
+                digests[li] = subtle.Digest("SHA-256", input);
+            }
+
+            var hashBuffers = await Task.WhenAll(digests);
+            var leafHashes = new byte[actualLeaves][];
+            for (int li = 0; li < actualLeaves; li++)
+            {
+                using (hashBuffers[li])
+                using (var hashUa = new Uint8Array(hashBuffers[li]))
+                    leafHashes[li] = hashUa.ReadBytes();
+                inputs[li].Dispose();
+            }
+            var root = MerkleHasher.ComputePieceRootFromLeafHashes(leafHashes, leavesPerPiece);
+            return root.AsSpan().SequenceEqual(expected);
         }
         else
         {
-            using var subtle = BlazorJSRuntime.JS.Get<SubtleCrypto>("crypto.subtle");
             // v1 / Phase 1 flat: single SHA-1 (20B) or SHA-256 (32B) over the whole piece.
             string alg = expected.Length == MerkleHasher.HashSize ? "SHA-256" : "SHA-1";
             using var hashAb = await subtle.Digest(alg, pieceData);

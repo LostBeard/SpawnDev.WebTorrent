@@ -1,8 +1,15 @@
+using SpawnDev.BlazorJS.Toolbox;
+using Uint8Array = SpawnDev.BlazorJS.JSObjects.Uint8Array;
+
 namespace SpawnDev.WebTorrent;
 
 /// <summary>
 /// A seekable .NET Stream backed by a torrent file. Pieces download on demand
 /// as the stream is read. Works on both desktop and browser.
+///
+/// Implements <see cref="IJSReadStream"/> so a browser consumer can read piece data while it stays in JS
+/// (a <see cref="Uint8Array"/>) - e.g. streaming model weights straight into a GPU buffer via
+/// <c>IBrowserMemoryBuffer.CopyFromJS</c> without ever copying the bytes into the .NET heap.
 ///
 /// Usage:
 ///   var stream = file.CreateReadStream();
@@ -11,7 +18,7 @@ namespace SpawnDev.WebTorrent;
 ///   stream.Position = 1000000; // seek
 ///   bytesRead = await stream.ReadAsync(buffer);
 /// </summary>
-public class TorrentReadStream : Stream
+public class TorrentReadStream : Stream, IJSReadStream
 {
     private readonly TorrentFileInfo _file;
     private long _position;
@@ -94,4 +101,29 @@ public class TorrentReadStream : Stream
     public override void Flush() { }
     public override void SetLength(long value) => throw new NotSupportedException();
     public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+    // ── IJSReadStream ──
+
+    /// <summary>
+    /// False in the browser - synchronous <see cref="Read(byte[], int, int)"/> throws in Blazor WASM
+    /// (single-threaded; pieces download via async fetch). True on desktop where the sync read works.
+    /// </summary>
+    public bool CanReadSync => !OperatingSystem.IsBrowser();
+
+    /// <summary>
+    /// Reads up to <paramref name="count"/> bytes from the current <see cref="Position"/> and returns them as a
+    /// JS <see cref="Uint8Array"/> - the bytes stay in JS (no .NET copy), letting a consumer hand them straight
+    /// to JS (e.g. a GPU buffer via <c>IBrowserMemoryBuffer.CopyFromJS</c>). Advances <see cref="Position"/>.
+    /// Returns an empty <see cref="Uint8Array"/> at end of stream. Browser-only (the underlying read produces a
+    /// JS object); on desktop use the <c>byte[]</c> <see cref="ReadAsync(byte[], int, int, CancellationToken)"/>.
+    /// </summary>
+    public async Task<Uint8Array> ReadUint8ArrayAsync(int count, CancellationToken cancellationToken = default)
+    {
+        var endPos = _streamEnd >= 0 ? Math.Min(_streamEnd + 1, _file.Length) : _file.Length;
+        if (_position >= endPos || count <= 0) return new Uint8Array(0);
+        var toRead = (int)Math.Min(count, endPos - _position);
+        var data = await _file.ReadUint8ArrayAsync(_position, toRead, cancellationToken);
+        _position += data.Length;
+        return data;
+    }
 }

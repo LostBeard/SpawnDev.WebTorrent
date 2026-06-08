@@ -1,5 +1,24 @@
 # Changelog
 
+## 3.2.9 (2026-06-08) — faster browser model download + IJSReadStream (stable)
+
+Browser model download/load made dramatically faster (measured: cold read-driven load of a 313MB model on WebGPU **202.9s → 35.4s**, now network-bound), plus the `IJSReadStream` zero-copy primitive. Full PMT sweep GREEN (978 pass; the lone fail was a load-contention desktop-WebRTC timeout that passes clean isolated). Depends on `SpawnDev.BlazorJS 3.5.12`.
+
+### Single-marshal Merkle leaf-hash readback — the core download win
+The zero-copy v2 (Merkle) verify read each 4 MB piece's 256 16 KiB-leaf hashes back into .NET one 32-byte `ReadBytes` at a time. Profiling the full download showed this **readback phase was 165.7s of the 202.9s load** — the cost is the high fixed per-call overhead of a data-carrying JS↔.NET marshal, paid 256× per piece (~20k tiny marshals), *not* the crypto (the SubtleCrypto wait was 2.2s). Now each leaf digest is `Set` into one `Uint8Array` JS-side (no marshal) and the whole ~8 KB is `ReadBytes`'d **once**; the .NET Merkle tree then runs on the collective `byte[]`. Readback phase **165.7s → 2.1s** (~80×). Leaf hashes are byte-identical; only the dispatch changed.
+
+### Bounded leaf-digest concurrency
+`Torrent.MaxConcurrentLeafDigests` (default 32) caps how many of a piece's ~256 SubtleCrypto leaf digests fire concurrently. Firing all of them (across any concurrently-verifying pieces) queued a large burst on the single WASM thread and starved the download request loop (fetch a batch fast, then stall ~15-20s verifying before the next fetch). Capping keeps each piece's verify responsive.
+
+### IJSReadStream support (client)
+`TorrentReadStream` implements `SpawnDev.BlazorJS.IJSReadStream` — a browser consumer reads piece data while it stays in JS (a `Uint8Array` via `ReadUint8ArrayAsync`, downloading on demand) instead of copying it into the .NET heap, e.g. streaming model weights straight into a GPU buffer via `IBrowserMemoryBuffer.CopyFromJS` (zero JS→.NET→GPU copy). `CanReadSync` = false in the browser (sync `Read` throws), true on desktop. Requires `SpawnDev.BlazorJS 3.5.12`.
+
+### Polite web-seed default
+`MaxWebConns` default **4 → 1**. A web seed is a fallback HTTP source, not a CDN; several parallel range requests per client is greedy and degrades the seed/tracker for other peers. One polite connection saturates near the link now that per-piece verify is cheap. A consumer that owns its seed can raise it.
+
+### Diagnostics
+Per-phase zero-copy verify/store profiling (fetch / digest-fire / digest-wait / readback / tree / store) is available behind `Torrent.EnableZcProfiling` (default false — `Stopwatch` can itself be an interop crossing in WASM, so production pays nothing).
+
 ## 3.2.8 (2026-06-07) — zero-copy browser download + service-worker seek-while-downloading (stable)
 
 Stable cut. Rolls up the zero-copy download + OPFS store work (3.2.8-local.2 through local.7) plus the service-worker media-streaming unlock and the demo polish, all verified end to end against the live hub and live Sintel. Full PMT sweep GREEN browser+desktop. Depends on `SpawnDev.RTC 1.1.10` + `SpawnDev.BlazorJS 3.5.11`.

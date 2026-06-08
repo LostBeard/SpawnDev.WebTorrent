@@ -23,8 +23,26 @@ public partial class Torrent
     public const double PipelineMaxDuration = 1.0;
     public const int RechokeInterval = 10_000;
     public const int RechokeOptimisticDuration = 2;  // rechoke cycles
-    /// <summary>Max simultaneous web seed connections. Configurable per torrent.</summary>
-    public int MaxWebConns { get; set; } = 4; // parallel HTTP web-seed range requests. Kept <= the browser's ~6/origin HTTP/1.1 cap to avoid queueing; browser throughput is bounded by single-thread per-piece processing, not connection count.
+    /// <summary>Max simultaneous web seed connections per torrent. Default 1: a web seed is a FALLBACK HTTP
+    /// source, not a CDN - hammering it with several parallel range requests per client is greedy and degrades
+    /// the seed/tracker for every other peer. One connection is the polite default and, with the per-piece
+    /// verify cost minimized, saturates close to the link anyway. A consumer that owns its seed can raise this.</summary>
+    public int MaxWebConns { get; set; } = 1;
+    /// <summary>Max 16 KiB-leaf SubtleCrypto digests fired CONCURRENTLY per piece during zero-copy v2 (Merkle)
+    /// verification. Bounds the work handed to the browser crypto subsystem / event loop at once: a 4 MB piece
+    /// has 256 leaves, and firing all of them (across any concurrently-verifying pieces) queues a large burst on
+    /// the single WASM thread. 32 keeps each piece's verify responsive. Static so it can be tuned/measured.</summary>
+    public static int MaxConcurrentLeafDigests = 32;
+
+    // ── Zero-copy verify/store PROFILING (diagnostic). OFF by default - when enabled, accumulates per-phase
+    //    wall time across pieces so a measurement can see where per-piece download time goes (fetch / firing the
+    //    leaf digests / waiting on SubtleCrypto / reading hashes into .NET / the .NET tree / OPFS store). Gated
+    //    because Stopwatch can itself be an interop crossing in WASM; production pays nothing. Reset + read via
+    //    ResetZcProfile / the Zc* fields. ──
+    public static bool EnableZcProfiling = false;
+    public static double ZcFetchMs, ZcDigestFireMs, ZcDigestWaitMs, ZcReadMs, ZcTreeMs, ZcStoreMs;
+    public static int ZcPieces;
+    public static void ResetZcProfile() { ZcFetchMs = ZcDigestFireMs = ZcDigestWaitMs = ZcReadMs = ZcTreeMs = ZcStoreMs = 0; ZcPieces = 0; }
 
     // ========================
     // DOWNLOAD STATE
@@ -270,7 +288,9 @@ public partial class Torrent
         Uint8Array? ua = null;
         try
         {
+            var _zcSw = EnableZcProfiling ? System.Diagnostics.Stopwatch.StartNew() : null;
             ua = await webConn.FetchPieceUint8ArrayAsync(rangeStart, rangeEnd);
+            if (_zcSw != null) ZcFetchMs += _zcSw.Elapsed.TotalMilliseconds;
             if (Done || piece != Pieces[index]) return;              // superseded/finished while fetching
 
             bool match = await VerifyPieceZeroCopyAsync(index, ua, pieceLen);
@@ -278,8 +298,10 @@ public partial class Torrent
 
             if (match)
             {
+                _zcSw?.Restart();
                 if (_store is Storage.AsyncFSChunkStore afs)
                     await afs.PutUint8ArrayAsync(index, ua);          // JS Uint8Array -> OPFS, no .NET copy
+                if (_zcSw != null) { ZcStoreMs += _zcSw.Elapsed.TotalMilliseconds; ZcPieces++; }
                 Pieces[index] = new Piece(0);                         // mark done (length 0 = flushed)
                 Bitfield[index] = true;
                 ZeroCopyPiecesVerified++;
@@ -326,41 +348,68 @@ public partial class Torrent
             if (PieceLength < MerkleHasher.LeafSize || PieceLength % MerkleHasher.LeafSize != 0) return false;
             int leavesPerPiece = PieceLength / MerkleHasher.LeafSize;
             int actualLeaves = (pieceLen + MerkleHasher.LeafSize - 1) / MerkleHasher.LeafSize;
-            // Hash all 16 KiB leaves CONCURRENTLY. The leaf digests are independent, so firing them all and
-            // awaiting one Task.WhenAll lets the native SubtleCrypto overlap them. Awaiting each digest
-            // sequentially (the prior version) was N interop round-trips per piece and cost more than the
-            // byte[] copy it replaced -- the cause of the "identical, if not worse" measurement.
-            var inputs = new Uint8Array[actualLeaves];               // leaf inputs, kept alive until WhenAll
-            var digests = new Task<ArrayBuffer>[actualLeaves];
-            for (int li = 0; li < actualLeaves; li++)
+            // Hash the 16 KiB leaves in BOUNDED-CONCURRENCY batches rather than firing all ~256 at once. A 4 MB
+            // piece is 256 leaves; with MaxWebConns pieces verifying at once that was ~1024 SubtleCrypto ops +
+            // Promise->Task bridges queued on the single WASM thread simultaneously, which starves the event
+            // loop (observed: download fetches 4 pieces fast, then the thread is busy ~15-20s verifying before
+            // the next fetch can start). Capping in-flight digests keeps each piece's verify quick. Native SHA
+            // still overlaps within a batch; ComputePieceRootFromLeafHashes (cheap .NET tree) runs after.
+            // BIG-ARRAY read experiment (TJ): instead of a 32-byte ReadBytes per leaf (256 small JS->.NET
+            // marshals/piece), Set each leaf hash into ONE Uint8Array JS-side, then ReadBytes the whole 8 KB
+            // ONCE. If the read phase collapses, the per-call marshal was the cost; if not, it's the crossing
+            // count (the Sets are still per-leaf). Tree then runs on the collective byte[] (sliced in .NET).
+            using var allHashes = new Uint8Array((long)actualLeaves * MerkleHasher.HashSize);
+            var _vSw = EnableZcProfiling ? new System.Diagnostics.Stopwatch() : null;
+            for (int batchStart = 0; batchStart < actualLeaves; batchStart += MaxConcurrentLeafDigests)
             {
-                int leafStart = li * MerkleHasher.LeafSize;
-                int leafLen = Math.Min(MerkleHasher.LeafSize, pieceLen - leafStart);
-                Uint8Array input;
-                if (leafLen == MerkleHasher.LeafSize)
+                int batchEnd = Math.Min(batchStart + MaxConcurrentLeafDigests, actualLeaves);
+                int batchN = batchEnd - batchStart;
+                var inputs = new Uint8Array[batchN];
+                var digests = new Task<ArrayBuffer>[batchN];
+                _vSw?.Restart();
+                for (int j = 0; j < batchN; j++)
                 {
-                    input = pieceData.SubArray(leafStart, leafStart + leafLen);
+                    int li = batchStart + j;
+                    int leafStart = li * MerkleHasher.LeafSize;
+                    int leafLen = Math.Min(MerkleHasher.LeafSize, pieceLen - leafStart);
+                    Uint8Array input;
+                    if (leafLen == MerkleHasher.LeafSize)
+                    {
+                        input = pieceData.SubArray(leafStart, leafStart + leafLen);
+                    }
+                    else
+                    {
+                        input = new Uint8Array(MerkleHasher.LeafSize);   // zero-filled tail pad
+                        using var tail = pieceData.SubArray(leafStart, leafStart + leafLen);
+                        input.Set(tail, 0);
+                    }
+                    inputs[j] = input;
+                    digests[j] = subtle.Digest("SHA-256", input);
                 }
-                else
+                if (_vSw != null) { ZcDigestFireMs += _vSw.Elapsed.TotalMilliseconds; _vSw.Restart(); }
+                var hashBuffers = await Task.WhenAll(digests);
+                if (_vSw != null) { ZcDigestWaitMs += _vSw.Elapsed.TotalMilliseconds; _vSw.Restart(); }
+                for (int j = 0; j < batchN; j++)
                 {
-                    input = new Uint8Array(MerkleHasher.LeafSize);   // zero-filled tail pad
-                    using var tail = pieceData.SubArray(leafStart, leafStart + leafLen);
-                    input.Set(tail, 0);
+                    using (hashBuffers[j])
+                    using (var hashUa = new Uint8Array(hashBuffers[j]))
+                        allHashes.Set(hashUa, (batchStart + j) * MerkleHasher.HashSize); // JS-side copy, no marshal
+                    inputs[j].Dispose();
                 }
-                inputs[li] = input;
-                digests[li] = subtle.Digest("SHA-256", input);
+                if (_vSw != null) ZcReadMs += _vSw.Elapsed.TotalMilliseconds;
             }
-
-            var hashBuffers = await Task.WhenAll(digests);
+            _vSw?.Restart();
+            var allBytes = allHashes.ReadBytes();                       // ONE JS->.NET marshal of all leaf hashes
+            if (_vSw != null) { ZcReadMs += _vSw.Elapsed.TotalMilliseconds; _vSw.Restart(); }
             var leafHashes = new byte[actualLeaves][];
             for (int li = 0; li < actualLeaves; li++)
             {
-                using (hashBuffers[li])
-                using (var hashUa = new Uint8Array(hashBuffers[li]))
-                    leafHashes[li] = hashUa.ReadBytes();
-                inputs[li].Dispose();
+                var h = new byte[MerkleHasher.HashSize];
+                System.Array.Copy(allBytes, li * MerkleHasher.HashSize, h, 0, MerkleHasher.HashSize);
+                leafHashes[li] = h;
             }
             var root = MerkleHasher.ComputePieceRootFromLeafHashes(leafHashes, leavesPerPiece);
+            if (_vSw != null) ZcTreeMs += _vSw.Elapsed.TotalMilliseconds;
             return root.AsSpan().SequenceEqual(expected);
         }
         else

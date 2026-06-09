@@ -5,8 +5,8 @@
 		<LangVersion>latest</LangVersion>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
-		<Version>3.2.8</Version>
-		<PackageReleaseNotes>v3.2.8: version-sync with SpawnDev.WebTorrent 3.2.8 (zero-copy browser download + service-worker seek-while-downloading + OPFS store perf). No source changes in this package; transitive bump only.</PackageReleaseNotes>
+		<Version>3.2.10</Version>
+		<PackageReleaseNotes>v3.2.10: WebSeedServer now clamps over-EOF Range request ends per RFC 7233 (via SpawnDev.WebTorrent.HttpByteRange) instead of honoring the last-byte-pos verbatim. A range past EOF used to over-promise Content-Length and stream a short body, which a browser fetch rejected as net::ERR_CONTENT_LENGTH_MISMATCH (the web-seed piece never verified). Also returns 416 for a start at/after EOF and fixes a >2GB int length overflow. Requires SpawnDev.WebTorrent 3.2.10.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>

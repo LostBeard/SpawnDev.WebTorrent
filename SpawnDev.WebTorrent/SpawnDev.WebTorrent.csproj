@@ -9,8 +9,8 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-		<Version>3.2.9</Version>
-		<PackageReleaseNotes>v3.2.9: faster browser model download (single-marshal Merkle verify, bounded leaf-digests, polite MaxWebConns=1) + IJSReadStream for zero-copy piece streaming to a GPU buffer. Requires SpawnDev.BlazorJS 3.5.12. See CHANGELOG.md.</PackageReleaseNotes>
+		<Version>3.2.10</Version>
+		<PackageReleaseNotes>v3.2.10: adds HttpByteRange.ParseSingle - the shared RFC 7233 byte-range parser used by the web-seed servers (clamps over-EOF range ends, 416 for unsatisfiable, suffix ranges, 64-bit lengths). Fixes a 206 over-promise that surfaced as net::ERR_CONTENT_LENGTH_MISMATCH on web-seed piece fetches. Client behavior unchanged. See CHANGELOG.md.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>

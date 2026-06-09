@@ -413,36 +413,42 @@ public class HuggingFaceProxy
         context.Response.ContentType = "application/octet-stream";
         context.Response.Headers["Accept-Ranges"] = "bytes";
 
-        // Support range requests for web seed compatibility
+        // Support range requests for web seed compatibility. The end is clamped to the last real byte
+        // (RFC 7233 §4.1) via HttpByteRange — without that clamp an explicit over-EOF last-byte-pos made us
+        // promise a Content-Length we could not stream, the body closed short, and a browser fetch rejected
+        // the whole response with net::ERR_CONTENT_LENGTH_MISMATCH (the web-seed piece then never verified).
         if (context.Request.Headers.TryGetValue("Range", out var rangeHeader))
         {
-            var range = rangeHeader.ToString();
-            if (range.StartsWith("bytes="))
+            switch (HttpByteRange.ParseSingle(rangeHeader.ToString(), fileInfo.Length, out long start, out long end))
             {
-                var parts = range.Substring(6).Split('-');
-                long start = long.Parse(parts[0]);
-                long end = parts.Length > 1 && !string.IsNullOrEmpty(parts[1])
-                    ? long.Parse(parts[1])
-                    : fileInfo.Length - 1;
+                case HttpByteRange.Result.Unsatisfiable:
+                    context.Response.StatusCode = 416; // Range Not Satisfiable
+                    context.Response.Headers["Content-Range"] = $"bytes */{fileInfo.Length}";
+                    return;
 
-                int length = (int)(end - start + 1);
-                context.Response.StatusCode = 206;
-                context.Response.Headers["Content-Range"] = $"bytes {start}-{end}/{fileInfo.Length}";
-                context.Response.ContentLength = length;
+                case HttpByteRange.Result.Satisfiable:
+                    long length = end - start + 1;
+                    context.Response.StatusCode = 206;
+                    context.Response.Headers["Content-Range"] = $"bytes {start}-{end}/{fileInfo.Length}";
+                    context.Response.ContentLength = length;
 
-                using var fs = File.OpenRead(localPath);
-                fs.Seek(start, SeekOrigin.Begin);
-                var buffer = new byte[Math.Min(length, 65536)];
-                int remaining = length;
-                while (remaining > 0)
-                {
-                    int toRead = Math.Min(remaining, buffer.Length);
-                    int read = await fs.ReadAsync(buffer.AsMemory(0, toRead));
-                    if (read == 0) break;
-                    await context.Response.Body.WriteAsync(buffer.AsMemory(0, read));
-                    remaining -= read;
-                }
-                return;
+                    using (var fs = File.OpenRead(localPath))
+                    {
+                        fs.Seek(start, SeekOrigin.Begin);
+                        var buffer = new byte[(int)Math.Min(length, 65536)];
+                        long remaining = length;
+                        while (remaining > 0)
+                        {
+                            int toRead = (int)Math.Min(remaining, buffer.Length);
+                            int read = await fs.ReadAsync(buffer.AsMemory(0, toRead));
+                            if (read == 0) break;
+                            await context.Response.Body.WriteAsync(buffer.AsMemory(0, read));
+                            remaining -= read;
+                        }
+                    }
+                    return;
+
+                // Result.None: not a usable single byte-range — fall through to the full-content response.
             }
         }
 

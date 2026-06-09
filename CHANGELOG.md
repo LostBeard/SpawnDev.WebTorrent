@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — web-seed range over-EOF clamp (RFC 7233)
+
+**Fixes a server-side HTTP range bug that truncated 206 responses when a client requested past EOF.** Both web-seed servers — `WebSeedServer` (BEP 17/19) and the HuggingFace proxy (`HuggingFaceProxy`) — set a 206 `Content-Length` from the requested byte count but used an explicit last-byte-pos verbatim. When that `end` ran past the file, the server promised more bytes than it could stream, the body closed short, and a browser `fetch()` rejected the whole response with `net::ERR_CONTENT_LENGTH_MISMATCH` — so the web-seed piece never verified. Reproduced live against the hub: a 1,059,962-byte file asked for `bytes=1059952-1060961` promised `Content-Length: 1010` but streamed 10.
+
+Both servers now route range parsing through a new shared, unit-tested `HttpByteRange.ParseSingle` helper (core lib) that, per RFC 7233 §4.1: clamps an over-long last-byte-pos to `length-1`, returns 416 (Range Not Satisfiable) for a first-byte-pos at/after EOF, supports suffix ranges (`bytes=-N`), and uses `long` lengths (the prior `(int)` cast overflowed for files > 2 GB). New `WebTorrentTestBase.HttpByteRangeTests` covers clamp / in-bounds / suffix / unsatisfiable / malformed cases.
+
+Note: our own `WebConn` client already clamps last-piece requests to the real file length (verified: all hub model torrents declare lengths matching disk), so this fix hardens against *any* over-EOF client (JS WebTorrent, external tools, future code) rather than a regression in our own download path. **The live hub must be redeployed for the fix to take effect on `hub.spawndev.com`.**
+
 ## 3.2.9 (2026-06-08) — faster browser model download + IJSReadStream (stable)
 
 Browser model download/load made dramatically faster (measured: cold read-driven load of a 313MB model on WebGPU **202.9s → 35.4s**, now network-bound), plus the `IJSReadStream` zero-copy primitive. Full PMT sweep GREEN (978 pass; the lone fail was a load-contention desktop-WebRTC timeout that passes clean isolated). Depends on `SpawnDev.BlazorJS 3.5.12`.

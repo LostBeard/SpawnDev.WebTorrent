@@ -76,6 +76,17 @@ var hfOptions = new HuggingFaceProxyOptions
 };
 builder.Services.AddSingleton(new HuggingFaceProxy(hfOptions));
 
+// Ollama model registry proxy (twin of the HF proxy): resolve {model}:{tag} layer → blob → cache → torrent.
+var ollamaOptions = new OllamaProxyOptions
+{
+    RegistryBaseUrl = config.GetValue("Ollama:RegistryBaseUrl", "https://registry.ollama.ai")!,
+    CacheDirectories = config.GetSection("Ollama:CacheDirectories").Get<string[]>()
+        ?? new[] { config.GetValue("Ollama:CacheDirectory", "ollama-cache")! },
+    TrackerUrls = config.GetSection("Ollama:TrackerUrls").Get<string[]>()
+        ?? new[] { "wss://hub.spawndev.com:44365/announce" },
+};
+builder.Services.AddSingleton(new OllamaProxy(ollamaOptions));
+
 // CORS for browser clients.
 // Web-seed piece fetches carry a Range header, which makes them "non-simple" cross-origin
 // requests — the browser issues a CORS preflight (OPTIONS) before EACH one. A large model is
@@ -202,6 +213,9 @@ app.MapGet("/stats", () => new
 
 var hfProxy = app.Services.GetRequiredService<HuggingFaceProxy>();
 app.MapHuggingFaceProxy(hfProxy);
+
+var ollamaProxy = app.Services.GetRequiredService<OllamaProxy>();
+app.MapOllamaProxy(ollamaProxy);
 
 // Compute request board — authenticated endpoints
 var computeBoard = app.Services.GetRequiredService<ComputeRequestBoard>();

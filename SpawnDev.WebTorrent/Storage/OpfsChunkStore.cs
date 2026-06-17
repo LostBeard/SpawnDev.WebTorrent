@@ -82,7 +82,11 @@ public class AsyncFSChunkStore : IChunkStore
         var file = await GetPieceFileAsync(index);                 // cached File (Blob) handle — NOT the data
         if (file == null) return null;
         long actualLen = Math.Min(length, file.Size - offset);
-        if (actualLen <= 0) return new Uint8Array(0);
+        // Return null (NOT an empty Uint8Array) for an out-of-range / short read, matching the byte[]
+        // GetAsync(index, offset, length) sibling. An empty-but-non-null slice made the zero-copy read loop
+        // (Torrent.ReadFileUint8ArrayAsync) advance 0 bytes and spin FOREVER (got==0 → resultPos stuck);
+        // returning null routes it to its fail-loud "data not in store" throw instead of hanging.
+        if (actualLen <= 0) return null;
         using var slice = file.Slice(offset, offset + actualLen);  // lazy Blob slice — no copy
         using var ab = await slice.ArrayBuffer();                  // reads ONLY this range from OPFS
         return new Uint8Array(ab);
@@ -157,6 +161,20 @@ public class AsyncFSChunkStore : IChunkStore
         var path = $"{_basePath}/piece_{index}";
         if (!await _fs.FileExists(path)) return null;
         return await _fs.ReadBytes(path);
+    }
+
+    /// <summary>
+    /// True if a piece is already stored — a metadata-only existence check (one OPFS <c>FileExists</c>),
+    /// NO whole-piece read and NO JS↔.NET byte copy. Restore-on-reload previously called
+    /// <see cref="GetAsync(int, CancellationToken)"/> per piece JUST to test existence, dragging the ENTIRE
+    /// model through the .NET heap on every page load (e.g. ~2.5 GB for SD-Turbo) and re-reading every
+    /// cross-session piece file (the source of the OPFS re-access errors that forced a wipe + full
+    /// re-download). Use this to populate the restored bitfield without touching the bytes.
+    /// </summary>
+    public async Task<bool> PieceExistsAsync(int index, CancellationToken ct = default)
+    {
+        await EnsureInitializedAsync();
+        return await _fs.FileExists($"{_basePath}/piece_{index}");
     }
 
     public async Task<byte[]?> GetAsync(int index, int offset, int length, CancellationToken ct = default)

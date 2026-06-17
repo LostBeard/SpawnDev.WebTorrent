@@ -56,7 +56,11 @@ public partial class Torrent
     private RarityMap? _rarityMap;
     private Selections _selections = new();
     private System.Collections.Concurrent.ConcurrentDictionary<int, bool> _critical = new();
-    private Dictionary<int, Wire?[]> _reservations = new();
+    // ConcurrentDictionary: written from RequestBlock + the wire-request callbacks, which on the
+    // multi-threaded desktop runtime run concurrently (same reason MemoryChunkStore is concurrent). Entries
+    // are removed on piece completion (below) — previously they were NEVER removed, so this grew O(pieces)
+    // for the torrent's whole life (thousands on a multi-GB model) and Hotswap kept scanning stale entries.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, Wire?[]> _reservations = new();
     /// <summary>Piece indices with an in-flight ZERO-COPY web-seed fetch (browser path). Caps that path's
     /// concurrency at <see cref="MaxWebConns"/> (the zero-copy path doesn't use wire.Requests).</summary>
     private readonly HashSet<int> _zeroCopyInFlight = new();
@@ -211,6 +215,7 @@ public partial class Torrent
 
                     Pieces[index] = new Piece(0); // mark as done (length 0 = flushed)
                     Bitfield[index] = true;
+                    _reservations.TryRemove(index, out _);  // piece done — drop its reservation array (leak fix)
                     if (index == PieceCount - 1) LastCompletionNote = $"p{index} OK len={buf.Length}";
 
                     // Announce to all peers
@@ -304,6 +309,7 @@ public partial class Torrent
                 if (_zcSw != null) { ZcStoreMs += _zcSw.Elapsed.TotalMilliseconds; ZcPieces++; }
                 Pieces[index] = new Piece(0);                         // mark done (length 0 = flushed)
                 Bitfield[index] = true;
+                _reservations.TryRemove(index, out _);               // piece done — drop its reservation array (leak fix; see block path)
                 ZeroCopyPiecesVerified++;
                 foreach (var w in Wires.ToArray()) _ = w.Have(index);
                 OnPieceVerified?.Invoke(index);

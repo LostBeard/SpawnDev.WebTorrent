@@ -101,8 +101,11 @@ public class WebConn : IAsyncDisposable
             }
             else
             {
-                // Multi-file torrent: split range across files
-                var result = new MemoryStream();
+                // Multi-file torrent: split range across files. Copy each file-overlap chunk straight into ONE
+                // pre-sized buffer (no MemoryStream + .ToArray() second copy — that held ~3x the piece on the
+                // .NET heap at once for every file-boundary piece of a multi-file model torrent).
+                data = new byte[length];
+                int pos = 0;
                 foreach (var file in _torrent.Files)
                 {
                     long fileStart = file.Offset;
@@ -122,9 +125,10 @@ public class WebConn : IAsyncDisposable
                     long end = Math.Min(fileEnd - fileStart, rangeEnd - fileStart);
 
                     var chunk = await FetchRangeAsync(fileUrl, start, end);
-                    result.Write(chunk);
+                    System.Array.Copy(chunk, 0, data, pos, chunk.Length);
+                    pos += chunk.Length;
                 }
-                data = result.ToArray();
+                if (pos != data.Length) System.Array.Resize(ref data, pos);   // safety: trim if file coverage was partial
             }
 
             respond(null, data);

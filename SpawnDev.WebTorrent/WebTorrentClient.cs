@@ -623,13 +623,17 @@ public class WebTorrentClient : IAsyncDisposable
                     var torrent = new Torrent();
                     torrent.InitFromMetadata(metadata, this, restoreOpts);
 
-                    // Check which pieces are already stored
-                    if (torrent._store is Storage.AsyncFSChunkStore)
+                    // Check which pieces are already stored — by a metadata-only existence check, NOT a
+                    // whole-piece read. The old `GetAsync(i)` here read every piece's full bytes into the
+                    // .NET heap purely to test presence (no hash-verify), dragging the ENTIRE model through
+                    // .NET on every reload (~2.5 GB for SD-Turbo) and re-reading every cross-session OPFS
+                    // file — the re-access cost that forced consumers to wipe + re-download. PieceExistsAsync
+                    // checks presence without touching the bytes (same semantics: presence ⇒ have-piece).
+                    if (torrent._store is Storage.AsyncFSChunkStore afsStore)
                     {
                         for (int i = 0; i < torrent.PieceCount; i++)
                         {
-                            var piece = await torrent._store.GetAsync(i);
-                            if (piece != null)
+                            if (await afsStore.PieceExistsAsync(i))
                             {
                                 torrent.Bitfield[i] = true;
                                 torrent.Pieces[i] = new Piece(0);

@@ -739,8 +739,20 @@ public partial class Torrent : IAsyncDisposable
             foreach (var f in Files) f.Torrent = this;
         if (AnnounceUrls.Length == 0 && metadata.AnnounceUrls != null)
             AnnounceUrls = metadata.AnnounceUrls;
-        if (UrlList.Length == 0 && metadata.UrlList != null)
-            UrlList = metadata.UrlList;
+        // Union the magnet's ws= seeds with the .torrent metadata's url-list (dedup) rather than letting a
+        // non-empty magnet ws= SUPPRESS the metadata seeds. A hub /magnet advertises ONLY its own /hf seed,
+        // but the .torrent (fetched via xs=) also lists the ORIGIN CDN as a second seed (HuggingFace
+        // /resolve/main, the ollama registry blob). Dropping it left the client with NO peer-free fallback
+        // when the hub /hf was unavailable (model uncached/evicted) — it would stall on dead RTC peers.
+        // Keeping both (deduped, so the hub seed present in both isn't added twice) gives an always-available
+        // origin fallback.
+        if (metadata.UrlList != null && metadata.UrlList.Length > 0)
+        {
+            var mergedSeeds = new List<string>(UrlList);
+            foreach (var ws in metadata.UrlList)
+                if (!mergedSeeds.Contains(ws)) mergedSeeds.Add(ws);
+            UrlList = mergedSeeds.ToArray();
+        }
         if (HttpSeeds.Length == 0 && metadata.HttpSeeds != null)
             HttpSeeds = metadata.HttpSeeds;
 
@@ -1180,11 +1192,11 @@ public partial class Torrent : IAsyncDisposable
             var pieceData = await _store.GetAsync(i, ct: ct);
             if (pieceData == null) { Bitfield[i] = false; continue; }
 
-            // Verify hash
-            var hash = _hashes.Length > 0 && _hashes[0].Length == 32
-                ? System.Security.Cryptography.SHA256.HashData(pieceData)
-                : System.Security.Cryptography.SHA1.HashData(pieceData);
-            Bitfield[i] = i < _hashes.Length && hash.SequenceEqual(_hashes[i]);
+            // Verify via the MetaVersion-aware check (the same one the download path uses). The old inline
+            // flat-SHA was WRONG for BEP 52 v2: a v2 piece hash is the Merkle root over 16 KiB leaves, not a
+            // flat SHA of the whole piece — so every v2 piece (PieceLength > 16 KiB, the default for models)
+            // failed and a rescan zeroed the entire bitfield → a full re-download.
+            Bitfield[i] = VerifyPieceHash(i, pieceData);
         }
 
         // BEP 53: When partial selection is active, "done" means all selected pieces verified

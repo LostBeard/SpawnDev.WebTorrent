@@ -27,9 +27,9 @@ public class OllamaProxy
 {
     private readonly OllamaProxyOptions _options;
     private readonly HttpClient _httpClient;
-    private readonly SemaphoreSlim _downloadLock = new(3);
-
     private readonly ConcurrentDictionary<string, byte[]> _torrentCache = new();
+    // One range-cache per layer blob: sparse single data file + .ranges manifest (on-demand chunk fetch + cache).
+    private readonly ConcurrentDictionary<string, PartialFileCache> _fileCaches = new();
     private readonly ConcurrentDictionary<string, Task> _preparingTasks = new();
     private readonly ConcurrentDictionary<string, ModelCacheStats> _modelStats = new();
     // Resolved manifests: "{model}:{tag}" → (layerKind → (digest, size)). Avoids re-fetching the manifest.
@@ -128,71 +128,33 @@ public class OllamaProxy
         RecordRequest(cacheKey);
 
         var localPath = GetCachePath(model, tag, layer);
-        if (File.Exists(localPath))
+        if (PartialFileCache.IsComplete(localPath))   // fully cached (manifest gone) — never a partial
         {
             _modelStats.AddOrUpdate(cacheKey, _ => new ModelCacheStats { FileSizeBytes = new FileInfo(localPath).Length },
                 (_, s) => { s.FileSizeBytes = new FileInfo(localPath).Length; return s; });
             return localPath;
         }
 
-        await _downloadLock.WaitAsync(ct);
-        try
+        // A layer the model doesn't expose (e.g. a text-only model asked for "projector") has no blob to cache.
+        var manifest = await ResolveManifestAsync(model, tag, ct);
+        if (!manifest.TryGetValue(layer, out _))
         {
-            if (File.Exists(localPath)) return localPath;
+            Console.WriteLine($"[Ollama Proxy] {model}:{tag} has no '{layer}' layer.");
+            return null;
+        }
 
-            var manifest = await ResolveManifestAsync(model, tag, ct);
-            if (!manifest.TryGetValue(layer, out var entry))
-            {
-                Console.WriteLine($"[Ollama Proxy] {model}:{tag} has no '{layer}' layer.");
-                return null; // e.g. a text-only model asked for "projector"
-            }
-
-            var url = $"{RegistryBase(model)}/blobs/{entry.Digest}";
-            Console.WriteLine($"[Ollama Proxy] Downloading {model}:{tag}/{layer} ({entry.Digest}) from {url}");
-
-            using var response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-            if (!response.IsSuccessStatusCode)
-            {
-                Console.WriteLine($"[Ollama Proxy] Failed: {response.StatusCode} for {url}");
-                return null;
-            }
-
-            var dir = Path.GetDirectoryName(localPath);
-            if (dir != null) Directory.CreateDirectory(dir);
-
-            // Same never-cache-partial discipline as the HF proxy: stream to .part on a fetch-OWNED timeout,
-            // verify the byte count against the manifest layer size (content-addressed), then atomically publish.
-            long expectedLen = entry.Size;
-            var tmpPath = localPath + ".part";
-            long fileSize = 0;
-            using (var fetchCts = new CancellationTokenSource(TimeSpan.FromMinutes(60)))
-            {
-                try
-                {
-                    using (var stream = await response.Content.ReadAsStreamAsync(fetchCts.Token))
-                    using (var fileStream = File.Create(tmpPath))
-                        await stream.CopyToAsync(fileStream, fetchCts.Token);
-
-                    fileSize = new FileInfo(tmpPath).Length;
-                    if (expectedLen > 0 && fileSize != expectedLen)
-                        throw new IOException($"Incomplete download for {url}: got {fileSize:N0} of {expectedLen:N0} bytes.");
-
-                    File.Move(tmpPath, localPath, overwrite: true);
-                }
-                catch
-                {
-                    try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch { }
-                    throw;
-                }
-            }
-            Console.WriteLine($"[Ollama Proxy] Cached: {localPath} ({fileSize:N0} bytes)");
-
+        // Drive the range cache to completion (fetch every missing chunk into the single sparse data file). The
+        // manifest gates completeness, so a partial is never returned as complete (the old .part discipline,
+        // generalised to random access with no rename).
+        var result = await GetFileCache(model, tag, layer).EnsureCompleteAsync(ct);
+        if (result != null)
+        {
+            long fileSize = new FileInfo(result).Length;
+            Console.WriteLine($"[Ollama Proxy] Cached (complete): {result} ({fileSize:N0} bytes)");
             _modelStats.AddOrUpdate(cacheKey, _ => new ModelCacheStats { FileSizeBytes = fileSize },
                 (_, s) => { s.FileSizeBytes = fileSize; return s; });
-
-            return localPath;
         }
-        finally { _downloadLock.Release(); }
+        return result;
     }
 
     /// <summary>Generate a .torrent for a layer blob (web seeds: this server + the registry blob CDN).</summary>
@@ -201,6 +163,15 @@ public class OllamaProxy
     {
         var cacheKey = CacheKey(model, tag, layer);
         if (_torrentCache.TryGetValue(cacheKey, out var cached)) return cached;
+
+        // Load a previously-generated .torrent from DISK (survives a hub restart — no multi-GB re-hash). Only
+        // trust it when the layer blob itself is fully cached (manifest convention), never for a partial.
+        var dataPath = GetCachePath(model, tag, layer);
+        var torrentPath = dataPath + ".torrent";
+        if (File.Exists(torrentPath) && PartialFileCache.IsComplete(dataPath))
+        {
+            try { var fromDisk = await File.ReadAllBytesAsync(torrentPath, ct); if (fromDisk.Length > 0) { _torrentCache[cacheKey] = fromDisk; return fromDisk; } } catch { }
+        }
 
         var localPath = await GetOrFetchAsync(model, tag, layer, ct);
         if (localPath == null) return null;
@@ -228,6 +199,7 @@ public class OllamaProxy
             }, ct);
 
         _torrentCache[cacheKey] = torrentBytes;
+        try { await File.WriteAllBytesAsync(torrentPath, torrentBytes, ct); } catch { } // persist so it survives a hub restart
         Console.WriteLine($"[Ollama Proxy] .torrent ready: {cacheKey} ({metadata.PieceHashes.Length} pieces, v1={metadata.InfoHash})");
         return torrentBytes;
     }
@@ -270,49 +242,33 @@ public class OllamaProxy
         return new OllamaRequestResult { Status = "preparing", Model = model, Tag = tag, Layer = layer };
     }
 
-    /// <summary>Web-seed serve a cached layer blob with HTTP range support (mirrors the HF web seed).</summary>
+    /// <summary>Web-seed serve a layer blob. Backed by <see cref="PartialFileCache"/>: a fully-cached blob
+    /// serves from disk; an uncached/partial blob fetches only the MISSING covering chunks from the ollama
+    /// registry CDN, caches them at their byte offset (manifest-tracked, crash-safe), then serves — so the hub
+    /// is always an available model source and a re-request for a range it already has hits no origin.</summary>
     public async Task HandleRequest(HttpContext context, string model, string tag, string layer)
     {
-        var localPath = await GetOrFetchAsync(model, tag, layer, context.RequestAborted);
-        if (localPath == null) { context.Response.StatusCode = 404; return; }
-
-        var fileInfo = new FileInfo(localPath);
-        context.Response.ContentType = "application/octet-stream";
-        context.Response.Headers["Accept-Ranges"] = "bytes";
-
-        if (context.Request.Headers.TryGetValue("Range", out var rangeHeader))
-        {
-            switch (HttpByteRange.ParseSingle(rangeHeader.ToString(), fileInfo.Length, out long start, out long end))
-            {
-                case HttpByteRange.Result.Unsatisfiable:
-                    context.Response.StatusCode = 416;
-                    context.Response.Headers["Content-Range"] = $"bytes */{fileInfo.Length}";
-                    return;
-                case HttpByteRange.Result.Satisfiable:
-                    long length = end - start + 1;
-                    context.Response.StatusCode = 206;
-                    context.Response.Headers["Content-Range"] = $"bytes {start}-{end}/{fileInfo.Length}";
-                    context.Response.ContentLength = length;
-                    using (var fs = File.OpenRead(localPath))
-                    {
-                        fs.Seek(start, SeekOrigin.Begin);
-                        var buffer = new byte[(int)Math.Min(length, 65536)];
-                        long remaining = length;
-                        while (remaining > 0)
-                        {
-                            int toRead = (int)Math.Min(remaining, buffer.Length);
-                            int read = await fs.ReadAsync(buffer.AsMemory(0, toRead));
-                            if (read == 0) break;
-                            await context.Response.Body.WriteAsync(buffer.AsMemory(0, read));
-                            remaining -= read;
-                        }
-                    }
-                    return;
-            }
-        }
-        context.Response.ContentLength = fileInfo.Length;
-        await context.Response.SendFileAsync(localPath);
+        RecordRequest(CacheKey(model, tag, layer));
+        await GetFileCache(model, tag, layer).ServeRangeAsync(context);
     }
+
+    /// <summary>One <see cref="PartialFileCache"/> per layer blob (created on first touch). Origin = the
+    /// content-addressed registry blob (resolve the manifest digest → {registry}/blobs/{digest}; 307-redirects
+    /// to the range-capable CDN, HttpClient follows). Server-side fetch, so no registry CORS is needed — the
+    /// browser only ever talks to the hub's /ollama route. Completion drops the manifest; the .torrent is built
+    /// lazily on the next /ollama-torrent / /ollama-magnet request via <see cref="PartialFileCache.IsComplete"/>.</summary>
+    private PartialFileCache GetFileCache(string model, string tag, string layer)
+        => _fileCaches.GetOrAdd(CacheKey(model, tag, layer), _ => new PartialFileCache(
+            GetCachePath(model, tag, layer), _httpClient,
+            async (start, end, ct) =>
+            {
+                var manifest = await ResolveManifestAsync(model, tag, ct);
+                if (!manifest.TryGetValue(layer, out var entry))
+                    throw new InvalidOperationException($"Ollama {model}:{tag} has no '{layer}' layer.");
+                var req = new HttpRequestMessage(HttpMethod.Get, $"{RegistryBase(model)}/blobs/{entry.Digest}");
+                req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(start, end);
+                return req;
+            }));
 
     private string GetCachePath(string model, string tag, string layer)
     {

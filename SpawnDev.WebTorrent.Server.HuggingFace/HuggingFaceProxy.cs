@@ -23,10 +23,13 @@ public class HuggingFaceProxy
 {
     private readonly HuggingFaceProxyOptions _options;
     private readonly HttpClient _httpClient;
-    private readonly SemaphoreSlim _downloadLock = new(3); // max concurrent HF downloads
 
     // Cache generated .torrent files to avoid regenerating on every request
     private readonly ConcurrentDictionary<string, byte[]> _torrentCache = new();
+
+    // One range-cache per model file: sparse single data file + .ranges manifest. Serves cached ranges from
+    // disk and fetches only the missing chunks from HF on demand (the hub is always an available model source).
+    private readonly ConcurrentDictionary<string, PartialFileCache> _fileCaches = new();
     // Track in-progress background preparations to avoid duplicate work
     private readonly ConcurrentDictionary<string, Task> _preparingTasks = new();
     // Per-model stats: request count, last access, file size
@@ -75,83 +78,30 @@ public class HuggingFaceProxy
         RecordRequest(cacheKey);
 
         var localPath = GetCachePath(repoId, filePath);
-        if (File.Exists(localPath))
+        if (PartialFileCache.IsComplete(localPath))   // fully cached (manifest gone) — never a partial
         {
-            // Update file size in stats
             _modelStats.AddOrUpdate(cacheKey,
                 _ => new ModelCacheStats { FileSizeBytes = new FileInfo(localPath).Length },
                 (_, s) => { s.FileSizeBytes = new FileInfo(localPath).Length; return s; });
             return localPath;
         }
 
-        await _downloadLock.WaitAsync(ct);
-        try
+        // Drive the range cache to completion — fetch every missing chunk into the single sparse data file.
+        // The full-file consumers (.torrent / magnet) need the WHOLE file; the manifest gates completeness, so
+        // a partial is never returned as complete (the bug the old .part+atomic-rename guarded against). The
+        // cache also serves partial ranges to /hf clients concurrently, and de-dupes chunk fetches, so this is
+        // safe to call from several requests at once.
+        var result = await GetFileCache(repoId, filePath).EnsureCompleteAsync(ct);
+        if (result != null)
         {
-            // Double-check after acquiring lock
-            if (File.Exists(localPath)) return localPath;
-
-            var url = $"https://huggingface.co/{repoId}/resolve/main/{filePath}";
-            Console.WriteLine($"[HF Proxy] Downloading: {url}");
-
-            using var response = await _httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
-            if (!response.IsSuccessStatusCode)
-            {
-                Console.WriteLine($"[HF Proxy] Failed: {response.StatusCode} for {url}");
-                return null;
-            }
-
-            var dir = Path.GetDirectoryName(localPath);
-            if (dir != null) Directory.CreateDirectory(dir);
-
-            // Download to a .part temp and publish atomically ONLY on a verified-complete copy. Two bugs
-            // this fixes (both hit loading SD-Turbo's 1.73GB U-Net): (1) the body copy was bound to the
-            // CALLER's CancellationToken, so when the /magnet poll's client/gateway timed out on the long
-            // multi-GB fetch and disconnected, CopyToAsync was cancelled mid-stream — leaving a PARTIAL
-            // file (the U-Net truncated at ~746MB of 1.73GB). (2) the cache check above is File.Exists
-            // only, so that partial file was then served as "complete" forever → a truncated torrent that
-            // every consumer failed to parse mid-graph. Now the body download runs on a fetch-OWNED timeout
-            // (a disconnected client never truncates the cache), streams to .part, is size-verified against
-            // Content-Length, and only a complete file is atomically renamed into place.
-            long? expectedLen = response.Content.Headers.ContentLength;
-            var tmpPath = localPath + ".part";
-            long fileSize = 0;
-            using (var fetchCts = new CancellationTokenSource(TimeSpan.FromMinutes(30))) // fetch-owned; NOT the client's ct
-            {
-                try
-                {
-                    using (var stream = await response.Content.ReadAsStreamAsync(fetchCts.Token))
-                    using (var fileStream = File.Create(tmpPath))
-                        await stream.CopyToAsync(fileStream, fetchCts.Token);
-
-                    fileSize = new FileInfo(tmpPath).Length;
-                    if (expectedLen.HasValue && fileSize != expectedLen.Value)
-                        throw new IOException(
-                            $"Incomplete download for {url}: got {fileSize:N0} of {expectedLen.Value:N0} bytes.");
-
-                    File.Move(tmpPath, localPath, overwrite: true); // atomic publish of a verified-complete file
-                }
-                catch
-                {
-                    try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch { } // never leave a partial behind
-                    throw;
-                }
-            }
-            Console.WriteLine($"[HF Proxy] Cached: {localPath} ({fileSize:N0} bytes)");
-
-            // Update stats with file size
+            long fileSize = new FileInfo(result).Length;
+            Console.WriteLine($"[HF Proxy] Cached (complete): {result} ({fileSize:N0} bytes)");
             _modelStats.AddOrUpdate(cacheKey,
                 _ => new ModelCacheStats { FileSizeBytes = fileSize },
                 (_, s) => { s.FileSizeBytes = fileSize; return s; });
-
-            // Evict least-recently-requested models if cache is over limit
             await EvictIfNeededAsync();
-
-            return localPath;
         }
-        finally
-        {
-            _downloadLock.Release();
-        }
+        return result;
     }
 
     /// <summary>
@@ -238,6 +188,9 @@ public class HuggingFaceProxy
             {
                 var size = new FileInfo(cachedPath).Length;
                 File.Delete(cachedPath);
+                try { if (File.Exists(cachedPath + PartialFileCache.ManifestSuffix)) File.Delete(cachedPath + PartialFileCache.ManifestSuffix); } catch { }
+                try { if (File.Exists(cachedPath + ".torrent")) File.Delete(cachedPath + ".torrent"); } catch { }
+                _fileCaches.TryRemove(candidate.Key, out _);   // drop the in-memory range-cache so it re-probes next time
                 currentSize -= size;
                 evictedBytes += size;
                 evictedCount++;
@@ -260,9 +213,23 @@ public class HuggingFaceProxy
     {
         var cacheKey = $"{repoId}/{filePath}";
 
-        // Return cached .torrent if available
+        // Return cached .torrent if available (in-memory)
         if (_torrentCache.TryGetValue(cacheKey, out var cached))
             return cached;
+
+        // Load a previously-generated .torrent from DISK (survives a hub restart — no multi-GB re-hash). Only
+        // trust it when the model file itself is fully cached (manifest convention), never for a partial.
+        var dataPath = GetCachePath(repoId, filePath);
+        var torrentPath = dataPath + ".torrent";
+        if (File.Exists(torrentPath) && PartialFileCache.IsComplete(dataPath))
+        {
+            try
+            {
+                var fromDisk = await File.ReadAllBytesAsync(torrentPath, ct);
+                if (fromDisk.Length > 0) { _torrentCache[cacheKey] = fromDisk; return fromDisk; }
+            }
+            catch { }
+        }
 
         var localPath = await GetOrFetchAsync(repoId, filePath, ct);
         if (localPath == null) return null;
@@ -301,6 +268,7 @@ public class HuggingFaceProxy
             }, ct);
 
         _torrentCache[cacheKey] = torrentBytes;
+        try { await File.WriteAllBytesAsync(torrentPath, torrentBytes, ct); } catch { } // persist so it survives a hub restart
         Console.WriteLine($"[HF Proxy] .torrent ready: {cacheKey} ({metadata.PieceHashes.Length} pieces, v1={metadata.InfoHash}, v2={metadata.V2InfoHash})");
 
         return torrentBytes;
@@ -399,62 +367,29 @@ public class HuggingFaceProxy
         };
     }
 
-    /// <summary>Handle a proxied request for a HuggingFace model file.</summary>
+    /// <summary>Handle a web-seed request for a HuggingFace model file. Backed by <see cref="PartialFileCache"/>:
+    /// a fully-cached file serves from disk; an uncached/partial file fetches only the MISSING covering chunks
+    /// from HuggingFace, caches them at their byte offset (manifest-tracked, crash-safe), then serves — so the
+    /// hub is always an available model source and a re-request for a range it already has hits no origin.</summary>
     public async Task HandleRequest(HttpContext context, string repoId, string filePath)
     {
-        var localPath = await GetOrFetchAsync(repoId, filePath, context.RequestAborted);
-        if (localPath == null)
-        {
-            context.Response.StatusCode = 404;
-            return;
-        }
-
-        var fileInfo = new FileInfo(localPath);
-        context.Response.ContentType = "application/octet-stream";
-        context.Response.Headers["Accept-Ranges"] = "bytes";
-
-        // Support range requests for web seed compatibility. The end is clamped to the last real byte
-        // (RFC 7233 §4.1) via HttpByteRange — without that clamp an explicit over-EOF last-byte-pos made us
-        // promise a Content-Length we could not stream, the body closed short, and a browser fetch rejected
-        // the whole response with net::ERR_CONTENT_LENGTH_MISMATCH (the web-seed piece then never verified).
-        if (context.Request.Headers.TryGetValue("Range", out var rangeHeader))
-        {
-            switch (HttpByteRange.ParseSingle(rangeHeader.ToString(), fileInfo.Length, out long start, out long end))
-            {
-                case HttpByteRange.Result.Unsatisfiable:
-                    context.Response.StatusCode = 416; // Range Not Satisfiable
-                    context.Response.Headers["Content-Range"] = $"bytes */{fileInfo.Length}";
-                    return;
-
-                case HttpByteRange.Result.Satisfiable:
-                    long length = end - start + 1;
-                    context.Response.StatusCode = 206;
-                    context.Response.Headers["Content-Range"] = $"bytes {start}-{end}/{fileInfo.Length}";
-                    context.Response.ContentLength = length;
-
-                    using (var fs = File.OpenRead(localPath))
-                    {
-                        fs.Seek(start, SeekOrigin.Begin);
-                        var buffer = new byte[(int)Math.Min(length, 65536)];
-                        long remaining = length;
-                        while (remaining > 0)
-                        {
-                            int toRead = (int)Math.Min(remaining, buffer.Length);
-                            int read = await fs.ReadAsync(buffer.AsMemory(0, toRead));
-                            if (read == 0) break;
-                            await context.Response.Body.WriteAsync(buffer.AsMemory(0, read));
-                            remaining -= read;
-                        }
-                    }
-                    return;
-
-                // Result.None: not a usable single byte-range — fall through to the full-content response.
-            }
-        }
-
-        context.Response.ContentLength = fileInfo.Length;
-        await context.Response.SendFileAsync(localPath);
+        RecordRequest($"{repoId}/{filePath}");
+        await GetFileCache(repoId, filePath).ServeRangeAsync(context);
     }
+
+    /// <summary>One <see cref="PartialFileCache"/> per model file (created on first touch). Origin = HF's
+    /// resolve URL (30x-redirects to its range-capable CDN; HttpClient follows). Completion just drops the
+    /// manifest; the .torrent is built lazily on the next /torrent or /magnet request, which finds the
+    /// now-complete file via <see cref="PartialFileCache.IsComplete"/>.</summary>
+    private PartialFileCache GetFileCache(string repoId, string filePath)
+        => _fileCaches.GetOrAdd($"{repoId}/{filePath}", _ => new PartialFileCache(
+            GetCachePath(repoId, filePath), _httpClient,
+            (start, end, ct) =>
+            {
+                var req = new HttpRequestMessage(HttpMethod.Get, $"https://huggingface.co/{repoId}/resolve/main/{filePath}");
+                req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(start, end);
+                return Task.FromResult(req);
+            }));
 
     /// <summary>
     /// Build BEP 17 web seed base URL. Client appends /{torrentName} to this.

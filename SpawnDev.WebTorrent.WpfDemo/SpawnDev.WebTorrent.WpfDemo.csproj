@@ -10,8 +10,8 @@
 	</PropertyGroup>
 
 	<ItemGroup>
-		<PackageReference Include="SpawnDev.BackgroundServices" Version="1.0.2" />
-		<PackageReference Include="SpawnDev.UnitTesting.Desktop" Version="2.5.3" />
+		<PackageReference Include="SpawnDev.BackgroundServices" />
+		<PackageReference Include="SpawnDev.UnitTesting.Desktop" />
 	</ItemGroup>
 
 	<ItemGroup>

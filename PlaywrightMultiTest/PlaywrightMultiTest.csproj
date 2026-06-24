@@ -16,20 +16,20 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="coverlet.collector" Version="6.0.4" />
-		<PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.0" />
-		<PackageReference Include="Microsoft.Playwright.NUnit" Version="1.52.0" />
-		<PackageReference Include="Mono.Cecil" Version="0.11.6" />
-		<PackageReference Include="NUnit" Version="4.3.2" />
-		<PackageReference Include="NUnit.Analyzers" Version="4.7.0" />
-		<PackageReference Include="NUnit3TestAdapter" Version="5.0.0" />
-		<PackageReference Include="Microsoft.CodeAnalysis" Version="4.13.0" PrivateAssets="All" />
+		<PackageReference Include="coverlet.collector" />
+		<PackageReference Include="Microsoft.NET.Test.Sdk" />
+		<PackageReference Include="Microsoft.Playwright.NUnit" />
+		<PackageReference Include="Mono.Cecil" />
+		<PackageReference Include="NUnit" />
+		<PackageReference Include="NUnit.Analyzers" />
+		<PackageReference Include="NUnit3TestAdapter" />
+		<PackageReference Include="Microsoft.CodeAnalysis" PrivateAssets="All" />
 		<FrameworkReference Include="Microsoft.AspNetCore.App" />
-		<PackageReference Include="SpawnDev.UnitTesting" Version="2.5.6" />
-		<PackageReference Include="SpawnDev.BlazorJS.Cryptography" Version="3.2.0" />
+		<PackageReference Include="SpawnDev.UnitTesting" />
+		<PackageReference Include="SpawnDev.BlazorJS.Cryptography" />
 		<!-- SpawnDev.RTC.Server needed by tests that spin up an in-process local
 		     tracker (desktop-only; test-infra, never shipped). -->
-		<PackageReference Include="SpawnDev.RTC.Server" Version="1.0.5" />
+		<PackageReference Include="SpawnDev.RTC.Server" />
 		<ProjectReference Include="..\SpawnDev.WebTorrent\SpawnDev.WebTorrent.csproj" />
 	</ItemGroup>
 

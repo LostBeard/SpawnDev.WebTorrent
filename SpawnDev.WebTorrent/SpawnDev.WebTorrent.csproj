@@ -42,16 +42,16 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="SpawnDev.BlazorJS" Version="3.5.12" />
-		<PackageReference Include="SpawnDev.AsyncFileSystem" Version="1.4.0" />
-		<PackageReference Include="SpawnDev.BlazorJS.Cryptography" Version="3.2.0" />
+		<PackageReference Include="SpawnDev.BlazorJS" />
+		<PackageReference Include="SpawnDev.AsyncFileSystem" />
+		<PackageReference Include="SpawnDev.BlazorJS.Cryptography" />
 		<!-- SpawnDev.RTC replaces direct SipSorcery dependency - provides cross-platform WebRTC
 		     with proven browser-interop SipSorcery fork (SRTP profile fix) bundled inside.
 		     PackageReference (not ProjectReference) so CI / GitHub Pages builds work from a
 		     standalone SpawnDev.WebTorrent checkout - they don't have the sibling RTC repo.
 		     1.1.1 is the minimum version: 1.1.0 declared a dep on public SIPSorcery 10.0.4-pre
 		     which doesn't exist on nuget.org; 1.1.1 bundles the fork DLLs inline (ILGPU pattern). -->
-		<PackageReference Include="SpawnDev.RTC" Version="1.1.10" />
+		<PackageReference Include="SpawnDev.RTC" />
 	</ItemGroup>
 
 	<ItemGroup>

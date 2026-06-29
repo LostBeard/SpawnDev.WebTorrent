@@ -75,6 +75,43 @@ reads work during download (same as today). Caches to OPFS with resume; survives
 - **Phase 3 — wire ILGPU.ML delivery to `AddAsync(url)`** and DELETE the non-persistent `HttpRangeStream` fallback
   in `HubModelStream.OpenAsync`. The model is then always a persistent torrent (caches, restores, seeds).
 
+## Implementation map (exact file:line, from a code read — build against THIS, not assumptions)
+All paths under `SpawnDev.WebTorrent/SpawnDev.WebTorrent/SpawnDev.WebTorrent/`. v1 single-file path (Phase 1).
+
+- **Entry branch** — `WebTorrentClient.Add(string,…)` `WebTorrentClient.cs:335-371`. It unconditionally does
+  `new Torrent()` + `_ = torrent.InitFromMagnetAsync(...)`. Add at the TOP: `if (s.StartsWith("http://")||"https://")
+  return AddLazyHash(s, opts);`. `AddLazyHash`: dedup against `Torrents` whose `UrlList` contains the URL, else
+  `new Torrent()` + `Torrents.Add` + `_ = torrent.InitLazyHashAsync(url, this, opts)` (fire-and-forget, mirrors the
+  magnet path) + `OnAdd`. `AddAsync` already awaits `OnReady` (`:304-327`) — no change.
+- **Shell build** — new `Torrent.InitLazyHashAsync(url, client, opts)`: probe size via a `Range: 0-0` GET
+  (`ContentRange?.Length ?? ContentLength`); `pieceLength = TorrentCreator.CalculatePieceLength(len)` (now internal,
+  `TorrentCreator.cs:1344`); `pieceCount = ceil(len/pieceLength)`; `pieceHashes = new byte[pieceCount][]` each a
+  zeroed **32-byte** (flat SHA-256, the TorrentCreator default) placeholder so `HasMetadata` (=`_hashes.Length>0`,
+  `Torrent.Download.cs:74`/`Torrent.cs:187`) is TRUE and `AddWebSeed`'s `!HasMetadata` guard (`Torrent.cs:1224`)
+  passes. Build a `TorrentMetadata` (fields at `Torrent.cs:1998-2082`): `InfoHash=""`, `Name`=eager name
+  derivation (MATCH `CreateFromUrlAsync.cs:92-97` exactly or the finalized infohash won't match), `PieceLength`,
+  `PieceCount`, `TotalLength`, `PieceHashes`, `Files=[single]`, `UrlList=[web-seed dir]`, `MetaVersion=0`. Set
+  `LazyHash=true`; `InitFromMetadata(meta, client, opts)` (`Torrent.cs:498`→`SetMetadata:683`).
+- **Compute-not-verify** — `Torrent.Download.cs:1197 VerifyPieceHash`: fork at the top — `if (LazyHash){ _hashes[index]
+  = engine.Sha256(buf) /*or Sha1 per algo*/; return true; }` (engine = `_client?.PieceHashEngine ?? _defaultEngine`).
+  Disable the zero-copy verify for lazy (gated at `Torrent.Download.cs:126` on `_store is AsyncFSChunkStore{SupportsUint8Array}`)
+  — it can't compute-and-store without a refactor; force the buffered path while `LazyHash`.
+- **Finalize** — `Torrent.Download.cs:837-866 CheckDone` (or its `OnDone`): when `LazyHash && Done`, call
+  `TorrentCreator.BuildTorrent(Name, Length, PieceLength, _hashes.ToList(), new TorrentCreatorOptions{WebSeeds=UrlList},
+  Files)` (now internal, `TorrentCreator.cs:342`; v1 info dict at `:354-391`, infohash `SHA1.HashData(infoBytes)`).
+  Set `InfoHash`/`OriginalTorrentBytes` from the result; `LazyHash=false`; persist + (Phase 2) seed. This reuse
+  guarantees the infohash is byte-identical to an eager `CreateFromUrlAsync` of the same bytes (the test oracle).
+- **WebConn caveat** — `WebConn.cs:53 OnHandshake` does `Convert.FromHexString(infoHash)` → throws on empty. Web-seed
+  wires set state directly in `AddWebSeed` (`Torrent.cs:1227-1298`); VERIFY the handshake path doesn't fire for a web
+  seed, or guard the FromHexString when empty.
+- **Persistence (Phase 1b)** — store + `_state` key on `WireInfoHashHex` (empty for lazy → `MemoryChunkStore`
+  `Torrent.cs:769`; `PersistMetadataAsync` early-returns on empty key `:837`; `RestoreFromStorageAsync` skips empty
+  `metaKey` `WebTorrentClient.cs:601`). Add a `PersistKey` (provisional `sha1("url:"+url)` while `LazyHash`) used at
+  `SetMetadata:765`, `PersistMetadataAsync:836`, `PersistStateAsync:853`, `RestoreFromStorageAsync:601`; persist a
+  resumable lazy `.torrent`/state carrying the URL+size+pieceLen+`lazy` flag; restore rebuilds the shell + resumes.
+- **Hash primitives** — flat `engine.Sha1/Sha256(buf)`; v2 `MerkleHasher.ComputePieceLayer(buf, PieceLength)[0]`
+  (`MerkleHasher.cs:176`). `IncrementalMerkleHasher` (`:266`) if a streaming finalize is wanted later.
+
 ## Why this fixes the reported bug
 Re-download-every-refresh + empty cache page happen because the demo's web-seed fallback makes no torrent. With
 `AddAsync(url)` the model is a torrent from byte 0 → `RestoreFromStorageAsync` finds it on reload (pieces in OPFS)

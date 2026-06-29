@@ -339,7 +339,10 @@ public static class TorrentCreator
         return BuildTorrent(torrentName, totalLength, pieceLength, pieceHashes, options, torrentFiles);
     }
 
-    private static (byte[] torrentBytes, TorrentMetadata metadata) BuildTorrent(
+    /// <summary>Assemble the .torrent bytes + metadata (v1 info dict, SHA-1 infohash) from already-computed
+    /// piece hashes. Reused by Lazy-Hash finalization so a lazily-built torrent gets a byte-identical infohash to
+    /// an eager <see cref="CreateFromStreamAsync"/> of the same bytes (same assembler, same inputs).</summary>
+    internal static (byte[] torrentBytes, TorrentMetadata metadata) BuildTorrent(
         string name, long totalLength, int pieceLength, List<byte[]> pieceHashes,
         TorrentCreatorOptions options, TorrentFileInfo[] files)
     {
@@ -1338,7 +1341,7 @@ public static class TorrentCreator
         return root;
     }
 
-    private static int CalculatePieceLength(long fileSize)
+    internal static int CalculatePieceLength(long fileSize)
     {
         if (fileSize < 16 * 1024 * 1024) return 16 * 1024;
         if (fileSize < 128 * 1024 * 1024) return 64 * 1024;

@@ -15,6 +15,26 @@ public partial class Torrent
     /// <summary>The source web-seed URL a Lazy-Hash torrent was created from.</summary>
     public string? LazyUrl { get; private set; }
 
+    private string? _lazyPersistKey;
+
+    /// <summary>
+    /// Storage key for the OPFS store dir (<c>webtorrent/{key}</c>) AND the <c>_state/{key}.torrent</c> file. Lazy
+    /// torrents key on a stable provisional URL-derived id — their infohash is unknown at add and must NOT relocate
+    /// the store on finalize; every other torrent keys on <see cref="WireInfoHashHex"/>. Persist and restore both
+    /// use this, so the store dir and the state filename always agree (no migration needed).
+    /// </summary>
+    internal string PersistKey => !string.IsNullOrEmpty(_lazyPersistKey) ? _lazyPersistKey : WireInfoHashHex;
+
+    /// <summary>Restore calls this to re-key a restored torrent's store to the dir it was persisted under (the
+    /// <c>_state</c> filename IS the persist key — see <c>WebTorrentClient.RestoreFromStorageAsync</c>).</summary>
+    internal void SetPersistKey(string key) => _lazyPersistKey = key;
+
+    /// <summary>Deterministic provisional storage key for a Lazy-Hash torrent, derived from its source URL so the
+    /// same URL always restores to the same OPFS dir across reloads.</summary>
+    internal static string LazyProvisionalKey(string url) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA1.HashData(
+            System.Text.Encoding.UTF8.GetBytes("lazy:" + url))).ToLowerInvariant();
+
     /// <summary>Fired once a Lazy-Hash torrent's real infohash has been computed (i.e. the download completed and
     /// the torrent is now a normal, identifiable, seedable torrent).</summary>
     public event Action? OnLazyFinalized;
@@ -31,6 +51,9 @@ public partial class Torrent
         try
         {
             LazyUrl = url;
+            // Stable provisional storage key (the infohash is unknown until finalize). The store + _state file key
+            // on this, so a reload restores the cached pieces to the same dir — no re-download.
+            _lazyPersistKey = LazyProvisionalKey(url);
 
             // Probe total size with a 0-0 range GET (servers that ignore the range still report Content-Length;
             // a 206 reports the total in Content-Range). No infohash needed — a web seed serves by URL + byte range.
@@ -94,13 +117,20 @@ public partial class Torrent
     internal void FinalizeLazyHash()
     {
         if (!LazyHash) return;
+        var name = Name;
+        var files = Files;
+        if (string.IsNullOrEmpty(name) || files == null || files.Length == 0) return; // shell always sets these
         try
         {
             var opts = new TorrentCreatorOptions { WebSeeds = UrlList ?? Array.Empty<string>() };
-            var (torrentBytes, meta) = TorrentCreator.BuildTorrent(Name, Length, PieceLength, _hashes.ToList(), opts, Files);
+            var (torrentBytes, meta) = TorrentCreator.BuildTorrent(name, Length, PieceLength, _hashes.ToList(), opts, files);
             InfoHash = meta.InfoHash;
             TorrentFileBytes = torrentBytes;
             LazyHash = false;
+            // Persist the now-complete .torrent under the SAME (provisional) PersistKey the pieces are stored under,
+            // so a page reload restores the cached file with ZERO re-download. _lazyPersistKey is retained (PersistKey
+            // stays the provisional id even though LazyHash is now false) so the store dir does not move.
+            if (_client?.AsyncFileSystem != null) _ = PersistMetadataAsync();
             OnLazyFinalized?.Invoke();
         }
         catch (Exception ex)

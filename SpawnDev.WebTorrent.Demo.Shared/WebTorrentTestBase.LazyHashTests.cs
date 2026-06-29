@@ -120,4 +120,66 @@ public abstract partial class WebTorrentTestBase
         }
         finally { await client.DisposeAsync(); }
     }
+
+    /// <summary>
+    /// THE re-download fix. Download a lazy torrent fully on an OPFS-backed client (persists pieces + the finalized
+    /// .torrent to OPFS, keyed by the provisional URL id), then simulate a page reload with a FRESH client over the
+    /// SAME OPFS: RestoreFromStorageAsync must bring the torrent back COMPLETE (every piece present from OPFS,
+    /// Done=true) with ZERO re-download — and it must appear in client.Torrents (so the /cache page lists it). This
+    /// is exactly the lifecycle no test covered, and the literal bug TJ hit (re-download every refresh, absent from
+    /// the Model Cache page). Browser-only (OPFS).
+    /// </summary>
+    [TestMethod(Timeout = 300000, RetryCount = 2, Category = "HeavyModel")]
+    public async Task LazyHash_DownloadThenReopen_RestoresComplete_NoRedownload()
+    {
+        var fs = Client.AsyncFileSystem;
+        if (fs == null) throw new UnsupportedTestException("no OPFS (desktop runtime) — lazy persistence is browser-only");
+        var url = LazyHubUrl;
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(4));
+
+        string infohash; long fileLen; int pieceCount;
+
+        // Session 1: a fresh OPFS-backed client downloads the whole file and finalizes → pieces + .torrent in OPFS.
+        var client1 = new WebTorrentClient(new WebTorrentClientOptions { AsyncFileSystem = fs });
+        try
+        {
+            var t1 = await client1.AddAsync(url, ct: cts.Token);
+            var f1 = t1.Files[0];
+            var bytes1 = await f1.ReadAsync(0, (int)f1.Length, cts.Token);
+            if (bytes1 == null || bytes1.Length != f1.Length) throw new Exception($"session1 downloaded {bytes1?.Length ?? 0}/{f1.Length}");
+            for (int i = 0; i < 300 && t1.LazyHash; i++) await Task.Delay(50, cts.Token);
+            if (t1.LazyHash) throw new Exception("session1 did not finalize");
+            infohash = t1.InfoHash; fileLen = f1.Length; pieceCount = t1.PieceCount;
+        }
+        catch (UnsupportedTestException) { throw; }
+        catch (Exception ex) when (ex.Message.Contains("No connection") || ex.Message.Contains("network")
+            || ex.Message.Contains("preparing") || ex is TimeoutException)
+        { throw new UnsupportedTestException($"hub/network unavailable: {ex.Message}"); }
+        finally { await client1.DisposeAsync(); }
+
+        // Session 2 (= page reload): a NEW client over the SAME OPFS restores from storage. No web seed needed.
+        var client2 = new WebTorrentClient(new WebTorrentClientOptions { AsyncFileSystem = fs });
+        try
+        {
+            await client2.RestoreFromStorageAsync();
+
+            var t2 = client2.Torrents.FirstOrDefault(t =>
+                string.Equals(t.InfoHash, infohash, StringComparison.OrdinalIgnoreCase));
+            if (t2 == null)
+                throw new Exception($"reload did NOT restore the torrent (infohash {infohash}) — the /cache page would be empty and it would re-download");
+
+            // The fix: every piece restored from OPFS, Done immediately — NO re-download.
+            if (!t2.Done || t2.CompletedPieces != pieceCount)
+                throw new Exception($"restored only {t2.CompletedPieces}/{pieceCount} pieces (Done={t2.Done}) — the missing pieces would be RE-DOWNLOADED");
+            if (t2.Files[0].Length != fileLen)
+                throw new Exception($"restored length {t2.Files[0].Length} != {fileLen}");
+
+            // Bytes are served straight from the persisted pieces.
+            var head = await t2.Files[0].ReadAsync(0, 4096, cts.Token);
+            if (head == null || head.Length != 4096) throw new Exception("restored read returned no data");
+
+            Console.WriteLine($"[LazyHash] reopened: {t2.CompletedPieces}/{pieceCount} pieces restored from OPFS, ZERO re-download, listed on /cache (infohash {infohash})");
+        }
+        finally { await client2.DisposeAsync(); }
+    }
 }

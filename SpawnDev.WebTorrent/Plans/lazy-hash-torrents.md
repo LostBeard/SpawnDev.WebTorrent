@@ -112,6 +112,27 @@ All paths under `SpawnDev.WebTorrent/SpawnDev.WebTorrent/SpawnDev.WebTorrent/`. 
 - **Hash primitives** — flat `engine.Sha1/Sha256(buf)`; v2 `MerkleHasher.ComputePieceLayer(buf, PieceLength)[0]`
   (`MerkleHasher.cs:176`). `IncrementalMerkleHasher` (`:266`) if a streaming finalize is wanted later.
 
+## Web-seed range coalescing (perf — separate from lazy, helps EVERY web-seed download)
+**Problem (observed):** the download requests pieces/blocks individually (the BitTorrent peer model), so `WebConn`
+issues one HTTP Range GET per ~16 KiB block — hundreds of tiny requests for a 10 MB file, each paying full
+request latency. This is what makes web-seed downloads feel slow (and likely the "slow delivery" feel TJ hit).
+
+**Fix (TJ's approach, 2026-06-29) — fixed ~1 MiB fetch chunks, decoupled from piece size, NO cancellation:**
+- Coalesce **contiguous needed pieces** into one HTTP Range GET of a FIXED, reasonably-sized chunk (~1 MiB — tune
+  empirically for the RTT/bandwidth sweet spot). Split the response back into pieces and hash + store each as today.
+  10 MB → ~10 GETs instead of ~623. Wall-clock ≈ filesize / bandwidth, not N · RTT.
+- **The fetch chunk is DECOUPLED from the piece size.** Pieces stay 16 KiB (so hash granularity + the infohash are
+  UNCHANGED — no test breakage, no interop break); one GET just spans ~64 contiguous pieces. So the "larger piece
+  size" idea is NOT needed — the chunk size, not the piece size, is the request-count lever.
+- **No cancellation needed — the chunk size IS the responsiveness knob.** A ~1 MiB chunk completes in tens of ms,
+  so when piece priority changes mid-download the in-flight chunk simply FINISHES and the scheduler picks the new
+  high-priority chunk NEXT, at the chunk boundary. Worst-case added latency for a seek = one chunk-download time
+  (~20-100 ms), with none of the waste/complexity of aborting an in-flight GET. Pick the chunk size so that
+  one-chunk latency is acceptably small AND request count is low (≈1 MiB is the starting point; measure).
+- Chunk selection reads the SAME piece-priority/selection state the BT scheduler already maintains
+  (`_selections` / rarity / critical-window) — one source of truth for "what contiguous span is wanted next".
+- Multi-seed (Phase 2): hand different chunks to different seeds; a stalled seed's chunk re-dispatches to another.
+
 ## Why this fixes the reported bug
 Re-download-every-refresh + empty cache page happen because the demo's web-seed fallback makes no torrent. With
 `AddAsync(url)` the model is a torrent from byte 0 → `RestoreFromStorageAsync` finds it on reload (pieces in OPFS)

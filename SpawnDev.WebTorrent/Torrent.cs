@@ -759,10 +759,11 @@ public partial class Torrent : IAsyncDisposable
         // Initialize chunk store if not already set (e.g., by SeedAsync)
         if (_store == null)
         {
-            // Use WireInfoHashHex so pure-v2 torrents get a stable non-empty OPFS dir
-            // (first 20 bytes of v2 hash). v1 / hybrid torrents keep their v1 hash dir
-            // unchanged, so existing persisted data restores without relocation.
-            var storeHash = WireInfoHashHex;
+            // Use PersistKey so pure-v2 torrents get a stable non-empty OPFS dir (first 20 bytes of v2 hash) and
+            // Lazy-Hash torrents get a stable provisional URL-derived dir (their infohash is unknown at add and
+            // must not relocate on finalize). v1 / hybrid torrents keep their v1 hash dir (PersistKey ==
+            // WireInfoHashHex) so existing persisted data restores without relocation.
+            var storeHash = PersistKey;
             if (_client?.AsyncFileSystem != null && !string.IsNullOrEmpty(storeHash))
                 _store = new Storage.AsyncFSChunkStore(_client.AsyncFileSystem, $"webtorrent/{storeHash}", PieceLength);
             else
@@ -822,8 +823,9 @@ public partial class Torrent : IAsyncDisposable
         StartSpeedTimer();
         StartNoPeersTimer();
 
-        // Persist .torrent metadata for restore after page reload
-        if (_client?.AsyncFileSystem != null && TorrentFileBytes != null && !string.IsNullOrEmpty(WireInfoHashHex))
+        // Persist .torrent metadata for restore after page reload. (Lazy-Hash torrents have no TorrentFileBytes
+        // yet — they persist on finalize once the real infohash is known; see FinalizeLazyHash.)
+        if (_client?.AsyncFileSystem != null && TorrentFileBytes != null && !string.IsNullOrEmpty(PersistKey))
             _ = PersistMetadataAsync();
 
         Ready = true;
@@ -833,7 +835,7 @@ public partial class Torrent : IAsyncDisposable
 
     private async Task PersistMetadataAsync()
     {
-        var key = WireInfoHashHex;
+        var key = PersistKey;
         if (_client?.AsyncFileSystem == null || TorrentFileBytes == null || string.IsNullOrEmpty(key)) return;
         try
         {
@@ -850,7 +852,7 @@ public partial class Torrent : IAsyncDisposable
     /// <summary>Persist torrent state (paused, selected files) to companion JSON file.</summary>
     internal async Task PersistStateAsync()
     {
-        var key = WireInfoHashHex;
+        var key = PersistKey;
         if (_client?.AsyncFileSystem == null || string.IsNullOrEmpty(key)) return;
         try
         {

@@ -619,6 +619,11 @@ public class WebTorrentClient : IAsyncDisposable
                 if (!file.EndsWith(".torrent")) continue;
                 try
                 {
+                    // The _state filename IS the PersistKey (== WireInfoHashHex for normal torrents, == the
+                    // provisional URL-key for Lazy-Hash torrents). The store dir + state.json are keyed by it, so
+                    // restore must re-key by the FILENAME — not the .torrent's infohash, which for a finalized lazy
+                    // torrent differs from the provisional dir its pieces actually live in.
+                    var fileKey = file.Substring(0, file.Length - ".torrent".Length);
                     var torrentBytes = await AsyncFileSystem.ReadBytes($"{stateDir}/{file}");
                     if (torrentBytes == null || torrentBytes.Length == 0) continue;
                     var metadata = TorrentParser.Parse(torrentBytes);
@@ -634,7 +639,7 @@ public class WebTorrentClient : IAsyncDisposable
                     var restoreOpts = new AddTorrentOptions();
                     try
                     {
-                        var stateFile = $"{stateDir}/{metaKey}.state.json";
+                        var stateFile = $"{stateDir}/{fileKey}.state.json";
                         if (await AsyncFileSystem.FileExists(stateFile))
                         {
                             var stateBytes = await AsyncFileSystem.ReadBytes(stateFile);
@@ -649,6 +654,7 @@ public class WebTorrentClient : IAsyncDisposable
                     catch { }
 
                     var torrent = new Torrent();
+                    torrent.SetPersistKey(fileKey); // store dir = webtorrent/{fileKey} (matches where the pieces were persisted)
                     torrent.InitFromMetadata(metadata, this, restoreOpts);
 
                     // Check which pieces are already stored — by a metadata-only existence check, NOT a

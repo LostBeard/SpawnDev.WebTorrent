@@ -123,7 +123,9 @@ public partial class Torrent
         // ZERO-COPY browser web-seed path: keep the piece's bytes in JS end to end (fetch -> SubtleCrypto
         // leaf-hash -> OPFS) so they never cross into the .NET heap — the browser model-download bottleneck.
         // Only when the store is browser OPFS and the torrent is single-file (the contiguous-range case).
-        if (isWebSeed && _store is Storage.AsyncFSChunkStore { SupportsUint8Array: true }
+        // (!LazyHash: the zero-copy path verifies against a KNOWN hash; a Lazy-Hash torrent must take the buffered
+        // path so VerifyPieceHash can COMPUTE+store the hash from the bytes instead.)
+        if (isWebSeed && !LazyHash && _store is Storage.AsyncFSChunkStore { SupportsUint8Array: true }
             && Files != null && (Files.Length == 1 || !PieceSpansMultipleFiles(index)))
         {
             var wc = _webConns.FirstOrDefault(c => c.WireInstance == wire);
@@ -860,6 +862,10 @@ public partial class Torrent
         if (allDone)
         {
             Done = true;
+            // Lazy-Hash: once the WHOLE file is present every piece hash has been computed, so finalize the real
+            // infohash BEFORE OnDone fires (consumers then see an identified, seedable torrent). Requires ALL
+            // pieces (not just a selected subset) so the computed info dict is complete.
+            if (LazyHash && Bitfield.All(b => b)) FinalizeLazyHash();
             OnDone?.Invoke();
             OnIdle?.Invoke();
         }
@@ -1197,6 +1203,19 @@ public partial class Torrent
     internal bool VerifyPieceHash(int index, byte[] buf)
     {
         if (index < 0 || index >= _hashes.Length) return false;
+
+        if (LazyHash)
+        {
+            // Infohash not yet known (added from a web-seed URL): the FIRST downloader TRUSTS the seed and
+            // COMPUTES this piece's hash from the bytes, recording it into the (zeroed) slot. Subsequent
+            // downloaders who receive the finalized .torrent verify against the real hash via the path below.
+            var eng = _client?.PieceHashEngine ?? Torrent._defaultEngine;
+            _hashes[index] = MetaVersion == 2
+                ? MerkleHasher.ComputePieceLayer(buf, PieceLength)[0]
+                : (_hashes[index].Length == 32 ? eng.Sha256(buf) : eng.Sha1(buf));
+            return true;
+        }
+
         var expected = _hashes[index];
 
         if (MetaVersion == 2)

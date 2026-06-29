@@ -337,6 +337,13 @@ public class WebTorrentClient : IAsyncDisposable
         if (Destroyed) throw new InvalidOperationException("Client is destroyed");
         opts ??= new AddTorrentOptions();
 
+        // Lazy-Hash: a plain http(s) URL → a torrent whose infohash is computed AS it downloads from the URL web
+        // seed (no magnet / pre-known infohash needed). The model becomes a persistent, cacheable, seedable torrent
+        // from byte 0. See Torrent.InitLazyHashAsync + Plans/lazy-hash-torrents.md.
+        if (magnetOrInfoHash.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || magnetOrInfoHash.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            return AddLazyHash(magnetOrInfoHash, opts);
+
         var torrent = new Torrent();
 
         // ut_metadata (BEP 9) is registered PER-TORRENT in Torrent.SetupMetadataExtension (called from
@@ -367,6 +374,27 @@ public class WebTorrentClient : IAsyncDisposable
         torrent.OnReady += () => OnTorrentReady?.Invoke(torrent);
         OnAdd?.Invoke(torrent);
 
+        return torrent;
+    }
+
+    /// <summary>Add a Lazy-Hash torrent from an http(s) web-seed URL (infohash unknown at add; computed while
+    /// downloading). Dedups against any torrent already serving this URL as a web seed.</summary>
+    private Torrent AddLazyHash(string url, AddTorrentOptions opts)
+    {
+        var existing = Torrents.FirstOrDefault(t =>
+            string.Equals(t.LazyUrl, url, StringComparison.OrdinalIgnoreCase)
+            || (t.UrlList != null && t.UrlList.Any(u => url.StartsWith(u, StringComparison.OrdinalIgnoreCase))));
+        if (existing != null)
+        {
+            OnWarning?.Invoke($"Duplicate lazy torrent: {url}");
+            return existing;
+        }
+
+        var torrent = new Torrent();
+        Torrents.Add(torrent);
+        torrent.OnReady += () => OnTorrentReady?.Invoke(torrent);
+        _ = torrent.InitLazyHashAsync(url, this, opts); // fire-and-forget (mirrors InitFromMagnetAsync); AddAsync awaits OnReady
+        OnAdd?.Invoke(torrent);
         return torrent;
     }
 

@@ -99,6 +99,12 @@ builder.Services.AddCors(options =>
     options.AddDefaultPolicy(policy =>
     {
         policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()
+              // EXPOSE the range/size headers to BROWSER clients. Content-Range and Accept-Ranges are NOT
+              // CORS-safelisted, so without this a cross-origin fetch (the Blazor demo + ML in-browser model
+              // load) cannot READ them — a 0-0 size probe then sees only the safelisted Content-Length (= the
+              // 1 returned byte) and concludes the file is 1 byte long, breaking every streamed model load.
+              // (Desktop .NET HttpClient has no CORS and was unaffected, which is why this only bit the browser.)
+              .WithExposedHeaders("Content-Range", "Accept-Ranges", "Content-Length")
               .SetPreflightMaxAge(TimeSpan.FromHours(24));
     });
 });

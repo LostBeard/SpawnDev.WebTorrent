@@ -133,6 +133,19 @@ request latency. This is what makes web-seed downloads feel slow (and likely the
   (`_selections` / rarity / critical-window) — one source of truth for "what contiguous span is wanted next".
 - Multi-seed (Phase 2): hand different chunks to different seeds; a stalled seed's chunk re-dispatches to another.
 
+**ZERO-COPY LAW — where the span fetch lives differs by platform (TJ, 2026-06-29):**
+- **Browser (the rule):** the span MUST be fetched with `BlazorJSRuntime.JS.Fetch` (`WebConn.FetchPieceUint8ArrayAsync`)
+  → a `Uint8Array` that NEVER enters the .NET/WASM heap → split into pieces with `Uint8Array.subarray` (VIEWS, no
+  copy) → SubtleCrypto-hash each (for LAZY: COMPUTE+store the hash — extend `VerifyPieceZeroCopyAsync` to a
+  compute-and-store variant; do NOT fall back to .NET) → `AsyncFSChunkStore.PutUint8ArrayAsync` to OPFS. Coalescing
+  happens entirely JS-side. The zero-copy path is gated in `RequestBlock` (`Torrent.Download.cs:128`) on
+  `_store is AsyncFSChunkStore{SupportsUint8Array}` — RE-ENABLE it for lazy (remove the `!LazyHash` bypass) once
+  the compute-and-store variant exists. **This is the browser arm and the priority — it's the no-copy rule.**
+- **Desktop only:** no JS/SubtleCrypto, so the `.NET HttpClient` read-ahead (`WebConn.FetchSingleFileCoalescedAsync`,
+  System.Security.Cryptography hashing) is correct there. That `.NET` arm must NEVER be the browser path.
+- See [[feedback-browser-webtorrent-must-use-js-fetch-not-dotnet-httpclient]]. The `.NET` read-ahead committed for
+  the desktop arm is fine; the BROWSER lazy zero-copy span path (compute+store) is the next build.
+
 ## Why this fixes the reported bug
 Re-download-every-refresh + empty cache page happen because the demo's web-seed fallback makes no torrent. With
 `AddAsync(url)` the model is a torrent from byte 0 → `RestoreFromStorageAsync` finds it on reload (pieces in OPFS)

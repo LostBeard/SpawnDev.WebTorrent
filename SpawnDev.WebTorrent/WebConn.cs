@@ -97,7 +97,7 @@ public class WebConn : IAsyncDisposable
                     var name = _torrent.Name ?? _torrent.Files?[0]?.Name ?? _torrent.Files?[0]?.Path ?? "";
                     fileUrl = fileUrl + Uri.EscapeDataString(name);
                 }
-                data = await FetchRangeAsync(fileUrl, rangeStart, rangeEnd);
+                data = await FetchSingleFileCoalescedAsync(fileUrl, rangeStart, length);
             }
             else
             {
@@ -150,8 +150,52 @@ public class WebConn : IAsyncDisposable
         }
     }
 
+    // Read-ahead coalescing (single-file web seeds): collapse the per-piece Range GET storm into a few large span
+    // GETs. The fetch chunk (~1 MiB) is DECOUPLED from the piece size, so pieces stay fine-grained for hashing
+    // while requests stay few. A request that falls OUTSIDE the current buffer simply moves the window there with a
+    // fresh span GET — so piece-priority changes are honoured at the span boundary with NO in-flight cancellation
+    // (the ~1 MiB span bounds the worst-case wait). See Plans/lazy-hash-torrents.md.
+    internal static int ReadAheadSpan = 1 * 1024 * 1024;
+    private readonly SemaphoreSlim _readAheadLock = new(1, 1);
+    private long _bufStart = -1;
+    private byte[]? _buf;
+
+    private async Task<byte[]> FetchSingleFileCoalescedAsync(string fileUrl, long start, int length)
+    {
+        // Fast path: fully inside the current buffer (lock-free snapshot of the buffer references).
+        var buf = _buf; var bs = _bufStart;
+        if (buf != null && start >= bs && start + length <= bs + buf.Length)
+            return buf.AsSpan((int)(start - bs), length).ToArray();
+
+        await _readAheadLock.WaitAsync();
+        try
+        {
+            // Re-check: a concurrent request may have just filled a covering span.
+            buf = _buf; bs = _bufStart;
+            if (buf != null && start >= bs && start + length <= bs + buf.Length)
+                return buf.AsSpan((int)(start - bs), length).ToArray();
+
+            // Miss: fetch a fresh ~1 MiB span starting AT this request (so the requested bytes sit at span[0..])
+            // and the following contiguous pieces are served from the buffer with no further GETs. Never shrink
+            // below the request, never run past EOF.
+            long total = _torrent.Length;
+            int spanLen = (int)Math.Min(Math.Max((long)ReadAheadSpan, length), total - start);
+            var span = await FetchRangeAsync(fileUrl, start, start + spanLen - 1);
+            _buf = span;
+            _bufStart = start;
+            int avail = Math.Min(length, span.Length);
+            return span.AsSpan(0, avail).ToArray();
+        }
+        finally { _readAheadLock.Release(); }
+    }
+
+    /// <summary>Count of actual HTTP Range GETs issued by all web seeds — used by tests to prove read-ahead
+    /// coalescing collapses the per-piece request storm. Not thread-isolated; reset + read in a scoped test.</summary>
+    internal static int FetchRangeCount;
+
     private async Task<byte[]> FetchRangeAsync(string url, long start, long end)
     {
+        System.Threading.Interlocked.Increment(ref FetchRangeCount);
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(start, end);
         request.Headers.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue { NoStore = true };
@@ -180,6 +224,7 @@ public class WebConn : IAsyncDisposable
     /// </summary>
     internal async Task<Uint8Array> FetchPieceUint8ArrayAsync(long start, long end)
     {
+        System.Threading.Interlocked.Increment(ref FetchRangeCount); // count zero-copy GETs too (total web-seed HTTP GETs)
         string fileUrl;
         long fetchStart = start, fetchEnd = end;
         var files = _torrent.Files;

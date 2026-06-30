@@ -182,4 +182,62 @@ public abstract partial class WebTorrentTestBase
         }
         finally { await client2.DisposeAsync(); }
     }
+
+    /// <summary>
+    /// Deterministic zero-copy SPAN coalescing: downloading the whole file over the browser zero-copy web-seed path
+    /// must issue a few large (~1 MiB) JS.Fetch GETs, NOT one per 16 KiB piece. Uses an OPFS-backed client so the
+    /// zero-copy path (JS.Fetch → SubtleCrypto → OPFS) is taken; browser-only (the zero-copy span path is the
+    /// no-.NET-copy browser arm). Proves the per-piece GET storm that made delivery slow is collapsed.
+    /// </summary>
+    [TestMethod(Timeout = 300000, RetryCount = 2, Category = "HeavyModel")]
+    public async Task LazyHash_Coalescing_ZeroCopySpans_FewLargeGets()
+    {
+        var fs = Client.AsyncFileSystem;
+        if (fs == null) throw new UnsupportedTestException("no OPFS (desktop runtime) — the zero-copy span path is browser-only");
+        var url = LazyHubUrl;
+
+        // Reference infohash (eager) — also proves the zero-copy SubtleCrypto compute matches eager .NET hashing.
+        string expectedInfohash;
+        using (var ects = new CancellationTokenSource(TimeSpan.FromMinutes(2)))
+            expectedInfohash = (await TorrentCreator.CreateFromUrlAsync(url, ct: ects.Token)).metadata.InfoHash;
+
+        var client = new WebTorrentClient(new WebTorrentClientOptions { AsyncFileSystem = fs });
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(4));
+            WebConn.FetchRangeCount = 0;
+            Torrent.ZcSpanCount = 0; Torrent.ZcSpanMaxPieces = 0; Torrent.ZcSpanPiecesTotal = 0; Torrent.ZcSpanLog.Clear();
+
+            var t = await client.AddAsync(url, ct: cts.Token);
+            var f = t.Files[0];
+            var all = await f.ReadAsync(0, (int)f.Length, cts.Token);
+            if (all == null || all.Length != f.Length) throw new Exception($"downloaded {all?.Length ?? 0}/{f.Length}");
+
+            // Finalize must produce the SAME infohash as eager — i.e. SubtleCrypto compute (JS-side) == eager hashing.
+            for (int i = 0; i < 300 && t.LazyHash; i++) await Task.Delay(50, cts.Token);
+            if (!string.Equals(t.InfoHash, expectedInfohash, StringComparison.OrdinalIgnoreCase))
+                throw new Exception($"zero-copy finalized infohash '{t.InfoHash}' != eager '{expectedInfohash}' — SubtleCrypto compute is wrong");
+
+            int gets = WebConn.FetchRangeCount;
+            int pieceCount = t.PieceCount;
+            int spanAvg = Torrent.ZcSpanCount > 0 ? (int)(Torrent.ZcSpanPiecesTotal / Torrent.ZcSpanCount) : 0;
+            string diag = $"{gets} GETs, {Torrent.ZcSpanCount} spans, avg {spanAvg}/span, max {Torrent.ZcSpanMaxPieces}/span (cap {Torrent.ZeroCopySpanBytes / Math.Max(t.PieceLength,1)}) | first spans: {Torrent.ZcSpanLog}";
+            // ~1 MiB spans → ceil(size/1MiB) GETs (+ slack for span-boundary races, ZeroCopyMaxSpans concurrency,
+            // and the test's own probe GET). The OLD per-piece path issued ~pieceCount GETs (~623 for 10 MB @ 16 KiB).
+            int spanCeil = (int)(f.Length / Torrent.ZeroCopySpanBytes) + 24;
+            if (gets >= pieceCount)
+                throw new Exception($"NO coalescing: {diag} for {pieceCount} pieces");
+            if (gets > spanCeil)
+                throw new Exception($"weak coalescing: {diag} for {f.Length} B (expected <= {spanCeil})");
+
+            Console.WriteLine($"[LazyHash] zero-copy coalescing: {diag} / {f.Length} B (per-piece would be {pieceCount})");
+        }
+        catch (UnsupportedTestException) { throw; }
+        catch (Exception ex) when (ex.Message.Contains("No connection") || ex.Message.Contains("network")
+            || ex.Message.Contains("preparing") || ex is TimeoutException)
+        {
+            throw new UnsupportedTestException($"hub/network unavailable: {ex.Message}");
+        }
+        finally { await client.DisposeAsync(); }
+    }
 }

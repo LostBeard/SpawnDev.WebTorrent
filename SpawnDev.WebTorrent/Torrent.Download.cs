@@ -123,13 +123,14 @@ public partial class Torrent
         // ZERO-COPY browser web-seed path: keep the piece's bytes in JS end to end (fetch -> SubtleCrypto
         // leaf-hash -> OPFS) so they never cross into the .NET heap — the browser model-download bottleneck.
         // Only when the store is browser OPFS and the torrent is single-file (the contiguous-range case).
-        // (!LazyHash: the zero-copy path verifies against a KNOWN hash; a Lazy-Hash torrent must take the buffered
-        // path so VerifyPieceHash can COMPUTE+store the hash from the bytes instead.)
-        if (isWebSeed && !LazyHash && _store is Storage.AsyncFSChunkStore { SupportsUint8Array: true }
+        // Lazy-Hash takes this path too: VerifyPieceZeroCopyAsync COMPUTES+stores the hash JS-side (SubtleCrypto)
+        // for lazy instead of verifying — so a lazy browser download stays zero-copy (JS.Fetch -> Uint8Array ->
+        // SubtleCrypto -> OPFS), never crossing into .NET. RequestSpanZeroCopy coalesces ~1 MiB of pieces per GET.
+        if (isWebSeed && _store is Storage.AsyncFSChunkStore { SupportsUint8Array: true }
             && Files != null && (Files.Length == 1 || !PieceSpansMultipleFiles(index)))
         {
             var wc = _webConns.FirstOrDefault(c => c.WireInstance == wire);
-            if (wc != null) return RequestPieceZeroCopy(wc, index);
+            if (wc != null) return RequestSpanZeroCopy(wc, index);
         }
 
         // Web seed = HTTP range requests. Use a FIXED concurrency (MaxWebConns) to hide per-request latency
@@ -275,64 +276,110 @@ public partial class Torrent
         return false;
     }
 
-    private bool RequestPieceZeroCopy(WebConn webConn, int index)
-    {
-        if (_zeroCopyInFlight.Contains(index)) return false;          // already fetching this piece
-        if (_zeroCopyInFlight.Count >= MaxWebConns) return false;     // concurrency cap
-        var piece = Pieces[index];
-        int pieceLen = piece.Length;
-        if (pieceLen <= 0) return false;
+    // Deterministic zero-copy SPAN coalescing: fetch ~1 MiB of contiguous needed pieces in ONE JS.Fetch instead of
+    // one GET per piece (~623 GETs/10MB → ~10). The span is a Uint8Array that never enters .NET; each piece is a
+    // SubArray VIEW (no copy), hashed by SubtleCrypto (compute+store for Lazy-Hash, verify otherwise) and stored to
+    // OPFS. ~1 MiB bounds the worst-case latency so priority is honoured at the span boundary with no cancellation.
+    internal static int ZeroCopySpanBytes = 1 * 1024 * 1024;
+    // ONE span at a time: concurrent spans leave the picker requesting into the gaps between in-flight spans, which
+    // fragments each span down to the reader's ~window size (measured avg 10/64 pieces at MaxSpans=3). Sequential
+    // spans can't fragment each other — each grabs the full ~1 MiB contiguous run. (Pipelining via a non-overlapping
+    // next-span pointer is a later refinement; correctness + few-GETs first.)
+    private const int ZeroCopyMaxSpans = 1;
+    private int _zcSpansInFlight;
 
-        _zeroCopyInFlight.Add(index);
-        long rangeStart = (long)index * PieceLength;
-        long rangeEnd = rangeStart + pieceLen - 1;
-        _ = ZeroCopyPieceAsync(webConn, index, piece, rangeStart, rangeEnd, pieceLen);
+    // Diagnostics (tests reset + read): span-size distribution + the first spans' (start..last) boundaries to
+    // reveal the picker's request order.
+    internal static int ZcSpanCount, ZcSpanMaxPieces;
+    internal static long ZcSpanPiecesTotal;
+    internal static System.Text.StringBuilder ZcSpanLog = new();
+
+    private bool RequestSpanZeroCopy(WebConn webConn, int startIndex)
+    {
+        if (_zeroCopyInFlight.Contains(startIndex)) return false;     // already covered by an in-flight span
+        if (_zcSpansInFlight >= ZeroCopyMaxSpans) return false;       // concurrency cap (on SPANS, each ~1 MiB)
+        if (Pieces[startIndex] == null || Pieces[startIndex].Length <= 0) return false;
+
+        // Span = the WHOLE contiguous free run CONTAINING startIndex (extend both UP and DOWN), capped at
+        // ~ZeroCopySpanBytes. The picker requests pieces scattered + DESCENDING (read-ahead window of equal-priority
+        // pieces iterated in hash order), so an UPWARD-only span gets blocked by the have-piece just above and
+        // collapses to 1. Growing both directions grabs the full ~1 MiB run regardless of walk direction. We
+        // prefetch over unselected (null) pieces — the web seed has every piece; the reader only selects a window.
+        bool multiFile = Files != null && Files.Length > 1;
+        bool Free(int p) => p >= 0 && p < Bitfield.Length && !Bitfield[p] && !_zeroCopyInFlight.Contains(p)
+                            && !(multiFile && (Pieces[p] == null || PieceSpansMultipleFiles(p)));
+        int maxPiecesPerSpan = Math.Max(1, ZeroCopySpanBytes / PieceLength);
+        int first = startIndex, last = startIndex;
+        while (last - first + 1 < maxPiecesPerSpan && Free(last + 1)) last++;   // grow up
+        while (last - first + 1 < maxPiecesPerSpan && Free(first - 1)) first--; // grow down
+
+        for (int p = first; p <= last; p++) _zeroCopyInFlight.Add(p);
+        int spanPieces = last - first + 1;
+        ZcSpanCount++; ZcSpanPiecesTotal += spanPieces; if (spanPieces > ZcSpanMaxPieces) ZcSpanMaxPieces = spanPieces;
+        if (ZcSpanCount <= 24) ZcSpanLog.Append($"{first}..{last}({spanPieces}) ");
+        _zcSpansInFlight++;
+        long spanStart = (long)first * PieceLength;
+        long lastLen = Math.Min((long)PieceLength, Length - (long)last * PieceLength);
+        long spanEnd = (long)last * PieceLength + lastLen - 1;
+        _ = ZeroCopySpanAsync(webConn, first, last, spanStart, spanEnd);
         return true;
     }
 
-    private async Task ZeroCopyPieceAsync(WebConn webConn, int index, Piece piece, long rangeStart, long rangeEnd, int pieceLen)
+    private async Task ZeroCopySpanAsync(WebConn webConn, int first, int last, long spanStart, long spanEnd)
     {
-        Uint8Array? ua = null;
+        Uint8Array? span = null;
         try
         {
             var _zcSw = EnableZcProfiling ? System.Diagnostics.Stopwatch.StartNew() : null;
-            ua = await webConn.FetchPieceUint8ArrayAsync(rangeStart, rangeEnd);
+            span = await webConn.FetchPieceUint8ArrayAsync(spanStart, spanEnd);   // ONE JS.Fetch for the whole span
             if (_zcSw != null) ZcFetchMs += _zcSw.Elapsed.TotalMilliseconds;
-            if (Done || piece != Pieces[index]) return;              // superseded/finished while fetching
 
-            bool match = await VerifyPieceZeroCopyAsync(index, ua, pieceLen);
-            if (piece != Pieces[index]) return;
+            for (int p = first; p <= last; p++)
+            {
+                if (Done) break;
+                if (Bitfield[p]) continue;                                        // already have
+                var piece = Pieces[p];                                            // may be NULL — prefetched ahead of selection
+                int pieceLen = (int)Math.Min((long)PieceLength, Length - (long)p * PieceLength);
+                if (pieceLen <= 0) continue;
+                int off = (int)((long)p * PieceLength - spanStart);
+                using var pieceUa = span.SubArray(off, off + pieceLen);           // VIEW into the span, no copy
 
-            if (match)
-            {
-                _zcSw?.Restart();
-                if (_store is Storage.AsyncFSChunkStore afs)
-                    await afs.PutUint8ArrayAsync(index, ua);          // JS Uint8Array -> OPFS, no .NET copy
-                if (_zcSw != null) { ZcStoreMs += _zcSw.Elapsed.TotalMilliseconds; ZcPieces++; }
-                Pieces[index] = new Piece(0);                         // mark done (length 0 = flushed)
-                Bitfield[index] = true;
-                _reservations.TryRemove(index, out _);               // piece done — drop its reservation array (leak fix; see block path)
-                ZeroCopyPiecesVerified++;
-                foreach (var w in Wires.ToArray()) _ = w.Have(index);
-                OnPieceVerified?.Invoke(index);
-                CheckDone();
+                bool match = await VerifyPieceZeroCopyAsync(p, pieceUa, pieceLen); // COMPUTE+store for lazy, else verify
+                if (Done || Bitfield[p]) continue;                                // completed elsewhere while hashing
+                if (piece != null && piece != Pieces[p]) continue;               // a selected piece object was swapped (superseded)
+
+                if (match)
+                {
+                    _zcSw?.Restart();
+                    if (_store is Storage.AsyncFSChunkStore afs)
+                        await afs.PutUint8ArrayAsync(p, pieceUa);                  // JS Uint8Array -> OPFS, no .NET copy
+                    if (_zcSw != null) { ZcStoreMs += _zcSw.Elapsed.TotalMilliseconds; ZcPieces++; }
+                    Pieces[p] = new Piece(0);                                      // mark done (length 0 = flushed)
+                    Bitfield[p] = true;
+                    _reservations.TryRemove(p, out _);
+                    ZeroCopyPiecesVerified++;
+                    foreach (var w in Wires.ToArray()) _ = w.Have(p);
+                    OnPieceVerified?.Invoke(p);
+                }
+                else
+                {
+                    Pieces[p] = new Piece(PieceLength);                           // re-arm for retry (non-lazy verify failure)
+                    OnWarning?.Invoke($"Piece {p} failed verification (zero-copy span)");
+                }
             }
-            else
-            {
-                Pieces[index] = new Piece(piece.Length > 0 ? piece.Length : PieceLength);
-                OnWarning?.Invoke($"Piece {index} failed verification (zero-copy)");
-            }
+            CheckDone();
         }
         catch (Exception ex)
         {
             if (WebTorrentClient.VerboseLogging)
-                Console.WriteLine($"[ZeroCopy] piece {index} failed: {ex.GetType().Name}: {ex.Message}");
-            // leave the piece unflagged so the picker retries it
+                Console.WriteLine($"[ZeroCopySpan] {first}..{last} failed: {ex.GetType().Name}: {ex.Message}");
+            // leave unflagged pieces for the picker to retry
         }
         finally
         {
-            ua?.Dispose();
-            _zeroCopyInFlight.Remove(index);
+            span?.Dispose();
+            for (int p = first; p <= last; p++) _zeroCopyInFlight.Remove(p);
+            _zcSpansInFlight--;
             UpdateWires();
         }
     }
@@ -347,6 +394,20 @@ public partial class Torrent
     private async Task<bool> VerifyPieceZeroCopyAsync(int index, Uint8Array pieceData, int pieceLen)
     {
         if (index < 0 || index >= _hashes.Length) return false;
+
+        if (LazyHash)
+        {
+            // Lazy: COMPUTE the piece hash JS-side (SubtleCrypto) and store it — the first downloader trusts the
+            // seed (subsequent downloaders who get the finalized .torrent verify normally). Lazy is v1/flat
+            // (MetaVersion 0, 32-byte SHA-256); only the 32-byte hash crosses into .NET — bytes stay JS-side.
+            using var subtleL = BlazorJSRuntime.JS.Get<SubtleCrypto>("crypto.subtle");
+            string algL = _hashes[index].Length == MerkleHasher.HashSize ? "SHA-256" : "SHA-1";
+            using var habL = await subtleL.Digest(algL, pieceData);
+            using var huaL = new Uint8Array(habL);
+            _hashes[index] = huaL.ReadBytes();
+            return true;
+        }
+
         var expected = _hashes[index];
         using var subtle = BlazorJSRuntime.JS.Get<SubtleCrypto>("crypto.subtle");
 

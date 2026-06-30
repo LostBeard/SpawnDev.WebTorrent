@@ -25,7 +25,10 @@ public abstract partial class WebTorrentTestBase
         using (var ehttp = new HttpClient())
         {
             using var ects = new CancellationTokenSource(TimeSpan.FromMinutes(2));
-            var (_, eagerMeta) = await TorrentCreator.CreateFromUrlAsync(url, ct: ects.Token);
+            // Eager reference uses the SAME piece length the lazy path picks (the larger web-seed floor) so the
+            // infohashes are comparable.
+            var (_, eagerMeta) = await TorrentCreator.CreateFromUrlAsync(url,
+                new TorrentCreatorOptions { PieceLength = Torrent.WebSeedMinPieceLength }, ects.Token);
             expectedInfohash = eagerMeta.InfoHash;
             if (string.IsNullOrEmpty(expectedInfohash)) throw new Exception("eager CreateFromUrlAsync produced no infohash");
         }
@@ -199,7 +202,8 @@ public abstract partial class WebTorrentTestBase
         // Reference infohash (eager) — also proves the zero-copy SubtleCrypto compute matches eager .NET hashing.
         string expectedInfohash;
         using (var ects = new CancellationTokenSource(TimeSpan.FromMinutes(2)))
-            expectedInfohash = (await TorrentCreator.CreateFromUrlAsync(url, ct: ects.Token)).metadata.InfoHash;
+            expectedInfohash = (await TorrentCreator.CreateFromUrlAsync(url,
+                new TorrentCreatorOptions { PieceLength = Torrent.WebSeedMinPieceLength }, ects.Token)).metadata.InfoHash;
 
         var client = new WebTorrentClient(new WebTorrentClientOptions { AsyncFileSystem = fs });
         try
@@ -221,16 +225,63 @@ public abstract partial class WebTorrentTestBase
             int gets = WebConn.FetchRangeCount;
             int pieceCount = t.PieceCount;
             int spanAvg = Torrent.ZcSpanCount > 0 ? (int)(Torrent.ZcSpanPiecesTotal / Torrent.ZcSpanCount) : 0;
-            string diag = $"{gets} GETs, {Torrent.ZcSpanCount} spans, avg {spanAvg}/span, max {Torrent.ZcSpanMaxPieces}/span (cap {Torrent.ZeroCopySpanBytes / Math.Max(t.PieceLength,1)}) | first spans: {Torrent.ZcSpanLog}";
-            // ~1 MiB spans → ceil(size/1MiB) GETs (+ slack for span-boundary races, ZeroCopyMaxSpans concurrency,
-            // and the test's own probe GET). The OLD per-piece path issued ~pieceCount GETs (~623 for 10 MB @ 16 KiB).
-            int spanCeil = (int)(f.Length / Torrent.ZeroCopySpanBytes) + 24;
-            if (gets >= pieceCount)
-                throw new Exception($"NO coalescing: {diag} for {pieceCount} pieces");
-            if (gets > spanCeil)
-                throw new Exception($"weak coalescing: {diag} for {f.Length} B (expected <= {spanCeil})");
+            string diag = $"{gets} GETs, {pieceCount} pieces, {Torrent.ZcSpanCount} spans, avg {spanAvg}/span, max {Torrent.ZcSpanMaxPieces}/span";
+            // The span path fetches a whole piece's bytes in ONE Range GET, so GETs ≈ pieceCount — NOT the per-16
+            // KiB-BLOCK storm the .NET block path would issue (pieceCount × blocks-per-piece). With the large
+            // web-seed piece size, pieceCount itself is small, so this is few GETs in absolute terms.
+            if (gets > pieceCount + 24)
+                throw new Exception($"GET storm: {diag} for {f.Length} B (expected ~1 GET/piece)");
 
-            Console.WriteLine($"[LazyHash] zero-copy coalescing: {diag} / {f.Length} B (per-piece would be {pieceCount})");
+            Console.WriteLine($"[LazyHash] zero-copy GETs: {diag} / {f.Length} B");
+        }
+        catch (UnsupportedTestException) { throw; }
+        catch (Exception ex) when (ex.Message.Contains("No connection") || ex.Message.Contains("network")
+            || ex.Message.Contains("preparing") || ex is TimeoutException)
+        {
+            throw new UnsupportedTestException($"hub/network unavailable: {ex.Message}");
+        }
+        finally { await client.DisposeAsync(); }
+    }
+
+    /// <summary>
+    /// SPEED — the real production case (Rule 5: test the full case, not a 10 MB subset). Download a ~0.5 GB GGUF
+    /// model from the hub web seed via lazy-hash and assert it finishes well under 60s. The hub is on a 1 Gb LAN and
+    /// the WAN is 500 Mb symmetric fiber, so this is bandwidth-bound: a 0.5 GB model must NOT take minutes — that
+    /// would mean per-piece overhead (OPFS writes / digests / interop) is dominating, not the link. Measures the
+    /// pure background DOWNLOAD (waits for Done), not the model load. Browser-only (OPFS zero-copy path).
+    /// </summary>
+    [TestMethod(Timeout = 240000, RetryCount = 1, Category = "HeavyModel")]
+    public async Task LazyHash_LargeModel_DownloadsFastFromHub()
+    {
+        var fs = Client.AsyncFileSystem;
+        if (fs == null) throw new UnsupportedTestException("no OPFS (desktop runtime) — the zero-copy download path is browser-only");
+        // ~0.5 GB Q8_0 GGUF — the actual model the /ai-chat demo serves.
+        var url = $"{HubBaseUrl}/hf/Qwen/Qwen2.5-0.5B-Instruct-GGUF/qwen2.5-0.5b-instruct-q8_0.gguf";
+
+        var client = new WebTorrentClient(new WebTorrentClientOptions { AsyncFileSystem = fs });
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+
+            var t = await client.AddAsync(url, ct: cts.Token);
+            var f = t.Files[0];
+            if (f.Length < 200L * 1024 * 1024)
+                throw new Exception($"expected a ~0.5 GB model, got {f.Length} B — wrong URL or hub cold");
+
+            // The whole file is selected (deselect=false), so it downloads in the background. Time it to Done.
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            while (!t.Done && sw.Elapsed < TimeSpan.FromSeconds(150))
+                await Task.Delay(200, cts.Token);
+            sw.Stop();
+
+            double mb = f.Length / 1024.0 / 1024.0;
+            double mbps = mb / sw.Elapsed.TotalSeconds;
+            if (!t.Done)
+                throw new Exception($"download did NOT finish: {t.CompletedPieces}/{t.PieceCount} pieces ({mb:F0} MB) in {sw.Elapsed.TotalSeconds:F0}s = {mbps:F1} MB/s");
+            if (sw.Elapsed.TotalSeconds > 60)
+                throw new Exception($"TOO SLOW: {mb:F0} MB in {sw.Elapsed.TotalSeconds:F1}s = {mbps:F1} MB/s ({t.PieceCount} pieces @ {t.PieceLength / 1024}KiB) — must be < 60s on LAN/fiber");
+
+            Console.WriteLine($"[LazyHash] LARGE MODEL: {mb:F0} MB in {sw.Elapsed.TotalSeconds:F1}s = {mbps:F1} MB/s ({t.PieceCount} pieces @ {t.PieceLength / 1024}KiB)");
         }
         catch (UnsupportedTestException) { throw; }
         catch (Exception ex) when (ex.Message.Contains("No connection") || ex.Message.Contains("network")

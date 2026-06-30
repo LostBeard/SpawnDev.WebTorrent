@@ -9,8 +9,8 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-		<Version>3.2.10</Version>
-		<PackageReleaseNotes>v3.2.10: adds HttpByteRange.ParseSingle - the shared RFC 7233 byte-range parser used by the web-seed servers (clamps over-EOF range ends, 416 for unsatisfiable, suffix ranges, 64-bit lengths). Fixes a 206 over-promise that surfaced as net::ERR_CONTENT_LENGTH_MISMATCH on web-seed piece fetches. Client behavior unchanged. See CHANGELOG.md.</PackageReleaseNotes>
+		<Version>3.2.11-local.3</Version>
+		<PackageReleaseNotes>v3.2.11-local.1: Lazy-Hash Torrents - AddAsync(http(s) url) adds a PERSISTENT torrent from a web-seed URL with the infohash unknown at add (computed as it downloads), then finalizes a byte-identical infohash, caches to OPFS and restores on reload with zero re-download. Browser downloads stay zero-copy (JS.Fetch -> Uint8Array -> SubtleCrypto -> OPFS, never .NET) and coalesce per-piece GETs into ~1 MiB spans. See Plans/lazy-hash-torrents.md.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>

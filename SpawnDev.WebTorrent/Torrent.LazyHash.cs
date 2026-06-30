@@ -35,6 +35,20 @@ public partial class Torrent
         Convert.ToHexString(System.Security.Cryptography.SHA1.HashData(
             System.Text.Encoding.UTF8.GetBytes("lazy:" + url))).ToLowerInvariant();
 
+    /// <summary>
+    /// Minimum piece length for Lazy-Hash / web-seed torrents. The download cost is dominated by PER-PIECE work
+    /// (a SubtleCrypto digest + an OPFS file write + JS interop), so a small piece size makes a big model crawl
+    /// (a 0.5 GB model is ~32,000 pieces at 16 KiB but only ~128 at 4 MiB). Larger pieces → far fewer per-piece
+    /// ops → the network becomes the limit again. Random-access granularity is coarser (a small read pulls a whole
+    /// piece), which is fine for the sequential model-load case web seeds serve.
+    /// </summary>
+    internal static int WebSeedMinPieceLength = 4 * 1024 * 1024;
+
+    /// <summary>Piece length for a Lazy-Hash torrent of <paramref name="length"/> bytes: the standard
+    /// <see cref="TorrentCreator.CalculatePieceLength"/> policy floored at <see cref="WebSeedMinPieceLength"/>.
+    /// Both the shell builder and the test's eager-reference oracle use this so their infohashes match.</summary>
+    public static int LazyPieceLength(long length) => Math.Max(TorrentCreator.CalculatePieceLength(length), WebSeedMinPieceLength);
+
     /// <summary>Fired once a Lazy-Hash torrent's real infohash has been computed (i.e. the download completed and
     /// the torrent is now a normal, identifiable, seedable torrent).</summary>
     public event Action? OnLazyFinalized;
@@ -77,7 +91,7 @@ public partial class Torrent
             var uri = new Uri(url);
             var name = Uri.UnescapeDataString(uri.Segments.LastOrDefault()?.TrimEnd('/') ?? "download.bin");
 
-            int pieceLength = TorrentCreator.CalculatePieceLength(length);
+            int pieceLength = LazyPieceLength(length);
             int pieceCount = (int)((length + pieceLength - 1) / pieceLength);
             const int hashLen = 32; // flat SHA-256 — TorrentCreator's default HashAlgorithm
             var pieceHashes = new byte[pieceCount][];

@@ -281,11 +281,10 @@ public partial class Torrent
     // SubArray VIEW (no copy), hashed by SubtleCrypto (compute+store for Lazy-Hash, verify otherwise) and stored to
     // OPFS. ~1 MiB bounds the worst-case latency so priority is honoured at the span boundary with no cancellation.
     internal static int ZeroCopySpanBytes = 1 * 1024 * 1024;
-    // ONE span at a time: concurrent spans leave the picker requesting into the gaps between in-flight spans, which
-    // fragments each span down to the reader's ~window size (measured avg 10/64 pieces at MaxSpans=3). Sequential
-    // spans can't fragment each other — each grabs the full ~1 MiB contiguous run. (Pipelining via a non-overlapping
-    // next-span pointer is a later refinement; correctness + few-GETs first.)
-    private const int ZeroCopyMaxSpans = 1;
+    // Several spans in flight so fetches OVERLAP processing and the link stays saturated (otherwise the thread sits
+    // idle during each GET). With the large web-seed piece size a span is ~one piece, so this is the cross-piece
+    // download concurrency. The bidirectional span grab keeps each span on its own contiguous run (no refragment).
+    private const int ZeroCopyMaxSpans = 4;
     private int _zcSpansInFlight;
 
     // Diagnostics (tests reset + read): span-size distribution + the first spans' (start..last) boundaries to
@@ -334,39 +333,25 @@ public partial class Torrent
             span = await webConn.FetchPieceUint8ArrayAsync(spanStart, spanEnd);   // ONE JS.Fetch for the whole span
             if (_zcSw != null) ZcFetchMs += _zcSw.Elapsed.TotalMilliseconds;
 
+            // Process the span's pieces with BOUNDED CONCURRENCY + a yield between batches. A strictly-sequential
+            // 64-piece chain of SubtleCrypto+OPFS interop monopolized the single WASM thread and froze the browser
+            // render ~5s. Batching (≈MaxWebConns at a time, then Task.Yield) keeps the thread responsive — the same
+            // bounded-concurrency the per-piece path had — while the one big span fetch keeps the GET count low.
+            int batch = Math.Max(2, MaxWebConns);
+            var pending = new List<Task>(batch);
             for (int p = first; p <= last; p++)
             {
                 if (Done) break;
-                if (Bitfield[p]) continue;                                        // already have
-                var piece = Pieces[p];                                            // may be NULL — prefetched ahead of selection
-                int pieceLen = (int)Math.Min((long)PieceLength, Length - (long)p * PieceLength);
-                if (pieceLen <= 0) continue;
-                int off = (int)((long)p * PieceLength - spanStart);
-                using var pieceUa = span.SubArray(off, off + pieceLen);           // VIEW into the span, no copy
-
-                bool match = await VerifyPieceZeroCopyAsync(p, pieceUa, pieceLen); // COMPUTE+store for lazy, else verify
-                if (Done || Bitfield[p]) continue;                                // completed elsewhere while hashing
-                if (piece != null && piece != Pieces[p]) continue;               // a selected piece object was swapped (superseded)
-
-                if (match)
+                if (Bitfield[p]) continue;                                        // already have / completed elsewhere
+                pending.Add(ProcessSpanPieceAsync(p, span, spanStart));
+                if (pending.Count >= batch)
                 {
-                    _zcSw?.Restart();
-                    if (_store is Storage.AsyncFSChunkStore afs)
-                        await afs.PutUint8ArrayAsync(p, pieceUa);                  // JS Uint8Array -> OPFS, no .NET copy
-                    if (_zcSw != null) { ZcStoreMs += _zcSw.Elapsed.TotalMilliseconds; ZcPieces++; }
-                    Pieces[p] = new Piece(0);                                      // mark done (length 0 = flushed)
-                    Bitfield[p] = true;
-                    _reservations.TryRemove(p, out _);
-                    ZeroCopyPiecesVerified++;
-                    foreach (var w in Wires.ToArray()) _ = w.Have(p);
-                    OnPieceVerified?.Invoke(p);
-                }
-                else
-                {
-                    Pieces[p] = new Piece(PieceLength);                           // re-arm for retry (non-lazy verify failure)
-                    OnWarning?.Invoke($"Piece {p} failed verification (zero-copy span)");
+                    await Task.WhenAll(pending);
+                    pending.Clear();
+                    await Task.Yield();                                           // let the render loop run between batches
                 }
             }
+            if (pending.Count > 0) await Task.WhenAll(pending);
             CheckDone();
         }
         catch (Exception ex)
@@ -381,6 +366,39 @@ public partial class Torrent
             for (int p = first; p <= last; p++) _zeroCopyInFlight.Remove(p);
             _zcSpansInFlight--;
             UpdateWires();
+        }
+    }
+
+    /// <summary>Hash (compute+store for lazy, else verify) one piece from an in-memory span Uint8Array and store it
+    /// to OPFS — all JS-side. Run bounded-concurrent by <see cref="ZeroCopySpanAsync"/> so no single chain hogs the
+    /// WASM thread. The SubArray is a VIEW into the span (no copy).</summary>
+    private async Task ProcessSpanPieceAsync(int p, Uint8Array span, long spanStart)
+    {
+        var piece = Pieces[p];                                                    // may be NULL — prefetched ahead of selection
+        int pieceLen = (int)Math.Min((long)PieceLength, Length - (long)p * PieceLength);
+        if (pieceLen <= 0) return;
+        int off = (int)((long)p * PieceLength - spanStart);
+        using var pieceUa = span.SubArray(off, off + pieceLen);                   // VIEW into the span, no copy
+
+        bool match = await VerifyPieceZeroCopyAsync(p, pieceUa, pieceLen);        // COMPUTE+store for lazy, else verify
+        if (Done || Bitfield[p]) return;                                          // completed elsewhere while hashing
+        if (piece != null && piece != Pieces[p]) return;                         // a selected piece object was swapped (superseded)
+
+        if (match)
+        {
+            if (_store is Storage.AsyncFSChunkStore afs)
+                await afs.PutUint8ArrayAsync(p, pieceUa);                          // JS Uint8Array -> OPFS, no .NET copy
+            Pieces[p] = new Piece(0);                                             // mark done (length 0 = flushed)
+            Bitfield[p] = true;
+            _reservations.TryRemove(p, out _);
+            ZeroCopyPiecesVerified++;
+            foreach (var w in Wires.ToArray()) _ = w.Have(p);
+            OnPieceVerified?.Invoke(p);
+        }
+        else
+        {
+            Pieces[p] = new Piece(PieceLength);                                   // re-arm for retry (non-lazy verify failure)
+            OnWarning?.Invoke($"Piece {p} failed verification (zero-copy span)");
         }
     }
 

@@ -386,7 +386,9 @@ public class WebTorrentClient : IAsyncDisposable
             || (t.UrlList != null && t.UrlList.Any(u => url.StartsWith(u, StringComparison.OrdinalIgnoreCase))));
         if (existing != null)
         {
-            OnWarning?.Invoke($"Duplicate lazy torrent: {url}");
+            // A demo is requesting this model — resume it if it was restored paused (so it downloads any missing
+            // pieces / seeds). Complete torrents resume to a no-op and just serve their cached pieces.
+            if (existing.Paused) existing.Resume();
             return existing;
         }
 
@@ -655,14 +657,21 @@ public class WebTorrentClient : IAsyncDisposable
 
                     var torrent = new Torrent();
                     torrent.SetPersistKey(fileKey); // store dir = webtorrent/{fileKey} (matches where the pieces were persisted)
+                    // Restore PAUSED: a reload must NOT auto-download or auto-seed every cached model. A demo that
+                    // actually needs a model resumes its torrent via the Add(url)/Add(magnet) dedup path. Paused
+                    // also means SetMetadata does not start a download, so the piece-presence check below can't race
+                    // a re-fetch of already-cached pieces (the "it re-downloads on load" bug).
+                    restoreOpts.Paused = true;
                     torrent.InitFromMetadata(metadata, this, restoreOpts);
 
-                    // Check which pieces are already stored — by a metadata-only existence check, NOT a
-                    // whole-piece read. The old `GetAsync(i)` here read every piece's full bytes into the
-                    // .NET heap purely to test presence (no hash-verify), dragging the ENTIRE model through
-                    // .NET on every reload (~2.5 GB for SD-Turbo) and re-reading every cross-session OPFS
-                    // file — the re-access cost that forced consumers to wipe + re-download. PieceExistsAsync
-                    // checks presence without touching the bytes (same semantics: presence ⇒ have-piece).
+                    // Add + notify FIRST so the torrent is visible on the cache page IMMEDIATELY. The piece check
+                    // below is not instant for a multi-GB model, and doing it before Add left the torrent HIDDEN
+                    // until every piece was checked (it "popped in" only when complete).
+                    Torrents.Add(torrent);
+                    OnAdd?.Invoke(torrent);
+
+                    // Mark which pieces are already stored — metadata-only existence check (no byte reads). Updates
+                    // progress live now that the torrent is already in the list.
                     if (torrent._store is Storage.AsyncFSChunkStore afsStore)
                     {
                         for (int i = 0; i < torrent.PieceCount; i++)
@@ -673,13 +682,10 @@ public class WebTorrentClient : IAsyncDisposable
                                 torrent.Pieces[i] = new Piece(0);
                             }
                         }
-                        if (torrent.Bitfield.All(b => b))
+                        if (torrent.PieceCount > 0 && torrent.Bitfield.All(b => b))
                             torrent.Done = true;
                     }
-
-                    Torrents.Add(torrent);
-                    OnAdd?.Invoke(torrent);
-                    if (VerboseLogging) Console.WriteLine($"[WebTorrentClient] Restored: {torrent.Name} ({torrent.CompletedPieces}/{torrent.PieceCount} pieces, paused={torrent.Paused})");
+                    if (VerboseLogging) Console.WriteLine($"[WebTorrentClient] Restored: {torrent.Name} ({torrent.CompletedPieces}/{torrent.PieceCount} pieces, paused)");
                 }
                 catch (Exception ex)
                 {
@@ -833,21 +839,28 @@ public class WebTorrentClient : IAsyncDisposable
     public async Task RemoveAsync(Torrent torrent)
     {
         Torrents.Remove(torrent);
-        // WireInfoHashHex so pure-v2 torrents hit the correct OPFS path
-        // (v1 hash for v1/hybrid, first 20 bytes of v2 hash for pure-v2).
-        var infoHash = torrent.WireInfoHashHex;
+        // PersistKey is the dir/file the torrent was ACTUALLY persisted under: WireInfoHashHex for normal torrents,
+        // the provisional URL-key for Lazy-Hash torrents. Keying on WireInfoHashHex deleted a non-existent file for
+        // a lazy torrent (its state lives under the provisional key), so the torrent SURVIVED remove and
+        // RestoreFromStorageAsync re-added it on the next load — the "Stop doesn't work / it comes back" bug.
+        var key = torrent.PersistKey;
 
         // Delete persisted files FIRST (before dispose which might throw on WebSocket teardown)
-        if (AsyncFileSystem != null && !string.IsNullOrEmpty(infoHash))
+        if (AsyncFileSystem != null && !string.IsNullOrEmpty(key))
         {
             try
             {
-                var stateFile = $"webtorrent/_state/{infoHash}.state.json";
+                var stateFile = $"webtorrent/_state/{key}.state.json";
                 if (await AsyncFileSystem.FileExists(stateFile))
                     await AsyncFileSystem.Remove(stateFile);
-                var metaFile = $"webtorrent/_state/{infoHash}.torrent";
+                var metaFile = $"webtorrent/_state/{key}.torrent";
                 if (await AsyncFileSystem.FileExists(metaFile))
                     await AsyncFileSystem.Remove(metaFile);
+                // Delete the cached pieces too — otherwise remove leaks the bytes AND a future add restores it
+                // complete (the .NET-string overload already did this; the Torrent overload did not).
+                var dataDir = $"webtorrent/{key}";
+                if (await AsyncFileSystem.DirectoryExists(dataDir))
+                    await AsyncFileSystem.Remove(dataDir, recursive: true);
             }
             catch { }
         }

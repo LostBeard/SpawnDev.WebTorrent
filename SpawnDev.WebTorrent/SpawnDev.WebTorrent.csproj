@@ -9,7 +9,7 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-		<Version>3.2.11-local.3</Version>
+		<Version>3.2.11-local.4</Version>
 		<PackageReleaseNotes>v3.2.11-local.1: Lazy-Hash Torrents - AddAsync(http(s) url) adds a PERSISTENT torrent from a web-seed URL with the infohash unknown at add (computed as it downloads), then finalizes a byte-identical infohash, caches to OPFS and restores on reload with zero re-download. Browser downloads stay zero-copy (JS.Fetch -> Uint8Array -> SubtleCrypto -> OPFS, never .NET) and coalesce per-piece GETs into ~1 MiB spans. See Plans/lazy-hash-torrents.md.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>

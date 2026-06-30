@@ -1689,6 +1689,13 @@ public partial class Torrent : IAsyncDisposable
     public void Resume()
     {
         Paused = false;
+        // A torrent restored paused never ran SetMetadata's default-select (that's gated on !Paused), so it has no
+        // selections and UpdateWires would request nothing. Select all remaining pieces now so resume actually
+        // downloads. (No-op when already selected, deselect-mode, or complete.)
+        if (!_deselect && Pieces.Length > 0 && !Done && _selections.Length == 0)
+        {
+            _selections.Insert(new SelectionItem { From = 0, To = Pieces.Length - 1, Priority = 0 });
+        }
         UpdateWires();
         _ = PersistStateAsync();
     }

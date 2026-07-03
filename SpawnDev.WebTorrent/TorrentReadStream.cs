@@ -126,4 +126,19 @@ public class TorrentReadStream : Stream, IJSReadStream
         _position += data.Length;
         return data;
     }
+
+    /// <summary>
+    /// Synchronous <see cref="ReadUint8ArrayAsync"/> counterpart (the <see cref="IJSReadStream"/> member
+    /// added in SpawnDev.BlazorJS 3.5.14 - without this implementation the TYPE fails to load against
+    /// 3.5.14+ with a TypeLoadException in any consumer, even code that never calls it). Honors the
+    /// <see cref="CanReadSync"/> contract: throws in Blazor WASM (pieces download via async fetch on the
+    /// single thread - blocking would deadlock, same as sync <see cref="Read(byte[], int, int)"/>); on
+    /// desktop it performs the read by blocking on the async path, exactly like the sync Read override.
+    /// </summary>
+    public Uint8Array ReadUint8Array(int count)
+    {
+        if (!CanReadSync)
+            throw new NotSupportedException("Synchronous ReadUint8Array is not supported in Blazor WASM. Use ReadUint8ArrayAsync.");
+        return ReadUint8ArrayAsync(count).GetAwaiter().GetResult();
+    }
 }

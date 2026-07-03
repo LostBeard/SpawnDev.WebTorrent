@@ -6,7 +6,9 @@
     <!-- SpawnDev packages -->
     <PackageVersion Include="SpawnDev.RTC" Version="1.1.10" />
     <PackageVersion Include="SpawnDev.RTC.Server" Version="1.0.8" />
-    <PackageVersion Include="SpawnDev.BlazorJS" Version="3.5.13" />
+    <!-- 3.5.14: IJSReadStream grew the sync ReadUint8Array member - TorrentReadStream implements it
+         (built against anything older, the TYPE fails to load in consumers that pull 3.5.14+). -->
+    <PackageVersion Include="SpawnDev.BlazorJS" Version="3.5.14" />
     <PackageVersion Include="SpawnDev.BlazorJS.Cryptography" Version="3.2.0" />
     <PackageVersion Include="SpawnDev.AsyncFileSystem" Version="1.4.0" />
     <PackageVersion Include="SpawnDev.BackgroundServices" Version="1.0.2" />

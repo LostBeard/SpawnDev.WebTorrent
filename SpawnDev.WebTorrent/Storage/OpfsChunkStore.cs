@@ -98,10 +98,26 @@ public class AsyncFSChunkStore : IChunkStore
     /// JS Uint8Array can be hashed (SubtleCrypto) and stored here, never entering the .NET heap. Only valid
     /// on a browser file system (OPFS). The caller owns/disposes the passed Uint8Array.
     /// </summary>
+    // TEST-ONLY fault injection for the storage-quota runaway regression (2026-07-04). When armed, PutUint8ArrayAsync
+    // throws a browser-shaped QuotaExceededError instead of writing, so a unit test can drive the REAL download loop
+    // into the store-failure path and prove it PAUSES (quota) / backs-off-then-recovers (transient) instead of
+    // hot-looping the same piece forever. Static so a test can arm it without a handle to the internal store; a test
+    // MUST reset both in a finally. Inert (single bool check) in production.
+    internal static bool TestThrowQuotaForever;
+    internal static int TestThrowTransientOnPutCount;
+    private const string QuotaMessage = "The operation failed because it would cause the application to exceed its storage quota.";
+
     public async Task PutUint8ArrayAsync(int index, Uint8Array data, CancellationToken ct = default)
     {
         if (_browserFs == null)
             throw new InvalidOperationException("PutUint8ArrayAsync requires a browser file system (OPFS).");
+        if (TestThrowQuotaForever)
+            throw new InvalidOperationException(QuotaMessage);
+        if (TestThrowTransientOnPutCount > 0)
+        {
+            TestThrowTransientOnPutCount--;
+            throw new IOException($"[test] transient store fault for piece {index}");   // non-quota → backoff+retry path
+        }
         await EnsureInitializedAsync();
         await _browserFs.Write($"{_basePath}/piece_{index}", (TypedArray)data);
         if (_cachedIndex == index) { _cachedIndex = -1; _cachedFull = null; }   // invalidate stale read cache

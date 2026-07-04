@@ -9,8 +9,8 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-		<Version>3.2.11</Version>
-		<PackageReleaseNotes>v3.2.11-local.1: Lazy-Hash Torrents - AddAsync(http(s) url) adds a PERSISTENT torrent from a web-seed URL with the infohash unknown at add (computed as it downloads), then finalizes a byte-identical infohash, caches to OPFS and restores on reload with zero re-download. Browser downloads stay zero-copy (JS.Fetch -> Uint8Array -> SubtleCrypto -> OPFS, never .NET) and coalesce per-piece GETs into ~1 MiB spans. See Plans/lazy-hash-torrents.md.</PackageReleaseNotes>
+		<Version>3.2.12</Version>
+		<PackageReleaseNotes>v3.2.12: Storage-quota runaway fix. When a browser download's OPFS piece store throws (QuotaExceededError), the zero-copy span path no longer re-requests the piece forever - it classifies the failure (quota / repeated-strike) and PAUSES the torrent with a new OnError event (Resume clears it), instead of hot-looping identical range GETs. Pairs with SpawnDev.BlazorJS 3.5.15 (OPFS writable abort-on-throw, no swap-file leak). See CHANGELOG.md.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>

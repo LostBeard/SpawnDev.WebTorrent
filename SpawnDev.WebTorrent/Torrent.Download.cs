@@ -285,6 +285,9 @@ public partial class Torrent
     // idle during each GET). With the large web-seed piece size a span is ~one piece, so this is the cross-piece
     // download concurrency. The bidirectional span grab keeps each span on its own contiguous run (no refragment).
     private const int ZeroCopyMaxSpans = 4;
+    // Consecutive failed attempts on the SAME span before we stop retrying and PAUSE the torrent (a stuck
+    // span - persistent OPFS/network fault - must not loop forever). Reset on the span's first success.
+    private const int ZeroCopyMaxSpanStrikes = 5;
     private int _zcSpansInFlight;
 
     // Diagnostics (tests reset + read): span-size distribution + the first spans' (start..last) boundaries to
@@ -352,13 +355,39 @@ public partial class Torrent
                 }
             }
             if (pending.Count > 0) await Task.WhenAll(pending);
+            _zcSpanStrikes.TryRemove(first, out _);   // span succeeded — clear its failure streak
             CheckDone();
         }
         catch (Exception ex)
         {
             if (WebTorrentClient.VerboseLogging)
                 Console.WriteLine($"[ZeroCopySpan] {first}..{last} failed: {ex.GetType().Name}: {ex.Message}");
-            // leave unflagged pieces for the picker to retry
+            // A save/fetch failure must NEVER hot-loop the span. The old "leave it for the picker" policy
+            // re-requested the same pieces forever (fetch -> throw -> re-request; 169 identical GETs observed
+            // live on the 1.5B model, 2026-07-04). Classify + BOUND the retries:
+            bool quota = ex.Message.Contains("exceed", StringComparison.OrdinalIgnoreCase) &&
+                         ex.Message.Contains("quota", StringComparison.OrdinalIgnoreCase);
+            int strikes = _zcSpanStrikes.AddOrUpdate(first, 1, (_, n) => n + 1);
+            if (quota || strikes >= ZeroCopyMaxSpanStrikes)
+            {
+                // Quota can never recover by retrying; a span that has failed ZeroCopyMaxSpanStrikes times in a
+                // row is stuck on a persistent OPFS/network fault. Either way retrying only burns bandwidth (and,
+                // before the AsyncFileSystem abort-on-throw fix, leaked an OPFS swap file per attempt). Surface a
+                // torrent error and PAUSE so the app can react (free storage / warn the user) instead of looping.
+                StorageQuotaExceeded = quota;
+                OnError?.Invoke(quota
+                    ? $"Storage quota exceeded writing pieces {first}..{last} - torrent paused. Free origin storage (OPFS) and resume."
+                    : $"Pieces {first}..{last} failed to store {strikes}x ({ex.GetType().Name}: {ex.Message}) - torrent paused.");
+                Pause();
+            }
+            else
+            {
+                // Transient failure class (network hiccup, hub restart): retry is legitimate but NEVER hot.
+                // Same-span repeat failures back off exponentially (250ms, 500ms, ... capped 8s).
+                int delayMs = Math.Min(250 << Math.Min(strikes - 1, 5), 8000);
+                await Task.Delay(delayMs);
+            }
+            // leave unflagged pieces for the picker to retry (unless we paused above)
         }
         finally
         {
@@ -368,6 +397,11 @@ public partial class Torrent
             UpdateWires();
         }
     }
+
+    /// <summary>True once a piece-store write failed with a storage-quota error (the torrent auto-pauses;
+    /// clearing origin storage and resuming recovers). Reset on <see cref="Resume"/>.</summary>
+    public bool StorageQuotaExceeded { get; internal set; }
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, int> _zcSpanStrikes = new();
 
     /// <summary>Hash (compute+store for lazy, else verify) one piece from an in-memory span Uint8Array and store it
     /// to OPFS — all JS-side. Run bounded-concurrent by <see cref="ZeroCopySpanAsync"/> so no single chain hogs the
@@ -382,7 +416,15 @@ public partial class Torrent
 
         bool match = await VerifyPieceZeroCopyAsync(p, pieceUa, pieceLen);        // COMPUTE+store for lazy, else verify
         if (Done || Bitfield[p]) return;                                          // completed elsewhere while hashing
-        if (piece != null && piece != Pieces[p]) return;                         // a selected piece object was swapped (superseded)
+        if (piece != null && piece != Pieces[p])
+        {
+            // DIAGNOSTIC (2026-07-04 repeated-piece loop): a verified completion discarded because the
+            // picker re-armed the Piece object mid-flight. If this fires repeatedly for one index, the
+            // re-arm cadence is outpacing fetch+hash and this discard IS the infinite loop.
+            if (WebTorrentClient.VerboseLogging)
+                Console.WriteLine($"[ZeroCopySpan] p{p} COMPLETION DISCARDED (piece object swapped mid-flight, match={match})");
+            return;                                                               // a selected piece object was swapped (superseded)
+        }
 
         if (match)
         {
@@ -958,6 +1000,11 @@ public partial class Torrent
     public event Action? OnDone;
     public event Action<Wire, Wire, int>? OnHotswap;  // oldWire, newWire, pieceIndex
     public event Action<string>? OnWarning;
+    /// <summary>Raised when the torrent auto-pauses on an unrecoverable download-store failure (storage quota
+    /// exceeded, or a span that failed to store repeatedly). The string is a human-readable reason. Distinct from
+    /// <see cref="OnWarning"/> (transient/recoverable): an OnError means the torrent is now Paused - free storage
+    /// (OPFS) if needed, then call <see cref="Resume"/>. See also <see cref="StorageQuotaExceeded"/>.</summary>
+    public event Action<string>? OnError;
 
     // ========================
     // HELPERS

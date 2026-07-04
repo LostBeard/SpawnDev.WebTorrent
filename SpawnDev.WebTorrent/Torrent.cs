@@ -1689,6 +1689,8 @@ public partial class Torrent : IAsyncDisposable
     public void Resume()
     {
         Paused = false;
+        StorageQuotaExceeded = false;   // a resume is the app's signal it freed storage / wants to retry
+        _zcSpanStrikes.Clear();         // give every span a fresh retry budget after a pause
         // A torrent restored paused never ran SetMetadata's default-select (that's gated on !Paused), so it has no
         // selections and UpdateWires would request nothing. Select all remaining pieces now so resume actually
         // downloads. (No-op when already selected, deselect-mode, or complete.)

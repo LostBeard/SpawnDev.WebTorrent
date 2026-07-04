@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.2.12 (2026-07-04) — storage-quota runaway fix
+
+**A browser download whose OPFS piece store failed used to re-request the same piece forever.** On the zero-copy web-seed span path (browser model downloads), a verified piece is stored to OPFS. Under Lazy-Hash the hash always "matches" (the first downloader computes it), so the *only* way a delivered piece fails to complete is a throw in the store — most importantly the browser's `QuotaExceededError` when the origin is out of space. The old catch left the piece unflagged, so the picker re-requested it, re-fetched, re-stored, threw again: an infinite hot loop (169 identical range GETs observed live on a 1.5 GB model), which also — before the paired SpawnDev.BlazorJS 3.5.15 fix — leaked an OPFS swap file per attempt, accelerating the storage exhaustion.
+
+`Torrent.ZeroCopySpanAsync` now classifies the failure: a quota error (or a span that has failed `ZeroCopyMaxSpanStrikes = 5` times running) surfaces a new **`Torrent.OnError`** event and **pauses** the torrent (`StorageQuotaExceeded` is set; `Resume()` clears it and the strike map), instead of burning bandwidth on an unrecoverable loop. A transient (non-quota) store failure backs off exponentially (250 ms → 8 s) and retries, and the strike streak is cleared on the span's first success. Pairs with **SpawnDev.BlazorJS 3.5.15** (OPFS writable abort-on-throw — no swap-file leak) and **SpawnDev.AsyncFileSystem 1.5.1**.
+
+New regression tests (`WebTorrentTestBase.StorageQuotaTests`, browser/OPFS, fault-injected store): `StorageQuota_WriteThrows_PausesTorrent_NoRunawayRefetch` (quota → pause + OnError + GETs stop climbing after the pause) and `StorageQuota_TransientWriteFault_RecoversWithoutPausing`.
+
 ## 3.2.10 (2026-06-09) — web-seed range over-EOF clamp (RFC 7233)
 
 **Fixes a server-side HTTP range bug that truncated 206 responses when a client requested past EOF.** Both web-seed servers — `WebSeedServer` (BEP 17/19) and the HuggingFace proxy (`HuggingFaceProxy`) — set a 206 `Content-Length` from the requested byte count but used an explicit last-byte-pos verbatim. When that `end` ran past the file, the server promised more bytes than it could stream, the body closed short, and a browser `fetch()` rejected the whole response with `net::ERR_CONTENT_LENGTH_MISMATCH` — so the web-seed piece never verified. Reproduced live against the hub: a 1,059,962-byte file asked for `bytes=1059952-1060961` promised `Content-Length: 1010` but streamed 10.

@@ -4,8 +4,8 @@
   </PropertyGroup>
   <ItemGroup>
     <!-- SpawnDev packages -->
-    <PackageVersion Include="SpawnDev.RTC" Version="2.0.0" />
-    <PackageVersion Include="SpawnDev.RTC.Server" Version="1.0.8" />
+    <PackageVersion Include="SpawnDev.RTC" Version="2.0.2" />
+    <PackageVersion Include="SpawnDev.RTC.Server" Version="2.0.2" />
     <!-- SpawnJS: the library (SpawnDev.WebTorrent) is on SpawnJS; the BlazorJS entries below remain
          for the not-yet-converted ServerApp / PlaywrightMultiTest projects. -->
     <PackageVersion Include="SpawnDev.SpawnJS" Version="2.0.9" />

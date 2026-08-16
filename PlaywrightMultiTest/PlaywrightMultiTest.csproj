@@ -26,7 +26,7 @@
 		<PackageReference Include="Microsoft.CodeAnalysis" PrivateAssets="All" />
 		<FrameworkReference Include="Microsoft.AspNetCore.App" />
 		<PackageReference Include="SpawnDev.UnitTesting" />
-		<PackageReference Include="SpawnDev.BlazorJS.Cryptography" />
+		<PackageReference Include="SpawnDev.SpawnJS.Cryptography" />
 		<!-- SpawnDev.RTC.Server needed by tests that spin up an in-process local
 		     tracker (desktop-only; test-infra, never shipped). -->
 		<PackageReference Include="SpawnDev.RTC.Server" />

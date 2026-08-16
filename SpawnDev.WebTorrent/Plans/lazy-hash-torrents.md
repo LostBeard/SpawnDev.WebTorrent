@@ -134,7 +134,7 @@ request latency. This is what makes web-seed downloads feel slow (and likely the
 - Multi-seed (Phase 2): hand different chunks to different seeds; a stalled seed's chunk re-dispatches to another.
 
 **ZERO-COPY LAW — where the span fetch lives differs by platform (TJ, 2026-06-29):**
-- **Browser (the rule):** the span MUST be fetched with `BlazorJSRuntime.JS.Fetch` (`WebConn.FetchPieceUint8ArrayAsync`)
+- **Browser (the rule):** the span MUST be fetched with `SpawnJSRuntime.JS.Fetch` (`WebConn.FetchPieceUint8ArrayAsync`)
   → a `Uint8Array` that NEVER enters the .NET/WASM heap → split into pieces with `Uint8Array.subarray` (VIEWS, no
   copy) → SubtleCrypto-hash each (for LAZY: COMPUTE+store the hash — extend `VerifyPieceZeroCopyAsync` to a
   compute-and-store variant; do NOT fall back to .NET) → `AsyncFSChunkStore.PutUint8ArrayAsync` to OPFS. Coalescing

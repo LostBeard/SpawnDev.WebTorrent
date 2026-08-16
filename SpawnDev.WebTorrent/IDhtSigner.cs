@@ -78,7 +78,7 @@ public class Ed25519Signer : IDhtSigner
     {
         try
         {
-            // BEP 44 transmits the 32-byte raw Ed25519 pubkey on the wire; BlazorJS.Cryptography's
+            // BEP 44 transmits the 32-byte raw Ed25519 pubkey on the wire; SpawnJS.Cryptography's
             // ImportEd25519Key expects 44-byte SPKI. Wrap raw keys in the SPKI prefix so verify
             // works for both formats transparently.
             var spki = publicKey.Length == 32 ? BuildSpkiFromRaw(publicKey) : publicKey;
@@ -92,7 +92,7 @@ public class Ed25519Signer : IDhtSigner
     }
 
     // Ed25519 SPKI prefix (12 bytes): SEQUENCE + AlgorithmIdentifier(id-Ed25519 = 1.3.101.112) + BIT STRING header.
-    // Same constant used by the SPKI decoder side in BlazorJS.Cryptography.
+    // Same constant used by the SPKI decoder side in SpawnJS.Cryptography.
     private static byte[] BuildSpkiFromRaw(byte[] raw32)
     {
         var prefix = new byte[] { 0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00 };

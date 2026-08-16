@@ -1,8 +1,9 @@
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.Components.WebAssembly.Hosting;
-using SpawnDev.BlazorJS;
-using SpawnDev.BlazorJS.Cryptography;
 using SpawnDev.AsyncFileSystem;
+using SpawnDev.BlazorJS;
+using SpawnDev.SpawnJS;
+using SpawnDev.SpawnJS.Cryptography;
 using SpawnDev.WebTorrent;
 using SpawnDev.WebTorrent.Demo;
 
@@ -10,8 +11,8 @@ Console.WriteLine($"[SpawnDev.WebTorrent.Demo] Build: {BuildTimestamp.Value}");
 
 var builder = WebAssemblyHostBuilder.CreateDefault(args);
 
-// BlazorJSRuntime handles all JavaScript interop (required for SpawnDev.BlazorJS)
-builder.Services.AddBlazorJSRuntime();
+// SpawnJSRuntime handles all JavaScript interop (required for SpawnDev.SpawnJS)
+builder.Services.AddSpawnJSRuntime();
 
 // Cross-platform crypto for Ed25519 signing (BEP 44)
 builder.Services.AddPlatformCrypto();
@@ -45,4 +46,8 @@ builder.Services.AddSingleton(sp => new HttpClient { BaseAddress = new Uri(build
 builder.RootComponents.Add<App>("#app");
 builder.RootComponents.Add<HeadOutlet>("head::after");
 
-await builder.Build().BlazorJSRunAsync();
+var host = builder.Build();
+
+await host.StartBackgroundServices();
+
+await host.RunAsync();

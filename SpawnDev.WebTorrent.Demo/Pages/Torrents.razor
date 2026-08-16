@@ -1,9 +1,9 @@
 @page "/torrents"
 @using SpawnDev.WebTorrent
-@using SpawnDev.BlazorJS
-@using SpawnDev.BlazorJS.JSObjects
+@using SpawnDev.SpawnJS
+@using SpawnDev.SpawnJS.JSObjects
 @using Microsoft.AspNetCore.Components.Forms
-@inject BlazorJSRuntime JS
+@inject SpawnJSRuntime JS
 @inject WebTorrentClient Client
 @implements IAsyncDisposable
 
@@ -710,7 +710,7 @@
             await Task.Delay(100); // wait for Blazor JS interop to be ready
             try
             {
-                var json = await JS.CallAsync<string?>("localStorage.getItem", "webtorrent-settings");
+                var json = await JS.CallAsync<string, string?>("localStorage.getItem", "webtorrent-settings");
                 if (!string.IsNullOrEmpty(json))
                 {
                     var settings = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(json);

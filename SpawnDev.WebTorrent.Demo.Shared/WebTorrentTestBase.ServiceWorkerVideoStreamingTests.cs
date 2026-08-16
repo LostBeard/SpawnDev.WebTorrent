@@ -1,5 +1,5 @@
-using SpawnDev.BlazorJS;
-using SpawnDev.BlazorJS.JSObjects;
+using SpawnDev.SpawnJS;
+using SpawnDev.SpawnJS.JSObjects;
 using SpawnDev.UnitTesting;
 
 namespace SpawnDev.WebTorrent.Demo.Shared;
@@ -33,7 +33,7 @@ public abstract partial class WebTorrentTestBase
     // reliably starts un-downloaded (see the purge in the test for why).
     private const string SintelInfoHash = "08ada5a7a6183aae1e09d831df6748d566095a10";
 
-    // Live REMOTE swarm. The reference (SpawnDev.BlazorJS.WebTorrents) starts downloading this same magnet in
+    // Live REMOTE swarm. The reference (SpawnDev.SpawnJS.WebTorrents) starts downloading this same magnet in
     // <10s, so this MUST be fast too — no inflated timeouts to paper over a slow start.
     [TestMethod(Timeout = 170000, RetryCount = 0)]
     public async Task Stream_ServiceWorker_RealVideoElement_StreamsAndSeeksWhileDownloading()
@@ -65,7 +65,7 @@ public abstract partial class WebTorrentTestBase
         // The service worker must be installed AND controlling the page, or StreamURL fetches won't be
         // intercepted. Probe its health endpoint first so a non-controlling SW fails clearly instead of
         // surfacing as a confusing media error 60s later.
-        using (var probe = await BlazorJSRuntime.JS.Fetch("/webtorrent-sw-check", new FetchOptions { Cache = "no-store" }))
+        using (var probe = await SpawnJSRuntime.Instance.Fetch("/webtorrent-sw-check", new FetchOptions { Cache = "no-store" }))
         {
             if (probe.Status != 200)
                 throw new Exception($"service worker is not controlling the page (/webtorrent-sw-check -> HTTP {probe.Status}); SW streaming cannot work");
@@ -114,7 +114,7 @@ public abstract partial class WebTorrentTestBase
 
             // Attach to the DOM. A detached <video> can defer/skip media loading in Chromium; the demo and
             // the reference both point an in-document element at the stream URL.
-            using (var doc = BlazorJSRuntime.JS.Get<SpawnDev.BlazorJS.JSObjects.Document>("document"))
+            using (var doc = SpawnJSRuntime.Instance.Get<SpawnDev.SpawnJS.JSObjects.Document>("document"))
             using (var body = doc.Body!)
                 body.AppendChild(video);
 
@@ -173,7 +173,7 @@ public abstract partial class WebTorrentTestBase
                         var popts = new FetchOptions { Headers = new Dictionary<string, string> { ["Range"] = range }, Cache = "no-store" };
                         async Task<(int, int, int, string)> Do()
                         {
-                            using var presp = await BlazorJSRuntime.JS.Fetch(url, popts);
+                            using var presp = await SpawnJSRuntime.Instance.Fetch(url, popts);
                             var st = presp.Status;
                             using var pab = await presp.ArrayBuffer();
                             using var pu8 = new Uint8Array(pab);
@@ -259,7 +259,7 @@ public abstract partial class WebTorrentTestBase
             foreach (var d in videoDetachers) { try { d(); } catch { } }   // -= every traced media event before dispose
             if (video != null)
             {
-                // Detach handlers with -= BEFORE disposing the element (BlazorJS ActionEvent discipline).
+                // Detach handlers with -= BEFORE disposing the element (SpawnJS ActionEvent discipline).
                 if (onMeta != null) video.OnLoadedMetadata -= onMeta;
                 if (onSeeked != null) video.OnSeeked -= onSeeked;
                 try { video.Pause(); } catch { }
@@ -291,12 +291,12 @@ public abstract partial class WebTorrentTestBase
     private async Task SeedLocalMp4AndDemux(string assetName, int timeoutSec)
     {
         if (Client.StreamHandler != null) await Client.StreamHandler.Ready;
-        using (var swProbe = await BlazorJSRuntime.JS.Fetch("/webtorrent-sw-check", new FetchOptions { Cache = "no-store" }))
+        using (var swProbe = await SpawnJSRuntime.Instance.Fetch("/webtorrent-sw-check", new FetchOptions { Cache = "no-store" }))
             if (swProbe.Status != 200)
                 throw new Exception($"service worker is not controlling the page (/webtorrent-sw-check -> {swProbe.Status})");
 
         byte[] mp4;
-        using (var resp = await BlazorJSRuntime.JS.Fetch(assetName, new FetchOptions { Cache = "no-store" }))
+        using (var resp = await SpawnJSRuntime.Instance.Fetch(assetName, new FetchOptions { Cache = "no-store" }))
         {
             if (resp.Status != 200) throw new Exception($"could not fetch local asset /{assetName} -> HTTP {resp.Status}");
             using var ab = await resp.ArrayBuffer();
@@ -316,7 +316,7 @@ public abstract partial class WebTorrentTestBase
             var url = file.StreamURL;
 
             video = new HTMLVideoElement { Muted = true, PlaysInline = true, AutoPlay = true, Preload = "auto" };
-            using (var doc = BlazorJSRuntime.JS.Get<SpawnDev.BlazorJS.JSObjects.Document>("document"))
+            using (var doc = SpawnJSRuntime.Instance.Get<SpawnDev.SpawnJS.JSObjects.Document>("document"))
             using (var body = doc.Body!)
                 body.AppendChild(video);
             var metaTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -379,7 +379,7 @@ public abstract partial class WebTorrentTestBase
         try
         {
             video = new HTMLVideoElement { Muted = true, PlaysInline = true, AutoPlay = true, Preload = "auto" };
-            using (var doc = BlazorJSRuntime.JS.Get<SpawnDev.BlazorJS.JSObjects.Document>("document"))
+            using (var doc = SpawnJSRuntime.Instance.Get<SpawnDev.SpawnJS.JSObjects.Document>("document"))
             using (var body = doc.Body!) body.AppendChild(video);
             var metaTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             onMeta = _ => metaTcs.TrySetResult(); video.OnLoadedMetadata += onMeta;
@@ -417,7 +417,7 @@ public abstract partial class WebTorrentTestBase
         try
         {
             video = new HTMLVideoElement { Muted = true, PlaysInline = true, AutoPlay = true, Preload = "auto" };
-            using (var doc = BlazorJSRuntime.JS.Get<SpawnDev.BlazorJS.JSObjects.Document>("document"))
+            using (var doc = SpawnJSRuntime.Instance.Get<SpawnDev.SpawnJS.JSObjects.Document>("document"))
             using (var body = doc.Body!)
                 body.AppendChild(video);
             var metaTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -454,7 +454,7 @@ public abstract partial class WebTorrentTestBase
     private async Task SeedFileBlobToVideo(string assetName, int timeoutSec)
     {
         byte[] data;
-        using (var resp = await BlazorJSRuntime.JS.Fetch(assetName, new FetchOptions { Cache = "no-store" }))
+        using (var resp = await SpawnJSRuntime.Instance.Fetch(assetName, new FetchOptions { Cache = "no-store" }))
         {
             if (resp.Status != 200) throw new Exception($"could not fetch local asset /{assetName} -> HTTP {resp.Status}");
             using var ab = await resp.ArrayBuffer();
@@ -466,7 +466,7 @@ public abstract partial class WebTorrentTestBase
         var torrent = await Client.SeedAsync(assetName, data);
         HTMLVideoElement? video = null;
         Action<Event>? onMeta = null;
-        SpawnDev.BlazorJS.JSObjects.Blob? blob = null;
+        SpawnDev.SpawnJS.JSObjects.Blob? blob = null;
         string? objUrl = null;
         try
         {
@@ -477,7 +477,7 @@ public abstract partial class WebTorrentTestBase
             objUrl = blob.ToObjectURL();   // blob: URL — the service worker is NOT involved
 
             video = new HTMLVideoElement { Muted = true, PlaysInline = true, AutoPlay = true, Preload = "auto" };
-            using (var doc = BlazorJSRuntime.JS.Get<SpawnDev.BlazorJS.JSObjects.Document>("document"))
+            using (var doc = SpawnJSRuntime.Instance.Get<SpawnDev.SpawnJS.JSObjects.Document>("document"))
             using (var body = doc.Body!)
                 body.AppendChild(video);
             var metaTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -498,7 +498,7 @@ public abstract partial class WebTorrentTestBase
         }
         finally
         {
-            if (objUrl != null) { try { SpawnDev.BlazorJS.JSObjects.URL.RevokeObjectURL(objUrl); } catch { } }
+            if (objUrl != null) { try { SpawnDev.SpawnJS.JSObjects.URL.RevokeObjectURL(objUrl); } catch { } }
             blob?.Dispose();
             if (video != null)
             {

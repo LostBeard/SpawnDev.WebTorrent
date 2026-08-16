@@ -12,7 +12,7 @@ Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Run
 - **Pure C#** — No JavaScript interop, no Node.js, no npm. 100% .NET.
 - **Desktop + Browser** — Same library, same API. WPF, console, Blazor WebAssembly.
 - **DI Singleton Services** — `WebTorrentClient` and `ServiceWorkerStreamHandler` implement `IAsyncBackgroundService`. Register once, start with the app, inject anywhere.
-- **Real WebRTC P2P** — Cross-platform via [SpawnDev.RTC](https://github.com/LostBeard/SpawnDev.RTC). One `RtcPeer` type backs browser (BlazorJS `RTCPeerConnection`) and desktop (a SipSorcery fork with proven DTLS/SRTP). Browser and desktop peers interop seamlessly through the same tracker.
+- **Real WebRTC P2P** — Cross-platform via [SpawnDev.RTC](https://github.com/LostBeard/SpawnDev.RTC). One `RtcPeer` type backs browser (SpawnJS `RTCPeerConnection`) and desktop (a SipSorcery fork with proven DTLS/SRTP). Browser and desktop peers interop seamlessly through the same tracker.
 - **18 BEPs** — Full wire protocol, DHT, Fast Extension, ut_metadata, ut_pex, private torrents, magnet file selection, tracker scrape, local service discovery, BEP 52 v2 (SHA-256 + Merkle + hybrid + magnet + pure-v2 end-to-end download), and more. v2 peer wire messages (21 `hash_request` / 22 `hashes` / 23 `hash_reject`) + leaf-level `base_layer=0` serving + `V2HashRequestCoordinator` + pure-v2 tracker + wire handshake + dedup + OPFS persistence + service-worker streaming + HTTP file browser all shipped. Pure-v2-only magnets (`urn:btmh:`) now work end-to-end, keyed through `WireInfoHashHex` (first 20 bytes of SHA-256, libtorrent / qBittorrent / rqbit convention).
 - **4 Tracker / Discovery Types** — WebSocket (browser + desktop, WebRTC signaling), HTTP/HTTPS, UDP (desktop), Local Service Discovery (BEP 14, multicast on the local subnet, desktop).
 - **Web Seed Download** — HTTP range requests with multi-file piece assembly (BEP 17/19).
@@ -26,7 +26,7 @@ Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Run
 - **Pluggable piece-hash engine** — `IPieceHashEngine` interface with `BatchSha256` lets recheck-heavy workloads route piece verification through a GPU / batched implementation. Default `SystemCryptoPieceHashEngine` is byte-identical to 3.1.x; the GPU engine will ship as a separate package. See [Docs/hash-engine.md](Docs/hash-engine.md).
 - **Bandwidth policy** — `BandwidthPolicy` enum (`Unlimited` / `Conservative` / `Metered` / `SeedingDisabled` / `Custom`) plus `WebTorrentClient.ApplyBandwidthPolicy(...)` runtime knob. Tell the client "be reasonable on a metered connection" without picking a number. See [Docs/bandwidth-policy.md](Docs/bandwidth-policy.md).
 - **Speed Tracking** — Real-time download/upload bytes/sec per torrent.
-- **AI Agent Communication** — BEP 46 DHT mutable items with Ed25519 signing via [SpawnDev.BlazorJS.Cryptography](https://github.com/LostBeard/SpawnDev.BlazorJS.Cryptography) 3.2.0+. AgentChannel pub/sub for shared AI state. `btpk` magnet URI support for mutable torrent subscriptions.
+- **AI Agent Communication** — BEP 46 DHT mutable items with Ed25519 signing via [SpawnDev.SpawnJS.Cryptography](https://github.com/LostBeard/SpawnDev.SpawnJS.Cryptography) 3.2.0+. AgentChannel pub/sub for shared AI state. `btpk` magnet URI support for mutable torrent subscriptions.
 - **HuggingFace Integration** — Optional server extension that proxies HuggingFace model CDN with local caching and automatic torrent generation. Every browser that loads a model becomes a peer for the next; first request fills the cache, second request streams from peers. See [Docs/huggingface.md](Docs/huggingface.md) for the end-to-end pattern (server side + Blazor client side, with live `hub.spawndev.com` examples).
 - **Custom Wire Extensions** — `UseExtension()` factory pattern (same as JS WebTorrent `wire.use()`). Build custom P2P protocols on top of the BitTorrent wire — distributed compute, AI agents, anything. Extensions negotiate via BEP 10.
 - **.torrent Creation** — Create and parse .torrent files. Complete Bencode encoder/decoder. SHA-256 piece hashes (BEP 52 Phase 1) by default for stronger integrity on large ML model files; SHA-1 available via `HashAlgorithm = "SHA-1"` for v1 back-compat. `TorrentMetadata.PieceHashAlgorithm` surfaces which algorithm a parsed torrent uses.
@@ -48,12 +48,12 @@ Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Run
 // Program.cs
 using SpawnDev.AsyncFileSystem;
 using SpawnDev.AsyncFileSystem.BrowserWASM;
-using SpawnDev.BlazorJS;
-using SpawnDev.BlazorJS.Cryptography;
+using SpawnDev.SpawnJS;
+using SpawnDev.SpawnJS.Cryptography;
 using SpawnDev.WebTorrent;
 
 var builder = WebAssemblyHostBuilder.CreateDefault(args);
-builder.Services.AddBlazorJSRuntime();
+builder.Services.AddSpawnJSRuntime();
 
 // Cross-platform Ed25519 crypto for BEP 44/46 signing
 builder.Services.AddPlatformCrypto();
@@ -65,7 +65,7 @@ builder.Services.AddSingleton<IAsyncFS, AsyncFSFileSystemDirectoryHandle>();
 builder.Services.AddSingleton<ServiceWorkerStreamHandler>();
 builder.Services.AddSingleton<WebTorrentClient>();
 
-await builder.Build().BlazorJSRunAsync();
+await builder.Build().SpawnJSRunAsync();
 ```
 
 ```html
@@ -278,7 +278,7 @@ Browser Client                    Desktop Client
 | WebTorrentClient                | WebTorrentClient|
 |                |                |                 |
 | RtcPeer  <-----+----+--------->-+ RtcPeer         |
-|  (BlazorJS     |    |           |  (SipSorcery    |
+|  (SpawnJS     |    |           |  (SipSorcery    |
 |   RTCPeer-     |    |           |   fork; same    |
 |   Connection)  |    |           |   API)          |
 |                |    |           | TcpPeer +/--    |

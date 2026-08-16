@@ -10,7 +10,7 @@
 		<Nullable>enable</Nullable>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 		<Version>4.0.0</Version>
-		<PackageReleaseNotes>v4.0.0 (BREAKING): Browser interop moves from SpawnDev.BlazorJS to SpawnDev.SpawnJS across the whole dependency chain (SpawnDev.SpawnJS + SpawnDev.SpawnJS.Cryptography, and the SpawnJS builds of SpawnDev.RTC + SpawnDev.AsyncFileSystem). JS values cross the .NET/JS boundary as numeric object-table ids (no per-object JSObject allocation on the OPFS/piece hot paths). Client/torrent/wire API and desktop behavior unchanged; net10.0-only (SpawnJS is net10.0-only). See CHANGELOG.md.</PackageReleaseNotes>
+		<PackageReleaseNotes>v4.0.0 (BREAKING): Browser interop moves from SpawnDev.SpawnJS to SpawnDev.SpawnJS across the whole dependency chain (SpawnDev.SpawnJS + SpawnDev.SpawnJS.Cryptography, and the SpawnJS builds of SpawnDev.RTC + SpawnDev.AsyncFileSystem). JS values cross the .NET/JS boundary as numeric object-table ids (no per-object JSObject allocation on the OPFS/piece hot paths). Client/torrent/wire API and desktop behavior unchanged; net10.0-only (SpawnJS is net10.0-only). See CHANGELOG.md.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>
@@ -18,7 +18,7 @@
 		<NoWarn>$(NoWarn);CS1591</NoWarn>
 		<Title>SpawnDev.WebTorrent</Title>
 		<Authors>LostBeard</Authors>
-		<Description>Pure C# BitTorrent/WebTorrent client. 18 BEPs including BEP 52 v2 (SHA-256 + Merkle + hybrid + pure-v2 end-to-end), real WebRTC P2P (browser + desktop via SpawnDev.RTC), DHT with mutable items (BEP 46 — AI agent communication), web seeds, media streaming with seeking via service worker, OPFS storage. Includes webtorrent-sw.js for COI headers + torrent streaming. No JavaScript dependencies. Runs on desktop (.NET + SIPSorcery) and browser (Blazor WASM + SpawnDev.BlazorJS). 468+ shared test methods running on both browser and desktop runtimes + libtorrent 2.0 external-interop fixtures.</Description>
+		<Description>Pure C# BitTorrent/WebTorrent client. 18 BEPs including BEP 52 v2 (SHA-256 + Merkle + hybrid + pure-v2 end-to-end), real WebRTC P2P (browser + desktop via SpawnDev.RTC), DHT with mutable items (BEP 46 — AI agent communication), web seeds, media streaming with seeking via service worker, OPFS storage. Includes webtorrent-sw.js for COI headers + torrent streaming. No JavaScript dependencies. Runs on desktop (.NET + SIPSorcery) and browser (Blazor WASM + SpawnDev.SpawnJS). 468+ shared test methods running on both browser and desktop runtimes + libtorrent 2.0 external-interop fixtures.</Description>
 		<PackageProjectUrl>https://github.com/LostBeard/SpawnDev.WebTorrent</PackageProjectUrl>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
 		<PackageLicenseFile>LICENSE.txt</PackageLicenseFile>

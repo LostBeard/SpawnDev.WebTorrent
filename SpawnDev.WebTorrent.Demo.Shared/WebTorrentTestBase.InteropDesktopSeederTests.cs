@@ -1,10 +1,10 @@
-using SpawnDev.BlazorJS;
+using SpawnDev.SpawnJS;
 using SpawnDev.UnitTesting;
 
 namespace SpawnDev.WebTorrent.Demo.Shared;
 
 /// <summary>
-/// Cross-platform P2P download proof: a REAL browser (BlazorJS RTCPeerConnection) leeches a full file
+/// Cross-platform P2P download proof: a REAL browser (SpawnJS RTCPeerConnection) leeches a full file
 /// from a REAL desktop (SipSorcery) seeder over WebRTC, then byte-verifies it. The PMT GlobalSetup runs
 /// a desktop <c>WebTorrentClient</c> seeding deterministic 32 KiB data via the hub.spawndev.com tracker
 /// and writes the magnet to <c>wwwroot/_test-desktop-seeder.json</c>; this test consumes it. Exercises
@@ -21,7 +21,7 @@ public abstract partial class WebTorrentTestBase
             throw new UnsupportedTestException("Browser↔desktop-seeder P2P download is browser-only (reads the served wwwroot config + needs a browser RTCPeerConnection)");
 
         // The GlobalSetup desktop seeder writes its magnet here. Deterministic 32 KiB payload.
-        var origin = BlazorJSRuntime.JS.Get<string>("location.origin")
+        var origin = SpawnJSRuntime.Instance.Get<string>("location.origin")
                      ?? throw new Exception("could not read location.origin");
         using var http = new HttpClient { BaseAddress = new Uri(origin) };
 

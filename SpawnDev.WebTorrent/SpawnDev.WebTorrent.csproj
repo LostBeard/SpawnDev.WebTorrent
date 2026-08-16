@@ -9,7 +9,7 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-		<Version>4.0.0-local.1</Version>
+		<Version>4.0.0</Version>
 		<PackageReleaseNotes>v4.0.0 (BREAKING): Browser interop moves from SpawnDev.BlazorJS to SpawnDev.SpawnJS across the whole dependency chain (SpawnDev.SpawnJS + SpawnDev.SpawnJS.Cryptography, and the SpawnJS builds of SpawnDev.RTC + SpawnDev.AsyncFileSystem). JS values cross the .NET/JS boundary as numeric object-table ids (no per-object JSObject allocation on the OPFS/piece hot paths). Client/torrent/wire API and desktop behavior unchanged; net10.0-only (SpawnJS is net10.0-only). See CHANGELOG.md.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>

@@ -7,7 +7,7 @@ namespace SpawnDev.WebTorrent;
 /// Typed tracker protocol messages matching the JS bittorrent-tracker wire format.
 /// Uses CharStringConverter for info_hash/peer_id/offer_id binary string encoding.
 /// Properties use [JsonIgnore(WhenWritingNull)] to omit absent fields (required by some trackers).
-/// Based on SpawnDev.BlazorJS.Rally's proven message types.
+/// Based on SpawnDev.SpawnJS.Rally's proven message types.
 /// </summary>
 
 /// <summary>Base announce message - sent to tracker with offers.</summary>
@@ -128,7 +128,7 @@ public class TrackerRelayMessage
 
 /// <summary>
 /// Extension methods for binary string (latin1 char-per-byte) encoding.
-/// Ported from SpawnDev.BlazorJS.Rally's CharStringExtensions.
+/// Ported from SpawnDev.SpawnJS.Rally's CharStringExtensions.
 /// </summary>
 public static class CharStringExtensions
 {

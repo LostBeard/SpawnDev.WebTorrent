@@ -1,6 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
-using SpawnDev.BlazorJS.Cryptography;
+using SpawnDev.SpawnJS.Cryptography;
 
 namespace SpawnDev.WebTorrent;
 

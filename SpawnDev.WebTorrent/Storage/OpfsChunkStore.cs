@@ -1,6 +1,6 @@
 using SpawnDev.AsyncFileSystem;
-using SpawnDev.BlazorJS.JSObjects;
-using SpawnDev.BlazorJS.Toolbox;
+using SpawnDev.SpawnJS.JSObjects;
+using SpawnDev.SpawnJS.Toolbox;
 
 namespace SpawnDev.WebTorrent.Storage;
 
@@ -30,7 +30,7 @@ public class AsyncFSChunkStore : IChunkStore
     // of a COMPLETED piece — collapses N getFiles per piece into one. Small LRU so concurrent streams (a
     // player reading the front AND range-requesting the tail moov) don't evict each other every chunk.
     // Invalidated per-index on Put. Single-threaded WASM, so a lost interleave race just costs a redundant getFile.
-    private readonly Dictionary<int, BlazorJS.JSObjects.File> _fileCache = new();
+    private readonly Dictionary<int, SpawnDev.SpawnJS.JSObjects.File> _fileCache = new();
     private readonly Queue<int> _fileCacheOrder = new();
     private const int FileCacheMax = 4;
 
@@ -69,7 +69,7 @@ public class AsyncFSChunkStore : IChunkStore
 
     /// <summary>
     /// Read a byte SLICE of a piece as a JS <see cref="Uint8Array"/> WITHOUT reading the whole piece into
-    /// memory. Gets the OPFS file as a <see cref="BlazorJS.JSObjects.File"/> (a Blob — just a handle) and
+    /// memory. Gets the OPFS file as a <see cref="SpawnDev.SpawnJS.JSObjects.File"/> (a Blob — just a handle) and
     /// <c>slice()</c>s the requested range: the browser materializes ONLY that range from disk, and the
     /// bytes stay JS-side (zero-copy). This is what makes streaming a 64 KiB chunk out of a 4 MB piece cost
     /// 64 KiB, not 4 MB (the old GetUint8ArrayAsync(index) read the entire piece every chunk). Browser/OPFS
@@ -133,11 +133,11 @@ public class AsyncFSChunkStore : IChunkStore
     }
 
     /// <summary>
-    /// Get the OPFS <see cref="BlazorJS.JSObjects.File"/> (Blob handle) for a piece, cached so consecutive
+    /// Get the OPFS <see cref="SpawnDev.SpawnJS.JSObjects.File"/> (Blob handle) for a piece, cached so consecutive
     /// slice reads of the same piece don't each pay a getFile. Returns null if the piece file doesn't exist.
     /// The returned File is owned by the cache — callers slice it but must NOT dispose it.
     /// </summary>
-    private async Task<BlazorJS.JSObjects.File?> GetPieceFileAsync(int index)
+    private async Task<SpawnDev.SpawnJS.JSObjects.File?> GetPieceFileAsync(int index)
     {
         if (_fileCache.TryGetValue(index, out var hit)) return hit;
         var path = $"{_basePath}/piece_{index}";

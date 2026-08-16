@@ -1,5 +1,5 @@
-using SpawnDev.BlazorJS;
-using SpawnDev.BlazorJS.JSObjects;
+using SpawnDev.SpawnJS;
+using SpawnDev.SpawnJS.JSObjects;
 
 namespace SpawnDev.WebTorrent;
 
@@ -28,7 +28,7 @@ public class ServiceWorkerStreamHandler : IAsyncBackgroundService, IDisposable
     {
         if (!OperatingSystem.IsBrowser()) return Task.CompletedTask;
 
-        _swContainer = BlazorJSRuntime.JS.Get<ServiceWorkerContainer>("navigator.serviceWorker");
+        _swContainer = SpawnJSRuntime.Instance.Get<ServiceWorkerContainer>("navigator.serviceWorker");
         if (_swContainer == null) return Task.CompletedTask;
         _swContainer.OnMessage += HandleMessage;
         if (WebTorrentClient.VerboseLogging) Console.WriteLine("[WebTorrent SW Handler] Initialized — listening for SW messages");
@@ -39,13 +39,13 @@ public class ServiceWorkerStreamHandler : IAsyncBackgroundService, IDisposable
     {
         try
         {
-            using var data = msgEvent.GetData<JSObject>();
+            using var data = msgEvent.GetData<SpawnJSObject>();
             var msgType = data.JSRef!.Get<string?>("type");
             if (msgType != "webtorrent") return;
 
             var requestUrl = data.JSRef!.Get<string>("url") ?? "";
             if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[WebTorrent SW Handler] Received request: {requestUrl}");
-            using var headersObj = data.JSRef!.Get<JSObject?>("headers");
+            using var headersObj = data.JSRef!.Get<SpawnJSObject?>("headers");
             var rangeHeader = headersObj?.JSRef?.Get<string?>("range");
             var destination = data.JSRef!.Get<string?>("destination") ?? "";
 
@@ -297,7 +297,7 @@ public class StreamRequest
 
         public void HandlePull(MessageEvent pullMsg)
         {
-            using var pullData = pullMsg.GetData<JSObject>();
+            using var pullData = pullMsg.GetData<SpawnJSObject>();
             var eventType = pullData.JSRef!.Get<string>("eventType");
 
             if (eventType == "cancel" || eventType == "error")

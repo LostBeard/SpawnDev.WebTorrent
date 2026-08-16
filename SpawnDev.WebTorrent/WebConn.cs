@@ -1,5 +1,5 @@
-using SpawnDev.BlazorJS;
-using SpawnDev.BlazorJS.JSObjects;
+using SpawnDev.SpawnJS;
+using SpawnDev.SpawnJS.JSObjects;
 
 namespace SpawnDev.WebTorrent;
 
@@ -215,12 +215,12 @@ public class WebConn : IAsyncDisposable
 
     /// <summary>
     /// ZERO-COPY browser fetch of a piece's byte range as a JS <see cref="Uint8Array"/> that NEVER enters
-    /// the .NET heap. Uses the browser fetch API directly (<see cref="BlazorJSRuntime"/>), not the .NET
+    /// the .NET heap. Uses the browser fetch API directly (<see cref="SpawnJSRuntime"/>), not the .NET
     /// HttpClient — which would marshal every byte into the WASM heap (the streaming/model-download
     /// bottleneck). The returned Uint8Array is hashed (SubtleCrypto) and stored to OPFS entirely JS-side.
     /// Works for single-file torrents AND for pieces INTERIOR to one file of a multi-file torrent (the caller,
     /// <c>RequestBlock</c>, sends boundary pieces down the .NET block path instead). The caller owns +
-    /// disposes the returned Uint8Array. Browser-only (BlazorJSRuntime.JS).
+    /// disposes the returned Uint8Array. Browser-only (SpawnJSRuntime.Instance).
     /// </summary>
     internal async Task<Uint8Array> FetchPieceUint8ArrayAsync(long start, long end)
     {
@@ -253,7 +253,7 @@ public class WebConn : IAsyncDisposable
         var opts = new FetchOptions { Headers = new Dictionary<string, string> { ["Range"] = $"bytes={fetchStart}-{fetchEnd}" }, Cache = "no-store" };
         if (WebTorrentClient.VerboseLogging)
             Console.WriteLine($"[WebConn zero-copy] FETCH {fileUrl} Range=bytes {fetchStart}-{fetchEnd}");
-        using var response = await BlazorJSRuntime.JS.Fetch(fileUrl, opts);
+        using var response = await SpawnJSRuntime.Instance.Fetch(fileUrl, opts);
         int status = response.Status;
         if (status != 200 && status != 206)
             throw new HttpRequestException($"[WebConn zero-copy] {fileUrl} -> HTTP {status}");

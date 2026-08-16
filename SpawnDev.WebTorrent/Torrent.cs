@@ -659,14 +659,14 @@ public partial class Torrent : IAsyncDisposable
     /// Returns null if TorrentFileBytes is null or not in browser.
     /// The caller owns the Blob and must dispose it.
     /// </summary>
-    public SpawnDev.BlazorJS.JSObjects.Blob? TorrentFileBlob
+    public SpawnDev.SpawnJS.JSObjects.Blob? TorrentFileBlob
     {
         get
         {
             if (TorrentFileBytes == null || !OperatingSystem.IsBrowser()) return null;
-            return new SpawnDev.BlazorJS.JSObjects.Blob(
+            return new SpawnDev.SpawnJS.JSObjects.Blob(
                 new[] { TorrentFileBytes },
-                new SpawnDev.BlazorJS.JSObjects.BlobOptions { Type = "application/x-bittorrent" });
+                new SpawnDev.SpawnJS.JSObjects.BlobOptions { Type = "application/x-bittorrent" });
         }
     }
 
@@ -1572,7 +1572,7 @@ public partial class Torrent : IAsyncDisposable
     /// pieces exactly like <see cref="ReadFileAsync(int,long,int,CancellationToken)"/>, so the read is
     /// fulfilled on demand. Intended for zero-copy GPU upload (<c>writeBuffer</c>) — the bytes never leave JS.
     /// </summary>
-    public async Task<SpawnDev.BlazorJS.JSObjects.Uint8Array> ReadFileUint8ArrayAsync(int fileIndex, long offset, int length, CancellationToken ct = default)
+    public async Task<SpawnDev.SpawnJS.JSObjects.Uint8Array> ReadFileUint8ArrayAsync(int fileIndex, long offset, int length, CancellationToken ct = default)
     {
         // Returns a JS Uint8Array (for zero-copy browser GPU upload), so it needs a JS runtime.
         // Desktop has none — use ReadFileAsync (byte[]) there instead. Fail fast with a clear message
@@ -1587,10 +1587,10 @@ public partial class Torrent : IAsyncDisposable
         var file = Files[fileIndex];
         if (offset + length > file.Length)
             length = (int)(file.Length - offset);
-        if (length <= 0) return new SpawnDev.BlazorJS.JSObjects.Uint8Array(0);
+        if (length <= 0) return new SpawnDev.SpawnJS.JSObjects.Uint8Array(0);
 
         long absOffset = file.Offset + offset;
-        var result = new SpawnDev.BlazorJS.JSObjects.Uint8Array(length);            // JS-side result buffer
+        var result = new SpawnDev.SpawnJS.JSObjects.Uint8Array(length);            // JS-side result buffer
         int resultPos = 0;
         // Zero-copy JS path only when the store is OPFS-backed and can hand back Uint8Arrays.
         var opfs = _store as Storage.AsyncFSChunkStore;
@@ -1828,7 +1828,7 @@ public class TorrentFileInfo
     /// Supports streaming, seeking, and all browser codecs.
     /// Pieces download on demand as the media plays.
     /// </summary>
-    public void StreamTo(SpawnDev.BlazorJS.JSObjects.HTMLMediaElement elem)
+    public void StreamTo(SpawnDev.SpawnJS.JSObjects.HTMLMediaElement elem)
     {
         var url = StreamURL;
         if (url != null) elem.Src = url;
@@ -1855,9 +1855,9 @@ public class TorrentFileInfo
     /// <c>byte[]</c> hop). Selects + prioritizes the needed pieces like <see cref="ReadAsync"/>. Ideal for
     /// zero-copy GPU upload (<c>writeBuffer</c>): read a weight range, hand the Uint8Array straight to the GPU.
     /// </summary>
-    public Task<SpawnDev.BlazorJS.JSObjects.Uint8Array> ReadUint8ArrayAsync(long offset, int length, CancellationToken ct = default)
+    public Task<SpawnDev.SpawnJS.JSObjects.Uint8Array> ReadUint8ArrayAsync(long offset, int length, CancellationToken ct = default)
         => Torrent?.ReadFileUint8ArrayAsync(Array.IndexOf(Torrent.Files!, this), offset, length, ct)
-           ?? Task.FromResult(new SpawnDev.BlazorJS.JSObjects.Uint8Array(0));
+           ?? Task.FromResult(new SpawnDev.SpawnJS.JSObjects.Uint8Array(0));
 
     /// <summary>
     /// Get a seekable .NET Stream for this file. Pieces download on demand as the
@@ -1873,14 +1873,14 @@ public class TorrentFileInfo
     /// (data stays in JS land, no .NET→JS round-trip). On desktop, falls back to byte[].
     /// The caller owns the Blob and must dispose it.
     /// </summary>
-    public async Task<SpawnDev.BlazorJS.JSObjects.Blob?> BlobAsync(CancellationToken ct = default)
+    public async Task<SpawnDev.SpawnJS.JSObjects.Blob?> BlobAsync(CancellationToken ct = default)
     {
         if (Torrent == null || !Done) return null;
 
         // Try zero-copy path: assemble Blob from Uint8Array pieces directly in JS
         if (Torrent._store is Storage.AsyncFSChunkStore opfsStore && opfsStore.SupportsUint8Array)
         {
-            var parts = new List<SpawnDev.BlazorJS.JSObjects.Uint8Array>();
+            var parts = new List<SpawnDev.SpawnJS.JSObjects.Uint8Array>();
             try
             {
                 for (int i = StartPiece; i <= EndPiece; i++)
@@ -1909,9 +1909,9 @@ public class TorrentFileInfo
                 // NEVER enter the .NET/WASM heap — the genuine zero-copy this method always claimed.
                 // (Previously it called ReadBytes() to pull every Uint8Array into a .NET byte[] and then
                 // shipped the byte[][] back to JS to build the Blob — a full JS->.NET->JS round-trip.)
-                var blob = new SpawnDev.BlazorJS.JSObjects.Blob(
+                var blob = new SpawnDev.SpawnJS.JSObjects.Blob(
                     parts,
-                    new SpawnDev.BlazorJS.JSObjects.BlobOptions { Type = Type });
+                    new SpawnDev.SpawnJS.JSObjects.BlobOptions { Type = Type });
                 return blob;
             }
             finally
@@ -1922,12 +1922,12 @@ public class TorrentFileInfo
 
         // Fallback: read full file as byte[], create Blob from that
         var data = await GetArrayBufferAsync(ct);
-        return new SpawnDev.BlazorJS.JSObjects.Blob(
+        return new SpawnDev.SpawnJS.JSObjects.Blob(
             new[] { data },
-            new SpawnDev.BlazorJS.JSObjects.BlobOptions { Type = Type });
+            new SpawnDev.SpawnJS.JSObjects.BlobOptions { Type = Type });
     }
 
-    private static void DisposeParts(List<SpawnDev.BlazorJS.JSObjects.Uint8Array> parts)
+    private static void DisposeParts(List<SpawnDev.SpawnJS.JSObjects.Uint8Array> parts)
     {
         foreach (var p in parts) p.Dispose();
         parts.Clear();

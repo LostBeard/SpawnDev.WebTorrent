@@ -1,4 +1,4 @@
-using SpawnDev.BlazorJS.Cryptography;
+using SpawnDev.SpawnJS.Cryptography;
 
 namespace SpawnDev.WebTorrent;
 
@@ -25,7 +25,7 @@ public interface IDhtSigner
 }
 
 /// <summary>
-/// Ed25519 signer using SpawnDev.BlazorJS.Cryptography 3.1.0+.
+/// Ed25519 signer using SpawnDev.SpawnJS.Cryptography 3.1.0+.
 /// Works in both browser (WebCrypto) and desktop (.NET).
 /// BEP 44 compliant — Ed25519 is the REQUIRED algorithm for DHT mutable items.
 /// 32-byte public keys, 64-byte signatures, fixed SHA-512 hash.
@@ -114,7 +114,7 @@ public class Ed25519Signer : IDhtSigner
 /// <summary>
 /// Read-only Ed25519 verifier for BEP 46 subscribers who only need to resolve targets and
 /// verify signatures, not sign data. Uses Ed25519Signer.ImportPublicKeyAsync internally.
-/// Works on both desktop and browser via SpawnDev.BlazorJS.Cryptography.
+/// Works on both desktop and browser via SpawnDev.SpawnJS.Cryptography.
 /// </summary>
 public class ReadOnlyEd25519Verifier : IDhtSigner
 {

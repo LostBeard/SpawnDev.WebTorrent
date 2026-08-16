@@ -1,8 +1,8 @@
-using SpawnDev.BlazorJS;
+using SpawnDev.SpawnJS;
 // Narrow aliases (not the whole JSObjects namespace) so JS `Array` doesn't shadow System.Array.
-using Uint8Array = SpawnDev.BlazorJS.JSObjects.Uint8Array;
-using SubtleCrypto = SpawnDev.BlazorJS.JSObjects.SubtleCrypto;
-using ArrayBuffer = SpawnDev.BlazorJS.JSObjects.ArrayBuffer;
+using Uint8Array = SpawnDev.SpawnJS.JSObjects.Uint8Array;
+using SubtleCrypto = SpawnDev.SpawnJS.JSObjects.SubtleCrypto;
+using ArrayBuffer = SpawnDev.SpawnJS.JSObjects.ArrayBuffer;
 
 namespace SpawnDev.WebTorrent;
 
@@ -460,7 +460,7 @@ public partial class Torrent
             // Lazy: COMPUTE the piece hash JS-side (SubtleCrypto) and store it — the first downloader trusts the
             // seed (subsequent downloaders who get the finalized .torrent verify normally). Lazy is v1/flat
             // (MetaVersion 0, 32-byte SHA-256); only the 32-byte hash crosses into .NET — bytes stay JS-side.
-            using var subtleL = BlazorJSRuntime.JS.Get<SubtleCrypto>("crypto.subtle");
+            using var subtleL = SpawnJSRuntime.Instance.Get<SubtleCrypto>("crypto.subtle");
             string algL = _hashes[index].Length == MerkleHasher.HashSize ? "SHA-256" : "SHA-1";
             using var habL = await subtleL.Digest(algL, pieceData);
             using var huaL = new Uint8Array(habL);
@@ -469,7 +469,7 @@ public partial class Torrent
         }
 
         var expected = _hashes[index];
-        using var subtle = BlazorJSRuntime.JS.Get<SubtleCrypto>("crypto.subtle");
+        using var subtle = SpawnJSRuntime.Instance.Get<SubtleCrypto>("crypto.subtle");
 
         if (MetaVersion == 2)
         {

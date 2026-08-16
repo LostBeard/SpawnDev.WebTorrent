@@ -1,5 +1,5 @@
-using SpawnDev.BlazorJS.Toolbox;
-using Uint8Array = SpawnDev.BlazorJS.JSObjects.Uint8Array;
+using SpawnDev.SpawnJS.Toolbox;
+using Uint8Array = SpawnDev.SpawnJS.JSObjects.Uint8Array;
 
 namespace SpawnDev.WebTorrent;
 
@@ -129,7 +129,7 @@ public class TorrentReadStream : Stream, IJSReadStream
 
     /// <summary>
     /// Synchronous <see cref="ReadUint8ArrayAsync"/> counterpart (the <see cref="IJSReadStream"/> member
-    /// added in SpawnDev.BlazorJS 3.5.14 - without this implementation the TYPE fails to load against
+    /// added in SpawnDev.SpawnJS 3.5.14 - without this implementation the TYPE fails to load against
     /// 3.5.14+ with a TypeLoadException in any consumer, even code that never calls it). Honors the
     /// <see cref="CanReadSync"/> contract: throws in Blazor WASM (pieces download via async fetch on the
     /// single thread - blocking would deadlock, same as sync <see cref="Read(byte[], int, int)"/>); on

@@ -6,7 +6,7 @@ namespace SpawnDev.WebTorrent.Storage;
 /// Suitable for persistent torrent storage on disk.
 ///
 /// For browser (Blazor WASM), use an IAsyncFS-backed implementation
-/// (SpawnDev.BlazorJS.AsyncFileSystem) or MemoryChunkStore.
+/// (SpawnDev.SpawnJS.AsyncFileSystem) or MemoryChunkStore.
 /// </summary>
 public class FileChunkStore : IChunkStore
 {

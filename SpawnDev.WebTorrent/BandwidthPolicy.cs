@@ -92,7 +92,7 @@ public static class BandwidthPolicyExtensions
         //   - Linux/Mac: NetworkInterface.GetAllNetworkInterfaces() + name heuristics
         //     (`wwan*` / `ppp*` for cellular) - imprecise but better than nothing
         //   - Browser: navigator.connection.saveData (NetworkInformation API,
-        //     gated on Chromium today; SpawnDev.BlazorJS would surface it)
+        //     gated on Chromium today; SpawnDev.SpawnJS would surface it)
         return BandwidthPolicy.Unlimited;
     }
 }

@@ -1,7 +1,7 @@
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.Components.WebAssembly.Hosting;
+using SpawnDev;
 using SpawnDev.AsyncFileSystem;
-using SpawnDev.BlazorJS;
 using SpawnDev.SpawnJS;
 using SpawnDev.SpawnJS.Cryptography;
 using SpawnDev.WebTorrent;
@@ -48,6 +48,6 @@ builder.RootComponents.Add<HeadOutlet>("head::after");
 
 var host = builder.Build();
 
-await host.StartBackgroundServices();
+await host.Services.StartBackgroundServices();
 
 await host.RunAsync();

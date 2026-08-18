@@ -1,4 +1,4 @@
-using Microsoft.Playwright;
+﻿using Microsoft.Playwright;
 using SpawnDev.UnitTesting;
 using System.Diagnostics;
 
@@ -44,6 +44,14 @@ namespace PlaywrightMultiTest
                 }
                 sw.Stop();
                 TestResultsWriter.RecordResult(test.Name, "Pass", null, sw.Elapsed.TotalMilliseconds);
+            }
+            catch (Exception ex) when (ex is IgnoreException or SuccessException or InconclusiveException)
+            {
+                // Assert.Ignore/Pass/Inconclusive report an outcome by THROWING. The row for this
+                // test was already written immediately before the assert, so letting it fall into
+                // the failure handler below recorded every skipped test a SECOND time as "Fail" -
+                // a run with 5 skips reported 5 phantom failures on top of them.
+                throw;
             }
             catch (Exception ex)
             {

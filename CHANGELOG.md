@@ -1,4 +1,55 @@
-# Changelog
+﻿# Changelog
+
+## 4.2.0 (2026-08-18) - SpawnJS port completed across the solution; browser OPFS persistence restored
+
+**The BlazorJS -> SpawnJS port reached the demo/test projects, and finishing it uncovered three
+`HeapView` bugs in SpawnJS that had silently disabled every browser OPFS write.** Requires
+**SpawnDev.SpawnJS 2.1.7** (pinned to `2.1.7-local.1`/`-local.2` on the local feed until it ships).
+
+### Fixed - the solution would not produce a browser test run at all
+
+`PlaywrightMultiTest` reported "2 errors" and ran only the desktop lane, with no browser window,
+because its publish of `SpawnDev.WebTorrent.Demo` failed:
+
+- `SpawnDev.WebTorrent.Demo.Shared.csproj` carried `Version=` on its `SpawnDev.UnitTesting.Browser`
+  reference while the solution uses central package management (`NU1008`). The version moved to
+  `Directory.Packages.props`, which replaced the now-unused `SpawnDev.UnitTesting.Blazor` entry.
+- `Demo/Program.cs` still had `using SpawnDev.BlazorJS;` and `Pages/Tests.razor` still had
+  `@using SpawnDev.UnitTesting.Blazor` (the SpawnJS component namespace is `SpawnDev.UnitTesting.Browser`).
+- `Demo/Program.cs` called `host.StartBackgroundServices()`, the BlazorJS shape. On SpawnJS it is
+  `host.Services.StartBackgroundServices()` - plain `RunAsync()` does NOT start `IBackgroundService` /
+  `IAsyncBackgroundService`, so a naive swap drops background-service startup silently.
+
+The dead `SpawnDev.BlazorJS` / `SpawnDev.BlazorJS.Cryptography` entries were dropped from
+`Directory.Packages.props`; nothing in the solution references BlazorJS any more.
+
+### Fixed - every browser OPFS write (upstream, SpawnJS 2.1.7)
+
+`Storage/AsyncFSChunkStore.PutAsync` goes through `HeapView.CreateCopy(ReadOnlyMemory<byte>)`, and
+that entire SpawnJS lane was dead - it threw `InvalidOperationException: InvalidOperation_NoValue`
+before the view was built. Corroborating evidence: the test Chrome profile had **no
+`Default\File System\` directory at all**; nothing had ever been persisted.
+
+Worse, the resulting half-built `HeapView` was still finalized, and SpawnJS's finalizer dereferenced a
+null field. An exception escaping a finalizer is fatal on the .NET WASM runtime: it exits with 255 and
+every later interop call fails with `Assert failed: .NET runtime already exited with 255` - hundreds of
+them. A third bug then surfaced once writes could run: the non-generic `HeapView.CreateCopy` overloads
+handed out a view they still owned, so collecting the temporary released the caller's slot mid-write
+(`Failed to execute 'write' on 'FileSystemWritableFileStream': The provided value is not of type
+'WriteParams'`). All three are fixed in SpawnJS 2.1.7; see its CHANGELOG.
+
+Two WebTorrent tests were failing purely as a consequence and now pass with no WebTorrent code change:
+`Storage_Persist_MetadataWritten` and `StorageQuota_WriteThrows_PausesTorrent_NoRunawayRefetch` (the
+runaway-refetch guard was reacting to spurious non-quota store failures).
+
+### Fixed - PMT counted every skipped test a second time as a failure
+
+`PlaywrightMultiTest/UnitTest1.cs` wrote a "Skip" row and then called `Assert.Ignore`, which reports by
+THROWING - so the general `catch` recorded a second "Fail" row for the same test. A run with 28 skips
+reported 28 phantom failures on top of the real ones. `IgnoreException` / `SuccessException` /
+`InconclusiveException` are now rethrown ahead of the failure handler. (Same fix already carried by
+SpawnDev.RTC's harness.)
+
 
 ## 3.2.12 (2026-07-04) — storage-quota runaway fix
 

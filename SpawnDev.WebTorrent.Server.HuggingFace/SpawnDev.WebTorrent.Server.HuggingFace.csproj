@@ -5,8 +5,8 @@
 		<LangVersion>latest</LangVersion>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
-		<Version>4.2.0</Version>
-		<PackageReleaseNotes>v4.2.0 - Dependency update</PackageReleaseNotes>
+		<Version>4.2.1</Version>
+		<PackageReleaseNotes>v4.2.1 - Dependency update</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>
@@ -17,7 +17,7 @@
 		<Description>HuggingFace CDN proxy extension for SpawnDev.WebTorrent.Server. Fetches model files from HuggingFace's CDN on demand, caches locally, generates SHA-256 .torrent files, and serves as a BEP 17/19 web seed. Adds per-model request stats, LRU cache eviction, and configurable disk-headroom guards. Optional extension - SpawnDev.WebTorrent.Server works without it.</Description>
 		<PackageProjectUrl>https://github.com/LostBeard/SpawnDev.WebTorrent</PackageProjectUrl>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
-		<PackageLicenseExpression>MIT</PackageLicenseExpression>
+		<PackageLicenseFile>LICENSE.txt</PackageLicenseFile>
 		<PackageId>SpawnDev.WebTorrent.Server.HuggingFace</PackageId>
 		<RepositoryUrl>https://github.com/LostBeard/SpawnDev.WebTorrent.git</RepositoryUrl>
 		<RepositoryType>git</RepositoryType>
@@ -28,6 +28,10 @@
 
 	<ItemGroup>
 		<None Include="README.md" Pack="true" PackagePath="\" />
+	</ItemGroup>
+	<ItemGroup>
+		<None Include="..\icon-128.png" Pack="true" PackagePath="\" />
+		<None Include="..\LICENSE.txt" Pack="true" PackagePath="\" />
 	</ItemGroup>
 
 	<ItemGroup>

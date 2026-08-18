@@ -9,8 +9,8 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-		<Version>4.2.0</Version>
-		<PackageReleaseNotes>v4.2.0 - Dependency update</PackageReleaseNotes>
+		<Version>4.2.1</Version>
+		<PackageReleaseNotes>v4.2.1 - Dependency update</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>

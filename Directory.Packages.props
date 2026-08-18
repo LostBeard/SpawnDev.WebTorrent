@@ -4,12 +4,12 @@
   </PropertyGroup>
   <ItemGroup>
     <!-- SpawnDev packages -->
-    <PackageVersion Include="SpawnDev.RTC" Version="2.2.1" />
-    <PackageVersion Include="SpawnDev.RTC.Server" Version="2.2.1" />
+    <PackageVersion Include="SpawnDev.RTC" Version="2.2.2" />
+    <PackageVersion Include="SpawnDev.RTC.Server" Version="2.2.2" />
     <!-- SpawnJS: the whole solution is on SpawnJS now - Demo, Demo.Shared, ServerApp and
          PlaywrightMultiTest included - so the SpawnDev.BlazorJS entries that used to sit here for
          the unconverted projects are gone. Nothing references SpawnDev.BlazorJS any more. -->
-    <PackageVersion Include="SpawnDev.SpawnJS" Version="2.1.7-local.2" />
+    <PackageVersion Include="SpawnDev.SpawnJS" Version="2.1.7" />
     <PackageVersion Include="SpawnDev.SpawnJS.Cryptography" Version="2.0.1" />
     <PackageVersion Include="SpawnDev.AsyncFileSystem" Version="2.1.0" />
     <PackageVersion Include="SpawnDev.BackgroundServices" Version="2.0.0" />

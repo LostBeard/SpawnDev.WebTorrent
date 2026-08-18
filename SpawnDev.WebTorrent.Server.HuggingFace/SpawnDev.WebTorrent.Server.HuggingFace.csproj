@@ -5,8 +5,8 @@
 		<LangVersion>latest</LangVersion>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
-		<Version>4.0.3</Version>
-		<PackageReleaseNotes>v4.0.3 - Dependency update</PackageReleaseNotes>
+		<Version>4.1.1</Version>
+		<PackageReleaseNotes>v4.1.1 - Dependency update</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>

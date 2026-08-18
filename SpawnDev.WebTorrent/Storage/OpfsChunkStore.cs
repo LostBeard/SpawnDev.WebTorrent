@@ -163,8 +163,7 @@ public class AsyncFSChunkStore : IChunkStore
     {
         if (_browserFs == null)
             throw new InvalidOperationException("PutAsync requires a browser file system (OPFS).");
-        using var heapView = HeapView.Create(data);
-        using var uint8ArrayCopy = heapView.To<Uint8Array>();
+        using var uint8ArrayCopy = HeapView.CreateCopy(data);
         await EnsureInitializedAsync();
         await _browserFs.Write($"{_basePath}/piece_{index}", (TypedArray)uint8ArrayCopy);
         if (_cachedIndex == index) { _cachedIndex = -1; _cachedFull = null; }   // invalidate stale read cache

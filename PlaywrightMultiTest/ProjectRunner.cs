@@ -110,6 +110,17 @@ namespace PlaywrightMultiTest
                 }
             }
 
+            // The --filter parsing above stays FIRST - some PMT setups do get the arg through, and where it
+            // arrives it wins. But when the run goes through `dotnet test`, the NUnit adapter consumes
+            // --filter and it never reaches this testhost, so a "scoped" run silently enumerates and runs
+            // EVERYTHING (measured here 2026-08-29: `PMT_FILTER=DeselectedRead` ran 1029 tests, and reading
+            // that green sweep as evidence about one test was simply wrong). PMT_FILTER is an environment
+            // variable, which this process CAN always read, and is the same mechanism ILGPU.ML's PMT uses:
+            //     PMT_FILTER=LazyHash dotnet test PlaywrightMultiTest/PlaywrightMultiTest.csproj
+            // Matching is SUBSTRING (also matching ILGPU.ML), so a filter can select a whole family by
+            // prefix rather than naming one method exactly.
+            filter ??= Environment.GetEnvironmentVariable("PMT_FILTER");
+            if (!string.IsNullOrEmpty(filter)) LogStatus($"Test filter active: '{filter}' (substring match)");
 
             LogStatus("Discovering projects...");
             var projects = ProjectDiscovery.GetWorkspaceRoot();
@@ -291,10 +302,7 @@ namespace PlaywrightMultiTest
 
                             if (filter != null)
                             {
-                                if (rowTest.Name != filter && rowTest.TestTypeName != filter && rowTest.TestMethodName != filter)
-                                {
-                                    continue;
-                                }
+                                if (!MatchesFilter(rowTest, filter)) continue;
                             }
 
                             testableProject.Tests.Add(rowTest);
@@ -348,10 +356,7 @@ namespace PlaywrightMultiTest
                         var rowTest = new ProjectTest(testableProject, typeName!, methodName!);
                         if (filter != null)
                         {
-                            if (rowTest.Name != filter && rowTest.TestTypeName != filter && rowTest.TestMethodName != filter)
-                            {
-                                continue;
-                            }
+                            if (!MatchesFilter(rowTest, filter)) continue;
                         }
                         testableProject.Tests.Add(rowTest);
 
@@ -459,5 +464,15 @@ namespace PlaywrightMultiTest
                 }
             }
         }
+    
+    // Substring match on the full name, the type, or the method. Kept in one place so the two enumeration
+    // paths (browser rows and console rows) can never drift apart on what a filter means.
+    private static bool MatchesFilter(ProjectTest test, string? filter)
+    {
+        if (string.IsNullOrEmpty(filter)) return true;
+        return (test.Name?.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false)
+            || (test.TestTypeName?.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false)
+            || (test.TestMethodName?.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false);
     }
+}
 }

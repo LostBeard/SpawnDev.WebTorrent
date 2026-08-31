@@ -32,6 +32,10 @@ WGSLDumps/
 
 ## Cache
 hf-cache/
+# Generic source-proxy cache: proxied files and extracted archive members. Same class as
+# hf-cache - runtime data, and it holds whole archives (a single ZipVoice fetch is 634 MB).
+src-cache/
+ollama-cache/
 seed-data/
 
 ## Node

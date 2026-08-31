@@ -28,5 +28,9 @@
     <PackageVersion Include="NUnit3TestAdapter" Version="5.0.0" />
     <PackageVersion Include="coverlet.collector" Version="6.0.4" />
     <PackageVersion Include="Mono.Cecil" Version="0.11.6" />
+    <!-- BZip2 for the hub's archive-member extraction. The BCL covers tar, gzip and zip; bzip2 is
+         the one gap, and sherpa-onnx ships every model as .tar.bz2. Server-side only - it is not
+         referenced by the browser client. -->
+    <PackageVersion Include="SharpZipLib" Version="1.4.2" />
   </ItemGroup>
 </Project>

@@ -35,6 +35,12 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<!-- bzip2 only. The BCL covers tar, gzip and zip; sherpa-onnx ships models as .tar.bz2, which is the
+		     one container it cannot open. Central package management: no Version attribute here. -->
+		<PackageReference Include="SharpZipLib" />
+	</ItemGroup>
+
+	<ItemGroup>
 		<ProjectReference Include="..\SpawnDev.WebTorrent.Server\SpawnDev.WebTorrent.Server.csproj" />
 		<FrameworkReference Include="Microsoft.AspNetCore.App" PrivateAssets="all" />
 	</ItemGroup>

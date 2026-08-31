@@ -76,6 +76,19 @@ var hfOptions = new HuggingFaceProxyOptions
 };
 builder.Services.AddSingleton(new HuggingFaceProxy(hfOptions));
 
+// Generic allowlisted source proxy: the same PartialFileCache core as the two proxies above, but pointed
+// at ANY host on a configured list. Every new source used to mean a new proxy class; this makes it a
+// config entry, and a CORS-less or awkwardly-packaged origin becomes a plain URL the browser can range-read
+// - which is all the lazy-hash streamer ever needed.
+// The allowlist is EMPTY unless configured. An open proxy would let anyone launder requests through the
+// hub and spend its bandwidth, so it is opt-in per host, by name.
+var sourceOptions = new SourceProxyOptions
+{
+    AllowedHosts = config.GetSection("SourceProxy:AllowedHosts").Get<string[]>() ?? Array.Empty<string>(),
+    CacheDirectory = config.GetValue("SourceProxy:CacheDirectory", "src-cache")!,
+};
+builder.Services.AddSingleton(new SourceProxy(sourceOptions, new HttpClient()));
+
 // Ollama model registry proxy (twin of the HF proxy): resolve {model}:{tag} layer → blob → cache → torrent.
 var ollamaOptions = new OllamaProxyOptions
 {
@@ -222,6 +235,9 @@ app.MapHuggingFaceProxy(hfProxy);
 
 var ollamaProxy = app.Services.GetRequiredService<OllamaProxy>();
 app.MapOllamaProxy(ollamaProxy);
+
+var sourceProxy = app.Services.GetRequiredService<SourceProxy>();
+SourceProxy.Map(app, sourceProxy);
 
 // Compute request board — authenticated endpoints
 var computeBoard = app.Services.GetRequiredService<ComputeRequestBoard>();

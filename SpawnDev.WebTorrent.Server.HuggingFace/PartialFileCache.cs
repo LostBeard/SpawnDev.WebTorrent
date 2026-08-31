@@ -116,6 +116,33 @@ internal sealed class PartialFileCache
         return IsComplete(_dataPath) ? _dataPath : null;
     }
 
+    /// <summary>
+    /// How many ADDITIONAL bytes of disk this file would consume if fetched now - 0 when it is already
+    /// fully cached. -1 when the origin will not say how big it is.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Exists so a caller can decide whether there is ROOM before starting a download rather than after.
+    /// The probe is the same one <see cref="EnsureCompleteAsync"/> performs and its result is memoised, so
+    /// asking costs nothing extra; an already-cached file answers from disk without touching the network.
+    /// </para>
+    /// <para>
+    /// ⚠️ ADDITIONAL, not total, and the distinction is not pedantic: a caller comparing "cache size +
+    /// incoming" against a limit already counts whatever is on disk, so returning the total for a file that
+    /// is ALREADY cached counts it twice and can refuse a request that needs no space whatsoever. Measured
+    /// against the file's current length because that is precisely what a directory-size sum sees.
+    /// </para>
+    /// </remarks>
+    public async Task<long> ProbeAdditionalBytesAsync(CancellationToken ct)
+    {
+        var onDisk = File.Exists(_dataPath) ? new FileInfo(_dataPath).Length : 0;
+        if (IsComplete(_dataPath)) return 0;
+        long total = _totalSize >= 0 ? _totalSize
+                   : await EnsureMetadataAsync(ct) ? _totalSize : -1;
+        if (total < 0) return -1;
+        return Math.Max(0, total - onDisk);
+    }
+
     private async Task<bool> EnsureMetadataAsync(CancellationToken ct)
     {
         if (_totalSize >= 0) return true;

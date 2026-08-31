@@ -133,22 +133,45 @@ public abstract partial class WebTorrentTestBase
         const string member = "sherpa-onnx-zipvoice-distill-int8-zh-en-emilia/tokens.txt";
 
         // ⚠️ First contact with an archive is expensive and it is the hub, not this test, that pays it:
-        // 109 MB fetched from GitHub and bzip2-decompressed. A browser fetch left waiting on that can fail
-        // with a bare "TypeError: Failed to fetch" - which reads like a CORS or server fault and is neither.
-        // So warm the archive with a retry loop first, and only then assert on behaviour.
+        // 109 MB fetched from GitHub, then bzip2-decompressed from the start just to walk the member headers.
+        // The hub no longer does either inside the request - it answers 202 Accepted and works in the
+        // background - because holding the connection open for that long does not merely feel slow, it gets
+        // the request KILLED by the gateway in front of the hub (measured: 504 at exactly 25 seconds, while
+        // the hub was still fetching perfectly happily).
+        //
+        // So 202 is a normal, expected answer here and NOT a failure. Poll until it turns into 200.
         string? listJson = null;
-        for (int attempt = 1; attempt <= 3 && listJson == null; attempt++)
+        var listUrl = $"{SrcHubBaseUrl}/src/list?url={Uri.EscapeDataString(archive)}";
+        var warmClock = System.Diagnostics.Stopwatch.StartNew();
+        while (warmClock.Elapsed < TimeSpan.FromMinutes(20))
         {
-            try { listJson = await http.GetStringAsync($"{SrcHubBaseUrl}/src/list?url={Uri.EscapeDataString(archive)}"); }
-            catch (Exception ex) when (attempt < 3)
+            HttpResponseMessage listRes;
+            try { listRes = await http.GetAsync(listUrl); }
+            catch (Exception ex)
             {
-                Console.WriteLine($"[SourceProxy] archive still warming (attempt {attempt}: {ex.Message}); retrying");
-                await Task.Delay(TimeSpan.FromSeconds(20));
+                Console.WriteLine($"[SourceProxy] list request failed ({ex.Message}); retrying");
+                await Task.Delay(TimeSpan.FromSeconds(15));
+                continue;
             }
+            if (listRes.StatusCode == HttpStatusCode.Accepted)
+            {
+                Console.WriteLine($"[SourceProxy] hub still warming the archive "
+                                + $"({warmClock.Elapsed.TotalSeconds:F0}s): {await listRes.Content.ReadAsStringAsync()}");
+                await Task.Delay(TimeSpan.FromSeconds(10));
+                continue;
+            }
+            if (!listRes.IsSuccessStatusCode)
+                throw new Exception($"listing the archive returned {(int)listRes.StatusCode}: "
+                                  + await listRes.Content.ReadAsStringAsync());
+            listJson = await listRes.Content.ReadAsStringAsync();
+            break;
         }
-        if (listJson == null) throw new Exception("the hub could not list the archive after three attempts");
+        if (listJson == null) throw new Exception("the hub did not finish warming the archive within 20 minutes");
         using var doc = JsonDocument.Parse(listJson);
-        var count = doc.RootElement.GetProperty("entries").GetArrayLength();
+        if (!doc.RootElement.TryGetProperty("entries", out var entriesEl))
+            throw new Exception("a 200 listing carried no 'entries' - 200 must mean the listing is READY, "
+                              + "or a caller polling on the status code proceeds to parse a progress report");
+        var count = entriesEl.GetArrayLength();
         if (count == 0) throw new Exception("archive listing is empty");
 
         var res = await http.GetAsync(
@@ -170,5 +193,134 @@ public abstract partial class WebTorrentTestBase
 
         Console.WriteLine($"[SourceProxy] archive has {count} members; extracted {bytes.Length} bytes; "
                         + "traversal refused");
+    }
+
+    [TestMethod(Timeout = 300000)]
+    public async Task SourceProxy_CacheIsBoundedSoTheDriveCannotFill()
+    {
+        using var http = await RequireSourceProxyAsync();
+        var probe = await http.GetAsync($"{SrcHubBaseUrl}/src/stats");
+        if (probe.StatusCode == HttpStatusCode.NotFound)
+            throw new UnsupportedTestException(
+                "the deployed hub predates cache eviction - redeploy to arm this");
+        probe.EnsureSuccessStatusCode();
+
+        using var doc = JsonDocument.Parse(await probe.Content.ReadAsStringAsync());
+        var root = doc.RootElement;
+        long cache = root.GetProperty("cacheBytes").GetInt64();
+        long free = root.GetProperty("freeBytes").GetInt64();
+        long minFree = root.GetProperty("minFreeBytes").GetInt64();
+        long maxCache = root.GetProperty("maxCacheBytes").GetInt64();
+
+        const double GB = 1024d * 1024 * 1024;
+        Console.WriteLine($"[SourceProxy] cache {cache / GB:F2} GB / cap {maxCache / GB:F2} GB, "
+                        + $"free {free / GB:F2} GB / floor {minFree / GB:F2} GB");
+
+        // An unconfigured floor is the whole failure this guards against: the proxy caches whole archives,
+        // so an unbounded cache grows until the drive is full and then the proxy does not degrade, it FAILS
+        // - taking the tracker and web seed on the same disk with it.
+        if (minFree <= 0)
+            throw new Exception("the hub reports NO free-space floor - its cache is unbounded and the drive "
+                              + "can fill. Set SourceProxy:MinFreeDiskSpaceBytes.");
+
+        // The live invariant. If eviction ever stops working, the deployed cache grows past its cap and this
+        // goes red on the real server - which is the only place the bug would ever actually matter.
+        if (maxCache > 0 && cache > maxCache)
+            throw new Exception($"cache is {cache} bytes, OVER its {maxCache}-byte cap - eviction is not "
+                              + "keeping up, and the drive is filling right now");
+
+        if (free < minFree)
+            throw new Exception($"only {free / GB:F2} GB free, under the {minFree / GB:F2} GB floor - the "
+                              + "proxy is about to start refusing fetches");
+    }
+
+    [TestMethod(Timeout = 600000)]
+    public async Task SourceProxy_ACachedFileIsServedAgainRatherThanRefused()
+    {
+        using var http = await RequireSourceProxyAsync();
+        var url = $"{SrcHubBaseUrl}/src?url={Uri.EscapeDataString(SrcSampleUrl)}";
+
+        // Regression guard for two bugs that only appear once a cache has a LIMIT, both found by running it:
+        //
+        //  1. Budgeting a warm hit as if its whole size were arriving counts those bytes twice - once on
+        //     disk, once "incoming" - so a file that needs no space at all gets refused with a 507.
+        //  2. Evicting a file without discarding the reader that memoised its state leaves that reader
+        //     convinced it still holds a complete file, and the NEXT request 500s reading bytes that are gone.
+        //
+        // Both show up here as a second identical request behaving differently from the first, which is
+        // exactly the thing a cache must never do.
+        var first = await http.GetAsync(url);
+        first.EnsureSuccessStatusCode();
+        var a = await first.Content.ReadAsByteArrayAsync();
+
+        for (int i = 0; i < 3; i++)
+        {
+            var again = await http.GetAsync(url);
+            if (again.StatusCode == HttpStatusCode.InsufficientStorage)
+                throw new Exception("a file already in the cache was refused for space (507) - a warm hit "
+                                  + "consumes no additional disk and must never be refused");
+            if (!again.IsSuccessStatusCode)
+                throw new Exception($"repeat request {i + 2} returned {(int)again.StatusCode}; a cached file "
+                                  + "must serve identically every time");
+            var b = await again.Content.ReadAsByteArrayAsync();
+            if (!a.SequenceEqual(b))
+                throw new Exception($"repeat request {i + 2} returned different bytes ({b.Length} vs {a.Length})");
+        }
+        Console.WriteLine($"[SourceProxy] {a.Length} bytes served identically across 4 requests");
+    }
+
+    [TestMethod(Timeout = 300000)]
+    public async Task SourceProxy_WarmsALargeArchiveWithoutHoldingTheRequestOpen()
+    {
+        using var http = await RequireSourceProxyAsync();
+
+        // ⚠️ This is the bug this endpoint exists for, and it is worth stating precisely because the symptom
+        // points at the wrong machine: fetching the 634 MB fp32 ZipVoice archive through the blocking path
+        // returned 504 after 25 SECONDS - the gateway's timeout - while the hub was still fetching happily.
+        // "The hub is broken" and "the gateway gave up on the hub" look identical from the client.
+        //
+        // Raising that timeout only moves the cliff; the next archive is bigger. So the contract asserted
+        // here is that warming NEVER blocks: 202 straight away, 200 once cached, and the caller waits
+        // between requests rather than inside one.
+        const string bigArchive =
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/sherpa-onnx-zipvoice-distill-zh-en-emilia.tar.bz2";
+
+        var probe = await http.GetAsync($"{SrcHubBaseUrl}/src/warm?url={Uri.EscapeDataString(bigArchive)}");
+        if (probe.StatusCode == HttpStatusCode.NotFound)
+            throw new UnsupportedTestException(
+                "the deployed hub has no /src/warm yet - redeploy to arm this");
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var res = await http.GetAsync($"{SrcHubBaseUrl}/src/warm?url={Uri.EscapeDataString(bigArchive)}");
+        sw.Stop();
+
+        if (res.StatusCode != HttpStatusCode.Accepted && res.StatusCode != HttpStatusCode.OK)
+            throw new Exception($"warm returned {(int)res.StatusCode}: {await res.Content.ReadAsStringAsync()}");
+
+        // The whole point is that this returns without waiting for a 634 MB download. Twenty seconds is
+        // generous and still comfortably under the 25s gateway timeout that made the blocking path fail.
+        if (sw.Elapsed > TimeSpan.FromSeconds(20))
+            throw new Exception($"warm took {sw.Elapsed.TotalSeconds:F1}s - it must return immediately, "
+                              + "or it is just the blocking fetch again and the gateway will kill it");
+
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        if (!doc.RootElement.TryGetProperty("cached", out var cached))
+            throw new Exception("warm did not report a 'cached' state, so a caller cannot tell when to proceed");
+
+        if (res.StatusCode == HttpStatusCode.Accepted)
+        {
+            // 202 must mean "not ready", or polling on the status code alone - which is the point of
+            // separating the codes - would tell the caller to proceed before the bytes exist.
+            if (cached.GetBoolean())
+                throw new Exception("warm answered 202 Accepted while reporting cached=true; the status "
+                                  + "code and the body disagree and a polling caller trusts the code");
+        }
+        else if (!cached.GetBoolean())
+        {
+            throw new Exception("warm answered 200 OK while reporting cached=false");
+        }
+
+        Console.WriteLine($"[SourceProxy] warm answered {(int)res.StatusCode} in {sw.Elapsed.TotalSeconds:F2}s "
+                        + $"(cached={cached.GetBoolean()})");
     }
 }

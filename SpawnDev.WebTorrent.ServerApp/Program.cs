@@ -86,6 +86,11 @@ var sourceOptions = new SourceProxyOptions
 {
     AllowedHosts = config.GetSection("SourceProxy:AllowedHosts").Get<string[]>() ?? Array.Empty<string>(),
     CacheDirectory = config.GetValue("SourceProxy:CacheDirectory", "src-cache")!,
+    // ⚠️ Bound the cache, or it grows until the drive is full - and then the proxy does not degrade, it
+    // fails, taking the tracker and web seed on the same disk with it. Defaults live on the options type;
+    // these read whatever the deployment configured.
+    MaxCacheSizeBytes = config.GetValue("SourceProxy:MaxCacheSizeBytes", 0L),
+    MinFreeDiskSpaceBytes = config.GetValue("SourceProxy:MinFreeDiskSpaceBytes", 10L * 1024 * 1024 * 1024),
 };
 builder.Services.AddSingleton(new SourceProxy(sourceOptions, new HttpClient()));
 

@@ -92,13 +92,14 @@ public abstract partial class WebTorrentTestBase
         var bytes = await full.Content.ReadAsByteArrayAsync();
         if (bytes.Length == 0) throw new Exception("proxy returned an empty body");
 
-        if (!full.Headers.TryGetValues("Access-Control-Allow-Origin", out _))
-            throw new Exception("no Access-Control-Allow-Origin - a browser could not read this at all");
-        // ⚠️ The one that gets forgotten: without it a cross-origin caller receives a 206 it cannot
-        // interpret, because Content-Range is invisible to it. That looks like a broken server.
-        if (!full.Headers.TryGetValues("Access-Control-Expose-Headers", out var expose)
-            || !string.Join(",", expose).Contains("Content-Range", StringComparison.OrdinalIgnoreCase))
-            throw new Exception("Content-Range is not exposed - a seeking reader cannot use this response");
+        // ⚠️ Do NOT assert on Access-Control-Allow-Origin or -Expose-Headers here. A browser CONSUMES the
+        // CORS protocol headers and never exposes them to fetch, so those checks cannot pass in the browser
+        // lane however correct the server is - I wrote them that way first and they failed against a hub
+        // that curl showed was sending both. The meaningful browser-side proof is different and stronger:
+        // this request is CROSS-ORIGIN, so if the server had not sent Allow-Origin the fetch would have
+        // thrown rather than returning a body at all. Reaching this line IS the assertion.
+        // Content-Range being READABLE below is likewise the real test of Expose-Headers: a browser hides
+        // that header unless the server named it.
 
         var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 15);
@@ -106,6 +107,10 @@ public abstract partial class WebTorrentTestBase
         if (partial.StatusCode != HttpStatusCode.PartialContent)
             throw new Exception($"expected 206 for a Range request, got {(int)partial.StatusCode} - "
                               + "the lazy-hash streamer seeks, so a proxy that ignores Range is unusable");
+        // Readable only because the server listed it in Access-Control-Expose-Headers.
+        if (partial.Content.Headers.ContentRange == null)
+            throw new Exception("Content-Range is not readable from a cross-origin response - the server "
+                              + "must name it in Access-Control-Expose-Headers or a seeking reader is blind");
         var slice = await partial.Content.ReadAsByteArrayAsync();
         if (slice.Length != 16)
             throw new Exception($"asked for 16 bytes, got {slice.Length}");
@@ -127,7 +132,21 @@ public abstract partial class WebTorrentTestBase
             "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/sherpa-onnx-zipvoice-distill-int8-zh-en-emilia.tar.bz2";
         const string member = "sherpa-onnx-zipvoice-distill-int8-zh-en-emilia/tokens.txt";
 
-        var listJson = await http.GetStringAsync($"{SrcHubBaseUrl}/src/list?url={Uri.EscapeDataString(archive)}");
+        // ⚠️ First contact with an archive is expensive and it is the hub, not this test, that pays it:
+        // 109 MB fetched from GitHub and bzip2-decompressed. A browser fetch left waiting on that can fail
+        // with a bare "TypeError: Failed to fetch" - which reads like a CORS or server fault and is neither.
+        // So warm the archive with a retry loop first, and only then assert on behaviour.
+        string? listJson = null;
+        for (int attempt = 1; attempt <= 3 && listJson == null; attempt++)
+        {
+            try { listJson = await http.GetStringAsync($"{SrcHubBaseUrl}/src/list?url={Uri.EscapeDataString(archive)}"); }
+            catch (Exception ex) when (attempt < 3)
+            {
+                Console.WriteLine($"[SourceProxy] archive still warming (attempt {attempt}: {ex.Message}); retrying");
+                await Task.Delay(TimeSpan.FromSeconds(20));
+            }
+        }
+        if (listJson == null) throw new Exception("the hub could not list the archive after three attempts");
         using var doc = JsonDocument.Parse(listJson);
         var count = doc.RootElement.GetProperty("entries").GetArrayLength();
         if (count == 0) throw new Exception("archive listing is empty");

@@ -115,11 +115,19 @@ public sealed class SourceCacheEvictor
     }
 
     /// <summary>Total bytes currently held in the cache directory.</summary>
+    /// <remarks>
+    /// ⚠️ Counts EVERYTHING on disk, including in-flight <c>.partial</c> extractions and manifests - what
+    /// occupies the drive and what may be deleted are different questions, and answering both with one
+    /// filter under-reports the cache exactly while a large extraction is running. A member being unpacked
+    /// out of a 634 MB archive is real disk that a size cap must see.
+    /// </remarks>
     public long CurrentSizeBytes()
     {
         try
         {
-            return EnumerateCacheFiles().Sum(f => f.Length);
+            if (!Directory.Exists(_options.CacheDirectory)) return 0;
+            return new DirectoryInfo(_options.CacheDirectory)
+                .EnumerateFiles("*", SearchOption.TopDirectoryOnly).Sum(f => f.Length);
         }
         catch { return 0; }
     }
@@ -191,6 +199,7 @@ public sealed class SourceCacheEvictor
         finally { _gate.Release(); }
     }
 
+    /// <summary>Files that are candidates for DELETION - which is not the same set as files that take space.</summary>
     private IEnumerable<FileInfo> EnumerateCacheFiles()
     {
         if (!Directory.Exists(_options.CacheDirectory)) return Array.Empty<FileInfo>();

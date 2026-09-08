@@ -765,9 +765,33 @@ public partial class Torrent : IAsyncDisposable
             // WireInfoHashHex) so existing persisted data restores without relocation.
             var storeHash = PersistKey;
             if (_client?.AsyncFileSystem != null && !string.IsNullOrEmpty(storeHash))
+            {
                 _store = new Storage.AsyncFSChunkStore(_client.AsyncFileSystem, $"webtorrent/{storeHash}", PieceLength);
+            }
+            else if (_client?.AsyncFileSystem != null)
+            {
+                // 🔴 A FILE SYSTEM WITH NO KEY IS A CACHE THAT SILENTLY NEVER PERSISTS.
+                //
+                // This used to fall through to MemoryChunkStore whenever PersistKey was empty, EVEN WITH OPFS
+                // AVAILABLE - so every piece downloaded fine, every read succeeded from memory, and nothing
+                // ever reached disk. The next load re-downloaded the whole model with nothing anywhere saying
+                // why. That is the exact failure this cache exists to prevent, and it was unobservable.
+                //
+                // A torrent that has reached SetMetadata always has a key: WireInfoHashHex for v1/hybrid, the
+                // v2-derived key for pure-v2, the provisional URL key for Lazy-Hash (assigned in
+                // InitLazyHashAsync BEFORE metadata). Reaching here means a NEW code path forgot to set one,
+                // and the honest answer is to say so rather than downgrade in silence.
+                throw new InvalidOperationException(
+                    $"Torrent '{Name}' has an AsyncFileSystem but an EMPTY PersistKey, so its pieces would go "
+                    + "to a MemoryChunkStore and never persist - the cache would silently do nothing and every "
+                    + "reload would re-download. Assign a PersistKey (WireInfoHashHex, the v2 key, or a "
+                    + "Lazy-Hash provisional key) before metadata is set.");
+            }
             else
+            {
+                // No file system at all - memory is the correct and only option.
                 _store = new Storage.MemoryChunkStore(PieceLength);
+            }
         }
 
         _rarityMap = new RarityMap(this);

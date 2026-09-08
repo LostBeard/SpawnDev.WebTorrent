@@ -263,7 +263,21 @@ public class AsyncFSChunkStore : IChunkStore
         {
             await EnsureInitializedAsync();
             var path = $"{_basePath}/piece_{index}";
-            if (!await _fs.FileExists(path)) return $"no file at {path}";
+            if (!await _fs.FileExists(path))
+            {
+                // ⚠️ SAY WHAT *IS* THERE. "No file" alone cannot tell "nothing was ever written" from
+                // "written under a different name or key", and those have completely different fixes.
+                string siblings;
+                try
+                {
+                    var files = (await _fs.GetFiles(_basePath)).ToList();
+                    siblings = files.Count == 0
+                        ? "the store directory is EMPTY - nothing was ever written here"
+                        : $"{files.Count} file(s) present: {string.Join(", ", files.Take(8))}";
+                }
+                catch (Exception ex) { siblings = $"could not list {_basePath}: {ex.Message}"; }
+                return $"no file at {path}; {siblings}";
+            }
             if (_browserFs == null) return $"file exists at {path} (size unknown on this file system)";
             var file = await GetPieceFileAsync(index);
             if (file == null) return $"file exists at {path} but no handle could be opened";

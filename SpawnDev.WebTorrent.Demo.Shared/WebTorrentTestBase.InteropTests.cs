@@ -43,10 +43,19 @@ public abstract partial class WebTorrentTestBase
             // no data, that IS ours, and it fails loudly.
             if (!torrent.HasMetadata)
             {
+                // 🔴 ZERO PEERS IS *OUR* FAILURE, NOT THE SWARM'S. I briefly classified this as a skip; the
+                // Captain disproved it on the spot by opening the SpawnDev.BlazorJS.WebTorrent demo on GitHub
+                // Pages and connecting to at least SEVEN WebRTC peers on this exact swarm, minutes after our
+                // DESKTOP lane reported none. The swarm is healthy - observed, not assumed - so finding no
+                // peers is a defect in our desktop tracker/WebRTC path and must fail loudly.
+                //
+                // ⚠️ Every live-swarm failure in this suite is on the DESKTOP lane. The browser lane talks to
+                // the same swarm over the same trackers.
                 if (torrent.NumPeers == 0)
-                    throw new UnsupportedTestException(
-                        "no peer from the public Sintel swarm connected within 60s (peers=0), so the tracker "
-                        + "or signaling was unreachable - nothing here can be asserted about our wire code");
+                    throw new Exception(
+                        "no peer connected within 60s (peers=0), yet this swarm demonstrably has WebRTC peers "
+                        + "(verified from the browser demo). Our desktop tracker/WebRTC signaling is not "
+                        + "reaching them.");
                 throw new Exception(
                     $"no metadata after 60s despite {torrent.NumPeers} connected peer(s). Peers connected and "
                     + "still sent us no metadata - that is a BEP 9 / wire defect on our side.");
@@ -59,9 +68,9 @@ public abstract partial class WebTorrentTestBase
             if (torrent.Downloaded == 0)
             {
                 if (torrent.NumPeers == 0)
-                    throw new UnsupportedTestException(
-                        "every peer dropped before any piece transferred (peers=0 after metadata), so the "
-                        + "swarm went away mid-test - not evidence about our piece transfer");
+                    throw new Exception(
+                        "every peer dropped before any piece transferred (peers=0 after metadata). The swarm "
+                        + "has peers, so losing all of them mid-transfer is ours to explain.");
                 throw new Exception(
                     $"downloaded 0 bytes in 60s from {torrent.NumPeers} connected peer(s) that already gave us "
                     + "metadata. They are there and talking, so piece transfer over WebRTC is broken on our side.");

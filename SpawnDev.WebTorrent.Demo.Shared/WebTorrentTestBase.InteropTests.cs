@@ -30,19 +30,42 @@ public abstract partial class WebTorrentTestBase
             while (!torrent.HasMetadata && DateTime.UtcNow < metadataDeadline)
                 await Task.Delay(1000);
 
+            // 🔴 TELL "THE SWARM WAS UNREACHABLE" APART FROM "OUR CODE IS BROKEN".
+            //
+            // This test used to throw one message for both, and it said so itself: "Either the swarm was
+            // unreachable or piece transfer over WebRTC is broken." A test that cannot distinguish an
+            // ENVIRONMENT failure from a PRODUCT failure indicts our code every time a public tracker has a
+            // bad minute - and it is the only reason this suite goes red on an otherwise green sweep
+            // (MEASURED 2026-09-08: three full sweeps, 2 failures / 0 / this one).
+            //
+            // NumPeers is the evidence, and the test already has it: with ZERO peers we never got the chance
+            // to be wrong, so there is nothing to assert and this is a SKIP. With a peer connected and still
+            // no data, that IS ours, and it fails loudly.
             if (!torrent.HasMetadata)
+            {
+                if (torrent.NumPeers == 0)
+                    throw new UnsupportedTestException(
+                        "no peer from the public Sintel swarm connected within 60s (peers=0), so the tracker "
+                        + "or signaling was unreachable - nothing here can be asserted about our wire code");
                 throw new Exception(
-                    $"no metadata after 60s (peers={torrent.NumPeers}). " +
-                    "Tracker connection or WebRTC signaling failed — real network required.");
+                    $"no metadata after 60s despite {torrent.NumPeers} connected peer(s). Peers connected and "
+                    + "still sent us no metadata - that is a BEP 9 / wire defect on our side.");
+            }
 
             var downloadDeadline = DateTime.UtcNow.AddSeconds(60);
             while (torrent.Downloaded == 0 && DateTime.UtcNow < downloadDeadline)
                 await Task.Delay(1000);
 
             if (torrent.Downloaded == 0)
+            {
+                if (torrent.NumPeers == 0)
+                    throw new UnsupportedTestException(
+                        "every peer dropped before any piece transferred (peers=0 after metadata), so the "
+                        + "swarm went away mid-test - not evidence about our piece transfer");
                 throw new Exception(
-                    $"downloaded 0 bytes from live Sintel swarm in 60s (peers={torrent.NumPeers}). " +
-                    "Either the swarm was unreachable or piece transfer over WebRTC is broken.");
+                    $"downloaded 0 bytes in 60s from {torrent.NumPeers} connected peer(s) that already gave us "
+                    + "metadata. They are there and talking, so piece transfer over WebRTC is broken on our side.");
+            }
         }
         finally
         {

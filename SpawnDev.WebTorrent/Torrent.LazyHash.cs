@@ -144,7 +144,9 @@ public partial class Torrent
             // Persist the now-complete .torrent under the SAME (provisional) PersistKey the pieces are stored under,
             // so a page reload restores the cached file with ZERO re-download. _lazyPersistKey is retained (PersistKey
             // stays the provisional id even though LazyHash is now false) so the store dir does not move.
-            if (_client?.AsyncFileSystem != null) _ = PersistMetadataAsync();
+            // Queued, not fire-and-forget: WhenPersistedAsync() must be able to cover this write, or a
+            // reload right after finalize restores nothing. See Torrent.QueuePersist.
+            if (_client?.AsyncFileSystem != null) QueuePersist(PersistMetadataAsync);
             OnLazyFinalized?.Invoke();
         }
         catch (Exception ex)

@@ -626,8 +626,23 @@ public class WebTorrentClient : IAsyncDisposable
                     // restore must re-key by the FILENAME — not the .torrent's infohash, which for a finalized lazy
                     // torrent differs from the provisional dir its pieces actually live in.
                     var fileKey = file.Substring(0, file.Length - ".torrent".Length);
-                    var torrentBytes = await AsyncFileSystem.ReadBytes($"{stateDir}/{file}");
-                    if (torrentBytes == null || torrentBytes.Length == 0) continue;
+                    // 🔴 A CORRUPT STATE ENTRY IS NOT A MISSING ONE - SAY SO, AND CLEAR IT.
+                    // This used to `continue` in silence, so a zero-length .torrent meant the torrent simply
+                    // never came back and the model re-downloaded, with nothing anywhere saying why. That is
+                    // indistinguishable from "it was never cached". Persistence is verified after write now
+                    // (Torrent.PersistMetadataAsync), so reaching this means the entry was torn by something
+                    // else - a reload mid-write, or a crash. Removing it lets the next add rebuild it
+                    // cleanly instead of tripping over it on every load forever.
+                    var statePath = $"{stateDir}/{file}";
+                    var torrentBytes = await AsyncFileSystem.ReadBytes(statePath);
+                    if (torrentBytes == null || torrentBytes.Length == 0)
+                    {
+                        Console.WriteLine($"[WebTorrentClient] restore: {statePath} is "
+                            + $"{(torrentBytes == null ? "unreadable" : "EMPTY")} - a torn persist. Removing it "
+                            + "so it is rebuilt on the next add; this torrent will NOT restore from cache.");
+                        try { await AsyncFileSystem.Remove(statePath); } catch { }
+                        continue;
+                    }
                     var metadata = TorrentParser.Parse(torrentBytes);
                     metadata.OriginalTorrentBytes = torrentBytes;
 

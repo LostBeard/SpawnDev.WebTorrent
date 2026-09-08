@@ -119,9 +119,32 @@ public class AsyncFSChunkStore : IChunkStore
             throw new IOException($"[test] transient store fault for piece {index}");   // non-quota → backoff+retry path
         }
         await EnsureInitializedAsync();
-        await _browserFs.Write($"{_basePath}/piece_{index}", (TypedArray)data);
+        var piecePath = $"{_basePath}/piece_{index}";
+        var expected = data.Length;
+        await _browserFs.Write(piecePath, (TypedArray)data);
         if (_cachedIndex == index) { _cachedIndex = -1; _cachedFull = null; }   // invalidate stale read cache
         InvalidateFileCache(index);                                             // the piece changed — drop its cached File handle
+
+        // 🔴 VERIFY THE SIZE THAT LANDED. This is the path the browser download loop actually uses, so it is
+        // the one that matters. There is no atomic rename on OPFS, so an interrupted or partial write leaves
+        // a piece file that EXISTS but is short - classically zero bytes. Restore's presence check then
+        // accepts it, the bitfield claims the piece, and the read fails much later and far away with
+        // "marked as verified but data not in store". An ABSENT piece is handled correctly (re-fetch); a
+        // short one is a lie. Metadata only - one File handle, no bytes read, no JS->.NET copy.
+        //
+        // Thrown as IOException on purpose: the download loop treats that as TRANSIENT and backs off + retries
+        // the piece, which is exactly right for a write that did not land. (Quota is a different, non-IO
+        // exception and still pauses.)
+        using var verify = await _browserFs.ReadFile(piecePath);
+        if (verify == null || verify.Size != expected)
+        {
+            var got = verify == null ? "no handle" : $"{verify.Size} bytes";
+            try { await _fs.Remove(piecePath); } catch { }
+            InvalidateFileCache(index);
+            throw new IOException(
+                $"Piece {index} did not persist: wrote {expected} bytes to {piecePath}, file holds {got}. "
+                + "The partial file has been removed so the piece is re-fetched rather than trusted.");
+        }
     }
 
     private async Task EnsureInitializedAsync()
@@ -165,9 +188,29 @@ public class AsyncFSChunkStore : IChunkStore
             throw new InvalidOperationException("PutAsync requires a browser file system (OPFS).");
         using var uint8ArrayCopy = HeapView.CreateCopy(data);
         await EnsureInitializedAsync();
-        await _browserFs.Write($"{_basePath}/piece_{index}", (TypedArray)uint8ArrayCopy);
+        var piecePath = $"{_basePath}/piece_{index}";
+        await _browserFs.Write(piecePath, (TypedArray)uint8ArrayCopy);
         if (_cachedIndex == index) { _cachedIndex = -1; _cachedFull = null; }   // invalidate stale read cache
         InvalidateFileCache(index);                                             // the piece changed — drop its cached File handle
+
+        // 🔴 VERIFY THE SIZE THAT LANDED, and remove the file if it is wrong.
+        //
+        // There is no atomic rename here, so an interrupted or failed write can leave a piece file that
+        // EXISTS but holds fewer bytes than we wrote - classically zero. That file then satisfies restore's
+        // presence check, the bitfield claims the piece, and the read fails much later with
+        // "marked as verified but data not in store". An ABSENT piece is handled correctly (re-fetch); a
+        // short one is a lie. Metadata only - one File handle, no bytes read, no JS->.NET copy - so this
+        // stays cheap for a multi-GB model.
+        using var verify = await _browserFs.ReadFile(piecePath);
+        if (verify == null || verify.Size != data.Length)
+        {
+            var got = verify == null ? "no handle" : $"{verify.Size} bytes";
+            try { await _fs.Remove(piecePath); } catch { }
+            InvalidateFileCache(index);
+            throw new IOException(
+                $"Piece {index} did not persist: wrote {data.Length} bytes to {piecePath}, file holds {got}. "
+                + "The partial file has been removed so the piece is re-fetched rather than trusted.");
+        }
     }
 
     public async Task<byte[]?> GetAsync(int index, CancellationToken ct = default)
@@ -239,13 +282,40 @@ public class AsyncFSChunkStore : IChunkStore
         if (_browserFs != null)
         {
             await EnsureInitializedAsync();
-            var file = await GetPieceFileAsync(index);
-            if (file == null) return null;
-            long actualLength = Math.Min(length, file.Size - offset);
-            if (actualLength <= 0) return null;
-            using var slice = file.Slice(offset, offset + actualLength);
-            using var ab = await slice.ArrayBuffer();
-            return ab.ReadBytes();
+
+            // 🔴 A CACHED OPFS File IS A SNAPSHOT, AND A CONCURRENT WRITER INVALIDATES IT.
+            //
+            // _browserFs.Write TRUNCATES before it writes, so while any other holder of this store rewrites
+            // piece N there is a window where the entry is empty or the snapshot no longer resolves - and
+            // reading the Blob then throws NotFoundError ("A requested file or directory could not be found")
+            // rather than returning short. MEASURED 2026-09-08: that is one of three failure modes
+            // WebTorrent_OpfsReloadPersistence produced on an UNCHANGED library, and the reload case - a second
+            // client over the same OPFS store while the first is still live - hits it directly.
+            //
+            // A stale snapshot is RECOVERABLE: drop the cached handle, re-open, read again. Bounded at one
+            // retry so a genuinely missing piece still fails fast and returns null to the caller's
+            // "data not in store" path instead of spinning.
+            for (int attempt = 0; ; attempt++)
+            {
+                var file = await GetPieceFileAsync(index);
+                if (file == null) return null;
+                try
+                {
+                    long actualLength = Math.Min(length, file.Size - offset);
+                    if (actualLength <= 0)
+                    {
+                        if (attempt == 0) { InvalidateFileCache(index); continue; }   // mid-truncate: re-open once
+                        return null;
+                    }
+                    using var slice = file.Slice(offset, offset + actualLength);
+                    using var ab = await slice.ArrayBuffer();
+                    return ab.ReadBytes();
+                }
+                catch when (attempt == 0)
+                {
+                    InvalidateFileCache(index);   // stale snapshot - re-open the handle and try once more
+                }
+            }
         }
 
         // Desktop / non-browser AsyncFS has no Blob/slice — read the whole piece (cached) then copy.

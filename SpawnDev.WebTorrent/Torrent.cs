@@ -826,11 +826,37 @@ public partial class Torrent : IAsyncDisposable
         // Persist .torrent metadata for restore after page reload. (Lazy-Hash torrents have no TorrentFileBytes
         // yet — they persist on finalize once the real infohash is known; see FinalizeLazyHash.)
         if (_client?.AsyncFileSystem != null && TorrentFileBytes != null && !string.IsNullOrEmpty(PersistKey))
-            _ = PersistMetadataAsync();
+            QueuePersist(PersistMetadataAsync);
 
         Ready = true;
         OnMetadata?.Invoke();
         OnReady?.Invoke();
+    }
+
+    // ── Persistence completion, so a reload cannot race a half-written cache ──────────────────────────
+    //
+    // 🔴 PERSISTENCE USED TO BE FIRE-AND-FORGET FROM TWO PLACES (`_ = PersistMetadataAsync()`), and nothing
+    // could wait for it. A page reload, a second client calling RestoreFromStorageAsync, or a test moving on
+    // could all observe the cache MID-WRITE. Restore then found a zero-length .torrent, silently skipped it,
+    // and the model re-downloaded - the exact "it re-downloads on load" failure this cache exists to prevent.
+    //
+    // The task is now tracked and awaitable. Callers that care - a client shutting down, a test that is about
+    // to reload - await WhenPersistedAsync() and get a cache that is actually on disk.
+    private Task _persistTask = Task.CompletedTask;
+    private readonly object _persistLock = new();
+
+    /// <summary>Completes when every persistence write issued so far has finished.</summary>
+    /// <remarks>
+    /// ⚠️ Await this before reloading, disposing the client, or restoring the same store from another client.
+    /// Without it the cache can be observed half-written, and a half-written cache reads as an ABSENT one.
+    /// </remarks>
+    public Task WhenPersistedAsync() { lock (_persistLock) return _persistTask; }
+
+    /// <summary>Queue a persistence write and fold it into <see cref="WhenPersistedAsync"/>.</summary>
+    private void QueuePersist(Func<Task> work)
+    {
+        lock (_persistLock)
+            _persistTask = _persistTask.ContinueWith(_ => work(), TaskScheduler.Default).Unwrap();
     }
 
     private async Task PersistMetadataAsync()
@@ -843,10 +869,30 @@ public partial class Torrent : IAsyncDisposable
             var dir = "webtorrent/_state";
             if (!await fs.DirectoryExists(dir))
                 await fs.CreateDirectory(dir);
-            await fs.Write($"{dir}/{key}.torrent", TorrentFileBytes);
+            var path = $"{dir}/{key}.torrent";
+            await fs.Write(path, TorrentFileBytes);
+
+            // ⚠️ VERIFY WHAT LANDED. There is no atomic rename on this file system, so a torn or empty write
+            // is possible - and an EMPTY .torrent is worse than no .torrent, because RestoreFromStorageAsync
+            // skips it silently and the torrent simply never comes back. If the bytes are not all there,
+            // REMOVE the entry: an absent cache entry is handled correctly (re-fetch), a lying one is not.
+            var written = await fs.ReadBytes(path);
+            if (written == null || written.Length != TorrentFileBytes.Length)
+            {
+                Console.WriteLine($"[Torrent] persist VERIFY FAILED for {path}: wrote "
+                    + $"{TorrentFileBytes.Length} bytes, read back {written?.Length.ToString() ?? "null"}. "
+                    + "Removing the entry so restore re-fetches instead of skipping a corrupt one.");
+                try { await fs.Remove(path); } catch { }
+                return;
+            }
             await PersistStateAsync();
         }
-        catch { /* Best-effort persistence */ }
+        catch (Exception ex)
+        {
+            // 🔴 NOT SILENT. This was `catch { }` - "best-effort persistence" - so a cache that never
+            // persisted looked identical to one that did, forever, and every reload re-downloaded.
+            Console.WriteLine($"[Torrent] persist FAILED for key '{key}': {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     /// <summary>Persist torrent state (paused, selected files) to companion JSON file.</summary>

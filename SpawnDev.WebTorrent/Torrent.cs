@@ -1776,6 +1776,24 @@ public partial class Torrent : IAsyncDisposable
         if (Destroyed) return;
         Destroyed = true;
 
+        // 🔴 FLUSH THE CACHE BEFORE TEARING DOWN, or disposing ABANDONS it.
+        //
+        // Persistence is issued asynchronously when metadata arrives and again when a Lazy-Hash torrent
+        // finalizes. Nothing here waited for it, so a client disposed shortly after a download - which is
+        // exactly what a page reload, and every test that models one, does - could drop the write on the
+        // floor. The next restore then finds NO FILE and re-downloads the whole model, with nothing
+        // anywhere explaining why.
+        //
+        // ⚠️ MEASURED 2026-09-08: this is the third and last failure mode of the OPFS reload lifecycle,
+        // and the one the new store diagnostic finally named -
+        //   "Piece 0 is marked verified in the bitfield but the store cannot serve it.
+        //    Store says: no file at webtorrent/<key>/piece_0"
+        // Not a short file and not a stale handle: never written at all.
+        //
+        // Best-effort and bounded - disposal must not hang on a wedged file system.
+        try { await WhenPersistedAsync().WaitAsync(TimeSpan.FromSeconds(30)); }
+        catch (Exception ex) { Console.WriteLine($"[Torrent] dispose: persistence did not flush: {ex.Message}"); }
+
         // Timer.Dispose() does NOT wait for in-flight callbacks. Rechoke iterates
         // Wires in a LINQ OrderBy; if a callback is mid-iteration when the Wires
         // collection is cleared below, it dereferences a null wire and NREs on

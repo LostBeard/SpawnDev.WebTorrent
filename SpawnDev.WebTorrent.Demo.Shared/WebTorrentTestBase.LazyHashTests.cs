@@ -187,6 +187,87 @@ public abstract partial class WebTorrentTestBase
     }
 
     /// <summary>
+    /// A SECOND LIVE CLIENT over the same OPFS store must read correct bytes - or fail cleanly. It must
+    /// never serve wrong data, and it must never claim to hold a piece it cannot produce.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 🔴 THE SCENARIO FROM SpawnDev.ILGPU.ML, EXPRESSED HERE. Its
+    /// <c>WebTorrent_OpfsReloadPersistence</c> restores on a second client while the FIRST is still alive -
+    /// the app's DI singleton is never disposed - and it failed three different ways on an unchanged
+    /// library: a zero-length piece file, a NotFoundError reading a piece Blob, and a piece marked verified
+    /// with no file at all. <see cref="LazyHash_DownloadThenReopen_RestoresComplete_NoRedownload"/> does NOT
+    /// cover it, because it disposes client 1 first and so only ever has one live holder of the store.
+    /// </para>
+    /// <para>
+    /// ⚠️ Why this is the library's problem and not just a badly written test: <c>_browserFs.Write</c>
+    /// TRUNCATES before it writes, so any concurrent holder can observe a piece file mid-write - empty, or
+    /// with an invalidated <c>File</c> snapshot. Nothing stopped that, nothing detected it, and the symptom
+    /// surfaced far away as "data not in store". A second holder is exactly what a second browser TAB is.
+    /// </para>
+    /// <para>
+    /// The bar here is deliberately the honest one: **correct bytes, or a clean failure**. Silent wrong data
+    /// is the only unacceptable outcome, and a piece the store cannot serve must not be marked verified.
+    /// </para>
+    /// </remarks>
+    [TestMethod(Timeout = 300000, Category = "HeavyModel")]
+    public async Task LazyHash_SecondLiveClient_SameOpfs_ReadsCorrectlyOrFailsCleanly()
+    {
+        var fs = Client.AsyncFileSystem;
+        if (fs == null) throw new UnsupportedTestException("no OPFS (desktop runtime) - lazy persistence is browser-only");
+        var url = LazyHubUrl;
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(4));
+
+        // Client 1 downloads the whole file and is DELIBERATELY LEFT ALIVE.
+        var client1 = new WebTorrentClient(new WebTorrentClientOptions { AsyncFileSystem = fs });
+        try
+        {
+            var t1 = await client1.AddAsync(url, ct: cts.Token);
+            var f1 = t1.Files[0];
+            var expected = await f1.ReadAsync(0, (int)f1.Length, cts.Token);
+            if (expected == null || expected.Length != f1.Length)
+                throw new Exception($"client1 downloaded {expected?.Length ?? 0}/{f1.Length}");
+            for (int i = 0; i < 300 && t1.LazyHash; i++) await Task.Delay(50, cts.Token);
+            if (t1.LazyHash) throw new Exception("client1 did not finalize");
+
+            // Its cache must actually be on disk before anyone else looks at it.
+            await t1.WhenPersistedAsync();
+
+            // Client 2 restores over the SAME store while client 1 still holds it.
+            var client2 = new WebTorrentClient(new WebTorrentClientOptions { AsyncFileSystem = fs });
+            try
+            {
+                await client2.RestoreFromStorageAsync();
+                var t2 = client2.Torrents.FirstOrDefault(t =>
+                    string.Equals(t.InfoHash, t1.InfoHash, StringComparison.OrdinalIgnoreCase));
+                if (t2 == null)
+                    throw new Exception($"second live client did not restore {t1.InfoHash} - a second tab would re-download");
+
+                // ⚠️ COMPARE THE BYTES. "It returned something" is not the property under test - a store
+                // race that serves a stale or short piece returns something perfectly happily.
+                var got = await t2.Files[0].ReadAsync(0, (int)t2.Files[0].Length, cts.Token);
+                if (got == null)
+                    throw new Exception("second live client read returned null - it claimed the pieces then could not serve them");
+                if (got.Length != expected.Length)
+                    throw new Exception($"second live client read {got.Length} bytes, expected {expected.Length}");
+                for (int i = 0; i < got.Length; i++)
+                    if (got[i] != expected[i])
+                        throw new Exception($"second live client served WRONG BYTES at offset {i} "
+                                          + $"({got[i]} vs {expected[i]}) - a concurrent-store race produced silent corruption");
+
+                Console.WriteLine($"[LazyHash] second live client over the same OPFS read all {got.Length} bytes "
+                    + $"identically while client 1 was still open (infohash {t1.InfoHash})");
+            }
+            finally { await client2.DisposeAsync(); }
+        }
+        catch (UnsupportedTestException) { throw; }
+        catch (Exception ex) when (ex.Message.Contains("No connection") || ex.Message.Contains("network")
+            || ex.Message.Contains("preparing") || ex is TimeoutException)
+        { throw new UnsupportedTestException($"hub/network unavailable: {ex.Message}"); }
+        finally { await client1.DisposeAsync(); }
+    }
+
+    /// <summary>
     /// Deterministic zero-copy SPAN coalescing: downloading the whole file over the browser zero-copy web-seed path
     /// must issue a few large (~1 MiB) JS.Fetch GETs, NOT one per 16 KiB piece. Uses an OPFS-backed client so the
     /// zero-copy path (JS.Fetch → SubtleCrypto → OPFS) is taken; browser-only (the zero-copy span path is the

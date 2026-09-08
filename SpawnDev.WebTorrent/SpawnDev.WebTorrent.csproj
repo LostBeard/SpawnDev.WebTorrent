@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk.Razor">
+﻿<Project Sdk="Microsoft.NET.Sdk.Razor">
 
 	<PropertyGroup>
 		<TargetFramework>net10.0</TargetFramework>
@@ -9,8 +9,8 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-		<Version>4.2.2</Version>
-		<PackageReleaseNotes>v4.2.2 - Dependency update</PackageReleaseNotes>
+		<Version>4.2.3</Version>
+		<PackageReleaseNotes>v4.2.3 - OPFS chunk store correctness, plus SpawnDev.RTC 2.2.3 (desktop DTLS cipher-suite fix). AsyncFSChunkStore: writes are verified and a short file is removed rather than left to poison the bitfield (_browserFs.Write TRUNCATES before writing, and nothing checked what landed); GetAsync recovers from a stale OPFS File snapshot by re-opening once; PieceExistsAsync checks SIZE, not mere existence, so a zero-length piece can no longer make a restored bitfield lie. Torrent persistence is queued and awaitable (Torrent.WhenPersistedAsync), verified, flushed on dispose, and logs instead of swallowing; RestoreFromStorageAsync reports and removes a torn .torrent instead of silently skipping it. Both 'marked as verified but data not in store' throws now report what the store actually holds (DescribePieceAsync). A bitfield bit is enforced as a promise the store can serve: the seed-from-data path used to write a piece conditionally and set its bit unconditionally. SetMetadata now fails loudly instead of silently falling back to an in-memory store that never persists. Server: one allowlisted source proxy replaces a proxy class per origin, the cache is bounded (in-flight extractions counted), and large archives no longer block the fetch.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>

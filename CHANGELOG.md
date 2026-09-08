@@ -1,5 +1,72 @@
 ﻿# Changelog
 
+## 4.2.3 (2026-09-08) - OPFS chunk store correctness, and a desktop DTLS fix that unblocked the live swarm
+
+Requires **SpawnDev.RTC 2.2.3** (which carries **SpawnDev.SIPSorcery 10.0.8**).
+
+### Fixed - the OPFS chunk store could mark a piece verified that it could not serve
+
+`WebTorrent_OpfsReloadPersistence` failed three different ways on three runs of the **unchanged**
+library, which read as cause and effect and was not. A two-run control on stock 4.2.2 is the only
+reason we know that. Underneath two of the three modes was one fact nothing accounted for:
+
+**`_browserFs.Write` TRUNCATES before it writes**, and nothing verified the result or tolerated a
+concurrent writer - and the ML test that found this runs two live clients over one OPFS store.
+
+- `AsyncFSChunkStore.PutUint8ArrayAsync` **and** `PutAsync` now verify the size that landed and remove a
+  short file, raising `IOException` so the download loop's existing transient backoff retries.
+  (The first attempt put this only on `PutAsync`, which is not the browser download path.)
+- `GetAsync(index, offset, length)` recovers from a stale snapshot: an OPFS `File` is a **snapshot**, and
+  reading its Blob later can throw `NotFoundError`. It drops the cached handle, re-opens and retries once.
+  ⚠️ Do not cache a `File` per piece during restore - that is the same bug with more steps.
+- `PieceExistsAsync` checks **size**, via a transient handle. It used to check mere existence while the
+  read path needs bytes, so a zero-length piece made a restored bitfield lie.
+- Persistence is queued and awaitable (`Torrent.WhenPersistedAsync`), verified, flushed on dispose, and
+  **logs** instead of `catch { }`. A read-back straight after a write can legitimately observe less than
+  was written, so it retries rather than condemning the file.
+- `RestoreFromStorageAsync` reports and removes a torn `.torrent` instead of silently continuing.
+- Both `"marked as verified but data not in store"` throws now call `DescribePieceAsync` and say what the
+  store actually holds: no file / empty file / N bytes.
+
+### Fixed - a bitfield bit is a promise the store can serve that piece
+
+`WebTorrentClient`'s seed-from-data path wrote each piece **conditionally** and set `Bitfield[i]`
+**unconditionally**, so a torrent could advertise a piece it had never stored. `Torrent.SetMetadata`
+silently fell back to a `MemoryChunkStore` when `PersistKey` was empty even with OPFS available - a
+"cache that never persists". Both now fail loudly.
+
+### Fixed - the desktop lane could not reach half the swarm (via SpawnDev.RTC 2.2.3)
+
+The desktop DTLS client offered only the cipher suites matching **its own** certificate's signature
+algorithm. A TLS client's suite list describes the certificate it will accept **from the peer**, so this
+rejected every peer with the other certificate type and died with `handshake_failure(40)` *after* ICE had
+connected - which reads as a network problem and is not one. It surfaced here as
+`Interop_LiveSwarm_Sintel_DownloadsPieces` intermittently finding zero peers on the desktop lane while the
+browser lane passed every time against the same swarm.
+
+### Fixed - PlaywrightMultiTest destroyed the evidence on every desktop failure
+
+The desktop lane ran each test with a flat 120 s timeout and, on no result line, threw the four words
+`"Test run failed"` - discarding the exit code and the child's entire output. The live-swarm test waits
+60 s for metadata and then 60 s for the first byte, so it was **always** killed before it could report;
+every diagnostic it carefully writes was unreachable by construction, and `[2 m 1 s]` was the cap rather
+than a verdict. The message now names the test, says whether the harness killed it and after how long,
+gives the exit code otherwise, and prints the last 40 lines from the child. Deadline is 180 s, overridable
+with `PMT_DESKTOP_TEST_TIMEOUT_MS`.
+
+### Server
+
+- One allowlisted source proxy replaces the per-origin proxy classes.
+- The extraction cache is bounded, and in-flight extractions count toward the cap.
+- A large archive no longer blocks the fetch that triggered it.
+- CORS is asserted by its **effect**, not by reading headers a browser hides from script.
+
+### Verification
+
+Full PMT sweep on these bits: **1003 passed, 0 failed, 29 skipped** (16 m 58 s). All 29 skips are
+capability skips - desktop-only features (TCP, DHT, LSD, `HttpListener`) in the browser lane and
+browser-only features (OPFS, service worker, `Blob`, `Uint8Array`) in the desktop lane.
+
 ## 4.2.0 (2026-08-18) - SpawnJS port completed across the solution; browser OPFS persistence restored
 
 **The BlazorJS -> SpawnJS port reached the demo/test projects, and finishing it uncovered three

@@ -122,6 +122,28 @@ namespace PlaywrightMultiTest
             filter ??= Environment.GetEnvironmentVariable("PMT_FILTER");
             if (!string.IsNullOrEmpty(filter)) LogStatus($"Test filter active: '{filter}' (substring match)");
 
+            // 🔴 THE DESKTOP LANE'S PER-TEST TIMEOUT MUST EXCEED THE LONGEST TEST'S OWN BUDGET, or the
+            // harness kills the child BEFORE the test can report what it found.
+            //
+            // This was 120_000 flat. Interop_LiveSwarm_Sintel_DownloadsPieces waits up to 60s for metadata
+            // and then up to 60s for the first byte, so its worst case is 120s of deliberate waiting plus
+            // process start and client teardown - i.e. ALWAYS past the cap. MEASURED 2026-09-08: the test
+            // reported "Failed ... [2 m 1 s]" with the message "Test run failed", which is this harness's
+            // generic text, not the test's. Every carefully-written diagnostic in that test ("no peer
+            // connected within 60s", "downloaded 0 bytes from N connected peers") was unreachable BY
+            // CONSTRUCTION - the process was killed a moment before it could print one.
+            //
+            // This is not a timeout raised to let slow code pass: a test that fails fast still fails fast.
+            // It only stops the harness truncating a test INSIDE its own declared budget.
+            // Override with PMT_DESKTOP_TEST_TIMEOUT_MS when a suite genuinely needs longer.
+            var desktopTestTimeoutMs = 180_000;
+            var desktopTimeoutEnv = Environment.GetEnvironmentVariable("PMT_DESKTOP_TEST_TIMEOUT_MS");
+            if (!string.IsNullOrWhiteSpace(desktopTimeoutEnv) && int.TryParse(desktopTimeoutEnv, out var parsedDesktopTimeout) && parsedDesktopTimeout > 0)
+            {
+                desktopTestTimeoutMs = parsedDesktopTimeout;
+                LogStatus($"Desktop per-test timeout overridden: {desktopTestTimeoutMs} ms");
+            }
+
             LogStatus("Discovering projects...");
             var projects = ProjectDiscovery.GetWorkspaceRoot();
             LogStatus($"Found {projects.Count()} projects");
@@ -363,13 +385,29 @@ namespace PlaywrightMultiTest
                         rowTest.TestFunc = async (page) =>
                         {
                             var runArgs = rowTest.Name;
-                            var result = await ProcessRunner.Run(publishedBinary, runArgs, timeout: 120_000).ConfigureAwait(false);
+                            var result = await ProcessRunner.Run(publishedBinary, runArgs, timeout: desktopTestTimeoutMs).ConfigureAwait(false);
                             var resultLines = result.Text.Split(new[] { '\n', '\r' }, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
                             var testResltTest = resultLines.LastOrDefault(o => o.StartsWith("TEST: "))?.Substring(6);
                             var unitTest = testResltTest != null ? JsonSerializer.Deserialize<UnitTest>(testResltTest) : null;
                             if (unitTest == null)
                             {
-                                throw new Exception("Test run failed");
+                                // 🔴 NEVER THROW AWAY THE CHILD'S OUTPUT HERE. This used to be a bare
+                                // `throw new Exception("Test run failed")`, so a desktop test that crashed,
+                                // was killed by the timeout above, or wrote a malformed result line reported
+                                // FOUR WORDS and nothing else - no exit code, no stdout, no stderr, and no
+                                // way to tell those three cases apart. The evidence was sitting in `result`
+                                // the whole time and was discarded one line before it was needed.
+                                var killedByTimeout = result.ExitCode == -1;
+                                var tail = string.Join(Environment.NewLine, resultLines.TakeLast(40));
+                                if (string.IsNullOrWhiteSpace(tail)) tail = "(the child produced no output at all)";
+                                throw new Exception(
+                                    $"Desktop test '{rowTest.Name}' produced no 'TEST: ' result line. "
+                                    + (killedByTimeout
+                                        ? $"The harness KILLED it after {desktopTestTimeoutMs} ms - this is the harness's "
+                                          + "deadline, NOT the test's own verdict. Raise PMT_DESKTOP_TEST_TIMEOUT_MS if the "
+                                          + "test legitimately needs longer."
+                                        : $"The child exited with code {result.ExitCode}.")
+                                    + Environment.NewLine + "Last output from the child:" + Environment.NewLine + tail);
                             }
                             var stateMessage = unitTest.ResultText;
                             rowTest.Result = unitTest.Result;

@@ -876,13 +876,23 @@ public partial class Torrent : IAsyncDisposable
             // is possible - and an EMPTY .torrent is worse than no .torrent, because RestoreFromStorageAsync
             // skips it silently and the torrent simply never comes back. If the bytes are not all there,
             // REMOVE the entry: an absent cache entry is handled correctly (re-fetch), a lying one is not.
+            // ⚠️ RETRY BEFORE CONDEMNING IT. A read-back taken immediately after a write can legitimately
+            // observe less than was written, so treating the first mismatch as corruption and DELETING the
+            // entry manufactures the very failure this verification exists to prevent - MEASURED: it turned
+            // an otherwise-fine persist into "no non-empty _state/*.torrent appeared". Rewrite once, and only
+            // give up if it is still wrong; even then, leave the file alone rather than deleting a state
+            // entry that restore's own zero-length check already handles safely.
             var written = await fs.ReadBytes(path);
             if (written == null || written.Length != TorrentFileBytes.Length)
             {
-                Console.WriteLine($"[Torrent] persist VERIFY FAILED for {path}: wrote "
+                await fs.Write(path, TorrentFileBytes);
+                written = await fs.ReadBytes(path);
+            }
+            if (written == null || written.Length != TorrentFileBytes.Length)
+            {
+                Console.WriteLine($"[Torrent] persist VERIFY FAILED for {path} after a rewrite: wrote "
                     + $"{TorrentFileBytes.Length} bytes, read back {written?.Length.ToString() ?? "null"}. "
-                    + "Removing the entry so restore re-fetches instead of skipping a corrupt one.");
-                try { await fs.Remove(path); } catch { }
+                    + "Restore treats a short entry as absent, so this torrent will re-download.");
                 return;
             }
             await PersistStateAsync();

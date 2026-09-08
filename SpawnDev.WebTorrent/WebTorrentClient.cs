@@ -793,12 +793,23 @@ public class WebTorrentClient : IAsyncDisposable
                 ? (int)(metadata.TotalLength - (long)i * metadata.PieceLength)
                 : metadata.PieceLength;
 
-            if (pieceOffset + pieceLen <= data.Length)
-            {
-                await torrent._store!.PutAsync(i, data.AsMemory(pieceOffset, pieceLen));
-            }
+            // 🔴 THE WRITE WAS CONDITIONAL AND THE MARK WAS NOT.
+            //
+            // `Bitfield[i] = true` sat OUTSIDE this guard, so when the supplied data was shorter than the
+            // metadata claims, the piece was never stored and was still announced as verified and Done. The
+            // torrent then advertises a piece it cannot produce, and the first read of it fails - far away,
+            // and long afterwards - with "Piece N is marked verified in the bitfield but the store cannot
+            // serve it. Store says: no file". A bitfield bit is a PROMISE that the store can serve that
+            // piece; it may only be set after the store has actually taken it.
+            if (pieceOffset + pieceLen > data.Length)
+                throw new InvalidOperationException(
+                    $"seed data is {data.Length} bytes but piece {i} needs [{pieceOffset}, {pieceOffset + pieceLen}) "
+                    + $"of {metadata.TotalLength}. Refusing to mark a piece verified that was never stored - "
+                    + "that produces a torrent which claims pieces it cannot serve.");
 
-            // Mark piece as verified and done
+            await torrent._store!.PutAsync(i, data.AsMemory(pieceOffset, pieceLen));
+
+            // Mark piece as verified and done - only now that the store has it.
             torrent.Bitfield[i] = true;
             torrent.Pieces[i] = new Piece(0);
         }

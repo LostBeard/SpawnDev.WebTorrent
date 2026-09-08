@@ -1,4 +1,4 @@
-using SpawnDev.UnitTesting;
+﻿using SpawnDev.UnitTesting;
 using SpawnDev.WebTorrent;
 
 namespace SpawnDev.WebTorrent.Demo.Shared;
@@ -184,6 +184,80 @@ public abstract partial class WebTorrentTestBase
             Console.WriteLine($"[LazyHash] reopened: {t2.CompletedPieces}/{pieceCount} pieces restored from OPFS, ZERO re-download, listed on /cache (infohash {infohash})");
         }
         finally { await client2.DisposeAsync(); }
+    }
+
+    /// <summary>
+    /// The pieces are DELETED out from under a live, complete torrent. The next read must re-fetch them,
+    /// not throw.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 🔴 OPFS IS NOT OURS ALONE. The browser evicts origin storage under pressure, the user clears site
+    /// data, and any other holder of the same origin can remove the directory. A torrent restored from that
+    /// cache then holds a bitfield that is simply WRONG, and until 4.2.4 the only symptom was an
+    /// <c>InvalidOperationException</c> from the first read - unrecoverable, for a condition whose correct
+    /// answer is "download it again".
+    /// </para>
+    /// <para>
+    /// MEASURED 2026-09-08: SpawnDev.ILGPU.ML's <c>WebTorrent_OpfsReloadPersistence</c> failed roughly one
+    /// run in three with "Piece 0 is marked verified in the bitfield but the store cannot serve it". The ML
+    /// test wipes <c>webtorrent/</c> at its start, but the client had ALREADY restored that torrent at
+    /// startup and <c>AddLazyHash</c> dedups on the web-seed URL - so it got the restored torrent back:
+    /// complete bitfield, empty store, directory gone. The store said so itself once it was asked - "the
+    /// store directory DOES NOT EXIST ... this store has written 0 piece(s) since it was created".
+    /// </para>
+    /// <para>
+    /// This test does the same thing on purpose and DETERMINISTICALLY: download to completion, delete the
+    /// piece directory behind the torrent's back, then read. With the recovery removed this test throws on
+    /// the first read - which is how it was verified to be a real guard rather than a passing formality.
+    /// </para>
+    /// </remarks>
+    [TestMethod(Timeout = 300000, RetryCount = 1, Category = "HeavyModel")]
+    public async Task LazyHash_StoreClearedBehindOurBack_ReadRefetchesInsteadOfThrowing()
+    {
+        var fs = Client.AsyncFileSystem;
+        if (fs == null) throw new UnsupportedTestException("no OPFS (desktop runtime) - the eviction case is browser-only");
+        var url = LazyHubUrl;
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(4));
+
+        var client = new WebTorrentClient(new WebTorrentClientOptions { AsyncFileSystem = fs });
+        try
+        {
+            var t = await client.AddAsync(url, ct: cts.Token);
+            var file = t.Files[0];
+
+            // Read enough to complete at least the first piece, then wait for the whole torrent so the
+            // bitfield genuinely claims everything (that claim is what we are about to invalidate).
+            var expected = await file.ReadAsync(0, (int)Math.Min(file.Length, 65536), cts.Token);
+            if (expected == null || expected.Length == 0) throw new Exception("the initial read returned nothing");
+            for (int i = 0; i < 300 && t.LazyHash; i++) await Task.Delay(50, cts.Token);
+            if (t.CompletedPieces == 0) throw new Exception("no piece completed, so there is no claim to invalidate");
+
+            var storeDir = $"webtorrent/{t.PersistKey}";
+            if (!await fs.DirectoryExists(storeDir))
+                throw new Exception($"expected the pieces at {storeDir} - nothing was persisted, so this test "
+                                  + "would prove nothing about recovering from their loss");
+
+            // THE EVICTION. Everything the torrent believes it holds is now gone; it does not know that.
+            await fs.Remove(storeDir, true);
+            if (await fs.DirectoryExists(storeDir)) throw new Exception($"could not remove {storeDir}");
+            if (t.CompletedPieces == 0) throw new Exception("the torrent noticed the removal by itself - this test needs it NOT to");
+
+            // The read must succeed anyway, with the SAME bytes, by fetching the piece again.
+            var again = await file.ReadAsync(0, expected.Length, cts.Token);
+            if (again == null || again.Length != expected.Length)
+                throw new Exception($"read after eviction returned {again?.Length ?? 0}/{expected.Length} bytes");
+            if (!again.SequenceEqual(expected))
+                throw new Exception("read after eviction returned DIFFERENT bytes - a re-fetch that serves wrong data is worse than throwing");
+
+            Console.WriteLine($"[Eviction] {storeDir} deleted under a complete torrent; the read re-fetched "
+                            + $"and returned {again.Length} identical bytes ({t.CompletedPieces}/{t.PieceCount} pieces held).");
+        }
+        catch (UnsupportedTestException) { throw; }
+        catch (Exception ex) when (ex.Message.Contains("No connection") || ex.Message.Contains("network")
+            || ex.Message.Contains("preparing") || ex is TimeoutException)
+        { throw new UnsupportedTestException($"hub/network unavailable: {ex.Message}"); }
+        finally { await client.DisposeAsync(); }
     }
 
     /// <summary>

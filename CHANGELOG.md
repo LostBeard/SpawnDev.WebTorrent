@@ -1,5 +1,64 @@
 ﻿# Changelog
 
+## 4.2.4 (2026-09-08) - a cleared OPFS cache is a re-download, not a fatal error
+
+### Fixed - a restored torrent whose pieces are gone now re-fetches them
+
+**OPFS is not ours alone.** The browser evicts origin storage under pressure, the user can clear site
+data, and any other holder of the same origin can remove the directory. When that happens every restored
+torrent is instantly lying about what it holds - and the only symptom was an `InvalidOperationException`
+from the first read: unrecoverable, for a condition whose correct answer is simply "download it again".
+
+`Torrent.TryRecoverUnservablePiece` now handles it. When a read finds the bitfield claiming a piece the
+store cannot serve it clears the bit, re-arms the piece, resumes the torrent if it was restored paused,
+marks the piece critical and re-fetches it - **at most once per piece per read**, so a store that genuinely
+cannot hold the piece still fails loudly instead of looping. Both read paths use it: `ReadFileAsync`
+(`byte[]`) and the zero-copy `ReadFileUint8ArrayAsync`.
+
+Recovery also **re-persists the `.torrent`**: the pieces are not the whole cache entry, and without that
+file a reload cannot restore the torrent at all.
+
+### Fixed - `state.json` without a `.torrent` is a cache entry restore cannot use
+
+`PersistStateAsync` runs on pause, on resume and on selection changes, not only after
+`PersistMetadataAsync` - so it could (re)create `{key}.state.json` while `{key}.torrent` was missing.
+MEASURED: after the pieces were cleared behind a live torrent, the next `Add()` deduped onto it and called
+`Resume()`, which wrote `state.json`; the `.torrent` was never rewritten because `FinalizeLazyHash` runs
+once. The cache then looked half-present forever and every reload re-downloaded the model. It now writes
+the `.torrent` too whenever we hold the bytes and the file is missing or short.
+
+### Fixed - a conditional write under an unconditional bit
+
+Both piece-completion paths set `Bitfield[i] = true` whether or not anything reached the store. The
+zero-copy span path wrote only `if (_store is AsyncFSChunkStore)`; the wire path only `if (_store != null)`.
+Every store now gets the bytes, and a completion that cannot be stored keeps the bit clear so the piece is
+re-fetched rather than trusted. This was the third instance of that exact shape (after the seed-from-data
+path fixed in 4.2.3).
+
+### Diagnostics that ended a two-day investigation
+
+- `AsyncFSChunkStore.PiecesWritten` - pieces this store has successfully written since construction. **Zero
+  on a store whose torrent claims completed pieces means the bits were set without ever storing them**, which
+  "no file at &lt;path&gt;" alone can never tell you. A store that downloaded and later lost its files
+  reports a non-zero count.
+- `DescribePieceAsync` asks `DirectoryExists` **before** `GetFiles`, which throws on a missing directory.
+  The message that used to surface was a bare `Arg_NullReferenceException` - which reads as a bug in the
+  diagnostic rather than as the fact it was actually reporting.
+
+Together they named the cause in one run: *"the store directory DOES NOT EXIST ... this store has written 0
+piece(s) since it was created"*.
+
+### Tests
+
+`LazyHash_StoreClearedBehindOurBack_ReadRefetchesInsteadOfThrowing` - downloads a torrent to completion,
+deletes its piece directory behind its back, and reads. **Red-checked**: with the recovery disabled it fails
+with the exact production message; with it enabled it passes and returns byte-identical bytes.
+
+### Verification
+
+Full PMT sweep: **1016 passed, 0 failed, 33 skipped**. SpawnDev.ILGPU.ML's
+`WebTorrent_OpfsReloadPersistence`, which failed roughly one run in three for two days, is **6/6 green**.
+
 ## 4.2.3 (2026-09-08) - OPFS chunk store correctness, and a desktop DTLS fix that unblocked the live swarm
 
 Requires **SpawnDev.RTC 2.2.3** (which carries **SpawnDev.SIPSorcery 10.0.8**).

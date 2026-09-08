@@ -1,4 +1,4 @@
-using SpawnDev.SpawnJS;
+﻿using SpawnDev.SpawnJS;
 // Narrow aliases (not the whole JSObjects namespace) so JS `Array` doesn't shadow System.Array.
 using Uint8Array = SpawnDev.SpawnJS.JSObjects.Uint8Array;
 using SubtleCrypto = SpawnDev.SpawnJS.JSObjects.SubtleCrypto;
@@ -212,9 +212,20 @@ public partial class Torrent
 
                 if (hashMatch)
                 {
-                    // Verified! Store the piece to chunk store for seeding
+                    // Verified! Store the piece to chunk store for seeding.
+                    // 🔴 The bit below is a PROMISE that the store can serve this piece, so it must not be
+                    // set when there is no store to serve it from. See the zero-copy site for the full note.
                     if (_store != null)
+                    {
                         await _store.PutAsync(index, buf);
+                    }
+                    else
+                    {
+                        OnWarning?.Invoke($"Piece {index} verified but there is no chunk store to hold it - not marking it available");
+                        piece = Pieces[index] = new Piece(PieceLength);            // re-arm; do NOT advertise
+                        UpdateWires();
+                        return;
+                    }
 
                     Pieces[index] = new Piece(0); // mark as done (length 0 = flushed)
                     Bitfield[index] = true;
@@ -428,8 +439,31 @@ public partial class Torrent
 
         if (match)
         {
+            // 🔴 A CONDITIONAL WRITE UNDER AN UNCONDITIONAL BIT IS A LIE THE READER PAYS FOR.
+            //
+            // This used to write only `if (_store is AsyncFSChunkStore)` and then set `Bitfield[p] = true`
+            // whatever happened - so with any other store (or none) the torrent advertised a piece it had
+            // never persisted, and the failure surfaced far away as "marked verified but data not in store"
+            // with a store directory that did not even exist. Same shape as the seed-from-data bug fixed in
+            // WebTorrentClient; this was the third instance. Every store gets the bytes, and a store that
+            // cannot take them keeps the bit clear so the piece is re-fetched instead of trusted.
             if (_store is Storage.AsyncFSChunkStore afs)
+            {
                 await afs.PutUint8ArrayAsync(p, pieceUa);                          // JS Uint8Array -> OPFS, no .NET copy
+            }
+            else if (_store != null)
+            {
+                // Not an OPFS store (memory / native). It still has to hold the piece before we claim it.
+                // This costs a JS->.NET read, which is why the OPFS path above avoids it - but a store that
+                // never sees the bytes cannot serve them later.
+                await _store.PutAsync(p, pieceUa.ReadBytes());
+            }
+            else
+            {
+                OnWarning?.Invoke($"Piece {p} verified but there is no chunk store to hold it - not marking it available");
+                Pieces[p] = new Piece(PieceLength);                               // re-arm; do NOT advertise
+                return;
+            }
             Pieces[p] = new Piece(0);                                             // mark done (length 0 = flushed)
             Bitfield[p] = true;
             _reservations.TryRemove(p, out _);

@@ -1,4 +1,4 @@
-using SpawnDev.AsyncFileSystem;
+﻿using SpawnDev.AsyncFileSystem;
 using SpawnDev.SpawnJS.JSObjects;
 using SpawnDev.SpawnJS.Toolbox;
 
@@ -35,6 +35,14 @@ public class AsyncFSChunkStore : IChunkStore
     private const int FileCacheMax = 4;
 
     public int ChunkLength { get; }
+
+    /// <summary>
+    /// Pieces this store has successfully written and verified since construction. Zero on a store whose
+    /// torrent claims completed pieces means the download path set bitfield bits WITHOUT ever storing them -
+    /// a distinction that "no file at &lt;path&gt;" alone cannot make, and one that sent a real investigation
+    /// looking for a lost file that had never been written.
+    /// </summary>
+    public int PiecesWritten { get; private set; }
 
     /// <summary>Whether this store supports zero-copy Uint8Array reads (browser OPFS).</summary>
     public bool SupportsUint8Array => _browserFs != null;
@@ -145,6 +153,7 @@ public class AsyncFSChunkStore : IChunkStore
                 $"Piece {index} did not persist: wrote {expected} bytes to {piecePath}, file holds {got}. "
                 + "The partial file has been removed so the piece is re-fetched rather than trusted.");
         }
+        PiecesWritten++;
     }
 
     private async Task EnsureInitializedAsync()
@@ -211,6 +220,7 @@ public class AsyncFSChunkStore : IChunkStore
                 $"Piece {index} did not persist: wrote {data.Length} bytes to {piecePath}, file holds {got}. "
                 + "The partial file has been removed so the piece is re-fetched rather than trusted.");
         }
+        PiecesWritten++;
     }
 
     public async Task<byte[]?> GetAsync(int index, CancellationToken ct = default)
@@ -267,16 +277,28 @@ public class AsyncFSChunkStore : IChunkStore
             {
                 // ⚠️ SAY WHAT *IS* THERE. "No file" alone cannot tell "nothing was ever written" from
                 // "written under a different name or key", and those have completely different fixes.
+                // ⚠️ ASK WHETHER THE DIRECTORY EXISTS BEFORE LISTING IT. GetFiles on a missing directory
+                // throws, and the message that surfaced was a bare "Arg_NullReferenceException" - which reads
+                // as a bug in this diagnostic rather than as the fact it was actually reporting: that NOTHING
+                // was ever written under this key, not even the directory.
                 string siblings;
-                try
+                if (!await _fs.DirectoryExists(_basePath))
                 {
-                    var files = (await _fs.GetFiles(_basePath)).ToList();
-                    siblings = files.Count == 0
-                        ? "the store directory is EMPTY - nothing was ever written here"
-                        : $"{files.Count} file(s) present: {string.Join(", ", files.Take(8))}";
+                    siblings = $"the store directory {_basePath} DOES NOT EXIST - no piece was ever written "
+                             + "under this key (the directory is created on the first write)";
                 }
-                catch (Exception ex) { siblings = $"could not list {_basePath}: {ex.Message}"; }
-                return $"no file at {path}; {siblings}";
+                else
+                {
+                    try
+                    {
+                        var files = (await _fs.GetFiles(_basePath)).ToList();
+                        siblings = files.Count == 0
+                            ? "the store directory is EMPTY - nothing was ever written here"
+                            : $"{files.Count} file(s) present: {string.Join(", ", files.Take(8))}";
+                    }
+                    catch (Exception ex) { siblings = $"could not list {_basePath}: {ex.GetType().Name}: {ex.Message}"; }
+                }
+                return $"no file at {path}; {siblings}; this store has written {PiecesWritten} piece(s) since it was created";
             }
             if (_browserFs == null) return $"file exists at {path} (size unknown on this file system)";
             var file = await GetPieceFileAsync(index);

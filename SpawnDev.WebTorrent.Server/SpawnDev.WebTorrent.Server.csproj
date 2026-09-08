@@ -5,8 +5,8 @@
 		<LangVersion>latest</LangVersion>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
-		<Version>4.2.3</Version>
-		<PackageReleaseNotes>v4.2.3 - Source proxy consolidation and cache bounds. One allowlisted source proxy replaces the per-origin proxy classes, the extraction cache is bounded with in-flight extractions counted toward the cap, and a large archive no longer blocks the fetch that triggered it. Ships alongside SpawnDev.WebTorrent 4.2.3.</PackageReleaseNotes>
+		<Version>4.2.4</Version>
+		<PackageReleaseNotes>v4.2.4 - Rebuilt against SpawnDev.WebTorrent 4.2.4 (recovery from a cleared OPFS cache). No changes in this package.</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<EmbedAllSources>true</EmbedAllSources>

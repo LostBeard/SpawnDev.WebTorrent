@@ -1,4 +1,4 @@
-using SpawnDev.WebTorrent.Storage;
+﻿using SpawnDev.WebTorrent.Storage;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -940,6 +940,22 @@ public partial class Torrent : IAsyncDisposable
             var dir = "webtorrent/_state";
             if (!await fs.DirectoryExists(dir))
                 await fs.CreateDirectory(dir);
+            // ⚠️ A state.json WITHOUT its .torrent is a cache entry restore cannot use.
+            //
+            // This method runs on pause, on resume and on selection changes - not only after
+            // PersistMetadataAsync - so it can happily (re)create `{key}.state.json` while `{key}.torrent`
+            // is missing. MEASURED 2026-09-08: after the pieces were cleared behind a live torrent, the next
+            // Add() deduped onto it and called Resume(), which wrote state.json; the .torrent was never
+            // rewritten because FinalizeLazyHash only runs once. The cache then looked half-present forever
+            // and every reload re-downloaded the model. If we hold the bytes, make sure both halves exist.
+            if (TorrentFileBytes != null)
+            {
+                var torrentPath = $"{dir}/{key}.torrent";
+                var have = await fs.FileExists(torrentPath) ? (await fs.ReadBytes(torrentPath))?.Length ?? 0 : 0;
+                if (have != TorrentFileBytes.Length)
+                    await fs.Write(torrentPath, TorrentFileBytes);
+            }
+
             var state = new Dictionary<string, object>();
             if (Paused) state["paused"] = true;
             var json = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(state);
@@ -1551,6 +1567,50 @@ public partial class Torrent : IAsyncDisposable
 
     // Mark a piece critical (jump the picker queue) and poll until it arrives. Shared on-demand
     // prioritization for range reads — without it a read would block on pieces nobody requested.
+    /// <summary>
+    /// The bitfield claims a piece the store cannot serve. Forget the claim and re-fetch it, ONCE per read.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 A CACHE ANOTHER PARTY CAN CLEAR MUST NOT BE FATAL WHEN IT IS CLEARED.
+    ///
+    /// A restored torrent's bitfield is built from what OPFS held AT RESTORE TIME, and OPFS is not ours alone:
+    /// the browser evicts origin storage under pressure, the user clears site data, and any other holder of the
+    /// same origin can remove the directory. When that happens every restored torrent is instantly lying about
+    /// what it holds, and the only symptom used to be an <see cref="InvalidOperationException"/> from the first
+    /// read - unrecoverable, for a condition whose correct answer is simply "download it again".
+    ///
+    /// MEASURED 2026-09-08 (SpawnDev.ILGPU.ML <c>WebTorrent_OpfsReloadPersistence</c>, ~1 run in 3): the test
+    /// wipes <c>webtorrent/</c> at the start, but the client had already RESTORED that torrent at startup, and
+    /// <c>AddLazyHash</c> dedups on the web-seed URL - so the test got back the restored torrent, complete
+    /// bitfield, empty store, directory gone. The store's own report said it plainly once it was asked:
+    /// "the store directory DOES NOT EXIST ... this store has written 0 piece(s) since it was created".
+    ///
+    /// Recovery is bounded: each piece is forgiven at most once per read (<paramref name="recovered"/>), so a
+    /// store that genuinely cannot hold the piece still fails loudly instead of looping.
+    /// </remarks>
+    private bool TryRecoverUnservablePiece(int pieceIdx, HashSet<int> recovered)
+    {
+        if (pieceIdx < 0 || pieceIdx >= Bitfield.Length) return false;
+        if (!recovered.Add(pieceIdx)) return false;          // already given this piece its second chance
+        Bitfield[pieceIdx] = false;
+        Pieces[pieceIdx] = new Piece(pieceIdx == PieceCount - 1 ? LastPieceLength : PieceLength);
+        Done = false;
+        if (Paused) Resume();                                 // a restored torrent is paused; it has to fetch now
+        Critical(pieceIdx, pieceIdx);
+
+        // The pieces are not the whole cache entry. If the store was cleared, the companion
+        // `_state/{key}.torrent` almost certainly went with it, and without that file a reload cannot restore
+        // this torrent at all - it would re-download everything we are about to re-fetch. Re-persisting is
+        // idempotent and cheap, and it is queued, so it cannot race the re-fetch.
+        if (TorrentFileBytes != null && _client?.AsyncFileSystem != null && !string.IsNullOrEmpty(PersistKey))
+            QueuePersist(PersistMetadataAsync);
+
+        OnWarning?.Invoke(
+            $"Piece {pieceIdx} was marked available but the store cannot serve it - the cached copy is gone "
+            + "(evicted, cleared, or removed by another holder of this origin). Re-fetching it.");
+        return true;
+    }
+
     private async Task EnsurePieceAsync(int pieceIdx, CancellationToken ct)
     {
         if (pieceIdx < Bitfield.Length && !Bitfield[pieceIdx])
@@ -1601,6 +1661,7 @@ public partial class Torrent : IAsyncDisposable
         long absOffset = file.Offset + offset;
         var result = new byte[length];
         int resultPos = 0;
+        var recovered = new HashSet<int>();
 
         EnsureReadSelection(file);
 
@@ -1644,12 +1705,15 @@ public partial class Torrent : IAsyncDisposable
             // file that EXISTS but is EMPTY: restore marks the bitfield from an existence check while the
             // read path needs bytes. AsyncFSChunkStore.PieceExistsAsync now checks SIZE for exactly that
             // reason, so reaching here again means something new.
+            if (TryRecoverUnservablePiece(pieceIdx, recovered)) continue;   // cache gone - fetch it again
+
             var storeState = _store is Storage.AsyncFSChunkStore afsDiag
                 ? await afsDiag.DescribePieceAsync(pieceIdx, ct)
                 : $"store is {_store?.GetType().Name ?? "null"} (no description available)";
             throw new InvalidOperationException(
                 $"Piece {pieceIdx} is marked verified in the bitfield but the store cannot serve it "
-                + $"(wanted offset {pieceOffset}, {toRead} bytes). Store says: {storeState}");
+                + $"(wanted offset {pieceOffset}, {toRead} bytes), and re-fetching it did not help. "
+                + $"Store says: {storeState}");
         }
 
         return result;
@@ -1684,6 +1748,7 @@ public partial class Torrent : IAsyncDisposable
         // Zero-copy JS path only when the store is OPFS-backed and can hand back Uint8Arrays.
         var opfs = _store as Storage.AsyncFSChunkStore;
         bool jsPath = opfs != null && opfs.SupportsUint8Array;
+        var recovered = new HashSet<int>();
 
         EnsureReadSelection(file);
 
@@ -1741,6 +1806,11 @@ public partial class Torrent : IAsyncDisposable
                 }
             }
 
+            // The cached copy can be gone (OPFS eviction, cleared site data, another holder removing the
+            // directory). Forget the claim and fetch it again - ONCE per piece per read. The result buffer
+            // has to survive that, so its Dispose stays BELOW the recovery attempt.
+            if (TryRecoverUnservablePiece(pieceIdx, recovered)) continue;
+
             result.Dispose();
             // 🔴 THE BITFIELD AND THE STORE DISAGREE. Say WHICH, and what the store actually holds - this
             // was a bare "shouldn't happen" and it cost a real investigation. The usual cause is a piece
@@ -1752,7 +1822,8 @@ public partial class Torrent : IAsyncDisposable
                 : $"store is {_store?.GetType().Name ?? "null"} (no description available)";
             throw new InvalidOperationException(
                 $"Piece {pieceIdx} is marked verified in the bitfield but the store cannot serve it "
-                + $"(wanted offset {pieceOffset}, {toRead} bytes). Store says: {storeState}");
+                + $"(wanted offset {pieceOffset}, {toRead} bytes), and re-fetching it did not help. "
+                + $"Store says: {storeState}");
         }
 
         return result;

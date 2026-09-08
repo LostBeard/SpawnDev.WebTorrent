@@ -189,7 +189,46 @@ public class AsyncFSChunkStore : IChunkStore
     public async Task<bool> PieceExistsAsync(int index, CancellationToken ct = default)
     {
         await EnsureInitializedAsync();
-        return await _fs.FileExists($"{_basePath}/piece_{index}");
+        // 🔴 EXISTENCE IS NOT READABILITY. The read path returns null when the piece file has NO BYTES
+        // (GetAsync computes `file.Size - offset <= 0`), so a zero-length piece file passes a bare
+        // FileExists and then makes the restored bitfield LIE - the torrent believes it holds a piece it
+        // cannot serve, and the failure surfaces far away as "marked as verified but data not in store".
+        // Checking Size is still metadata-only - no byte read, no JS->.NET copy - and it warms the very
+        // File handle the following read uses, so it costs nothing.
+        // ⚠️ A TRANSIENT handle, deliberately NOT GetPieceFileAsync. An OPFS File is a SNAPSHOT of the entry
+        // at the moment it was opened, so caching one here - during restore, for every piece - hands the
+        // later read a handle that may already be stale, and the read then throws NotFoundError instead of
+        // returning a piece that is perfectly present. Restore must observe the store, not mutate its cache.
+        var piecePath = $"{_basePath}/piece_{index}";
+        if (!await _fs.FileExists(piecePath)) return false;
+        if (_browserFs == null) return true;
+        using var probe = await _browserFs.ReadFile(piecePath);
+        return probe != null && probe.Size > 0;
+    }
+
+    /// <summary>
+    /// Why a piece is or is not readable, for an error message. Metadata only.
+    /// </summary>
+    /// <remarks>
+    /// A "shouldn't happen" throw that cannot say what it found is a dead end for whoever hits it. This
+    /// turns "data not in store" into the actual state: no file, an empty file, or a file of N bytes that
+    /// the requested range fell outside of.
+    /// </remarks>
+    public async Task<string> DescribePieceAsync(int index, CancellationToken ct = default)
+    {
+        try
+        {
+            await EnsureInitializedAsync();
+            var path = $"{_basePath}/piece_{index}";
+            if (!await _fs.FileExists(path)) return $"no file at {path}";
+            if (_browserFs == null) return $"file exists at {path} (size unknown on this file system)";
+            var file = await GetPieceFileAsync(index);
+            if (file == null) return $"file exists at {path} but no handle could be opened";
+            return file.Size == 0
+                ? $"file at {path} is EMPTY (0 bytes) - it was created but never written"
+                : $"file at {path} is {file.Size} bytes";
+        }
+        catch (Exception ex) { return $"could not describe piece {index}: {ex.GetType().Name}: {ex.Message}"; }
     }
 
     public async Task<byte[]?> GetAsync(int index, int offset, int length, CancellationToken ct = default)

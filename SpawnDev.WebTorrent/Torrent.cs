@@ -1559,8 +1559,17 @@ public partial class Torrent : IAsyncDisposable
                 }
             }
 
-            // Piece verified but data missing from store (shouldn't happen)
-            throw new InvalidOperationException($"Piece {pieceIdx} marked as verified but data not in store");
+            // 🔴 THE BITFIELD AND THE STORE DISAGREE. Say WHICH, and what the store actually holds - this
+            // was a bare "shouldn't happen" and it cost a real investigation. The usual cause is a piece
+            // file that EXISTS but is EMPTY: restore marks the bitfield from an existence check while the
+            // read path needs bytes. AsyncFSChunkStore.PieceExistsAsync now checks SIZE for exactly that
+            // reason, so reaching here again means something new.
+            var storeState = _store is Storage.AsyncFSChunkStore afsDiag
+                ? await afsDiag.DescribePieceAsync(pieceIdx, ct)
+                : $"store is {_store?.GetType().Name ?? "null"} (no description available)";
+            throw new InvalidOperationException(
+                $"Piece {pieceIdx} is marked verified in the bitfield but the store cannot serve it "
+                + $"(wanted offset {pieceOffset}, {toRead} bytes). Store says: {storeState}");
         }
 
         return result;
@@ -1653,7 +1662,17 @@ public partial class Torrent : IAsyncDisposable
             }
 
             result.Dispose();
-            throw new InvalidOperationException($"Piece {pieceIdx} marked as verified but data not in store");
+            // 🔴 THE BITFIELD AND THE STORE DISAGREE. Say WHICH, and what the store actually holds - this
+            // was a bare "shouldn't happen" and it cost a real investigation. The usual cause is a piece
+            // file that EXISTS but is EMPTY: restore marks the bitfield from an existence check while the
+            // read path needs bytes. AsyncFSChunkStore.PieceExistsAsync now checks SIZE for exactly that
+            // reason, so reaching here again means something new.
+            var storeState = _store is Storage.AsyncFSChunkStore afsDiag
+                ? await afsDiag.DescribePieceAsync(pieceIdx, ct)
+                : $"store is {_store?.GetType().Name ?? "null"} (no description available)";
+            throw new InvalidOperationException(
+                $"Piece {pieceIdx} is marked verified in the bitfield but the store cannot serve it "
+                + $"(wanted offset {pieceOffset}, {toRead} bytes). Store says: {storeState}");
         }
 
         return result;

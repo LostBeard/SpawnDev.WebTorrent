@@ -1611,10 +1611,49 @@ public partial class Torrent : IAsyncDisposable
         return true;
     }
 
+    /// <summary>Counters for how much of a read is spent WAITING for pieces rather than reading them.</summary>
+    /// <remarks>
+    /// 🔴 Added while chasing model-load time. A ranged read calls this per piece; when the piece is absent
+    /// it polls. If most of a load's time is here rather than in the store, the fix is a completion signal
+    /// rather than a faster disk path.
+    /// </remarks>
+    public static bool TraceEnsurePiece { get; set; }
+    /// <summary>Calls that returned immediately because the piece was present.</summary>
+    public static long EnsureImmediate;
+    /// <summary>Calls that had to wait for a piece to arrive.</summary>
+    public static long EnsureWaited;
+    /// <summary>Total milliseconds spent waiting for pieces.</summary>
+    public static double EnsureWaitMs;
+    /// <summary>Zero the ensure-piece and ranged-read counters.</summary>
+    public static void ResetEnsurePieceTiming()
+    {
+        EnsureImmediate = EnsureWaited = 0;
+        EnsureWaitMs = ReadAllocMs = ReadSetupMs = ReadStoreMs = ReadSetMs = ReadTotalMs = 0;
+        ReadRangeCalls = 0;
+    }
+
+    // ── Ranged-read breakdown ABOVE the chunk store ────────────────────────────────────────────────
+    // 🔴 The store was made ~150x faster (2375 MB in 828 ms) and the reported read time barely moved, so
+    // the cost is in this wrapper rather than in the disk access it wraps. These say which part.
+    /// <summary>Milliseconds allocating the JS result buffer.</summary>
+    public static double ReadAllocMs;
+    /// <summary>Milliseconds in per-read setup (selection + critical marking).</summary>
+    public static double ReadSetupMs;
+    /// <summary>Milliseconds inside the chunk store.</summary>
+    public static double ReadStoreMs;
+    /// <summary>Milliseconds copying each slice into the result buffer.</summary>
+    public static double ReadSetMs;
+    /// <summary>Milliseconds for the whole ranged read.</summary>
+    public static double ReadTotalMs;
+    /// <summary>Ranged reads made.</summary>
+    public static long ReadRangeCalls;
+
     private async Task EnsurePieceAsync(int pieceIdx, CancellationToken ct)
     {
         if (pieceIdx < Bitfield.Length && !Bitfield[pieceIdx])
         {
+            if (TraceEnsurePiece) EnsureWaited++;
+            long _tw = TraceEnsurePiece ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
             Critical(pieceIdx, pieceIdx);
             try
             {
@@ -1631,9 +1670,12 @@ public partial class Torrent : IAsyncDisposable
                 // the piece leaks into _critical forever - the critical-first pass then burns every pass on stale
                 // pieces and the sort grows unbounded.
                 _critical.TryRemove(pieceIdx, out _);
+                if (TraceEnsurePiece)
+                    EnsureWaitMs += System.Diagnostics.Stopwatch.GetElapsedTime(_tw).TotalMilliseconds;
             }
             if (Destroyed) throw new OperationCanceledException("Torrent destroyed while waiting for piece");
         }
+        else if (TraceEnsurePiece) EnsureImmediate++;
     }
 
     /// <summary>
@@ -1743,13 +1785,17 @@ public partial class Torrent : IAsyncDisposable
         if (length <= 0) return new SpawnDev.SpawnJS.JSObjects.Uint8Array(0);
 
         long absOffset = file.Offset + offset;
+        long _tTotal = TraceEnsurePiece ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+        long _tAlloc = TraceEnsurePiece ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         var result = new SpawnDev.SpawnJS.JSObjects.Uint8Array(length);            // JS-side result buffer
+        if (TraceEnsurePiece) ReadAllocMs += System.Diagnostics.Stopwatch.GetElapsedTime(_tAlloc).TotalMilliseconds;
         int resultPos = 0;
         // Zero-copy JS path only when the store is OPFS-backed and can hand back Uint8Arrays.
         var opfs = _store as Storage.AsyncFSChunkStore;
         bool jsPath = opfs != null && opfs.SupportsUint8Array;
         var recovered = new HashSet<int>();
 
+        long _tSetup = TraceEnsurePiece ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         EnsureReadSelection(file);
 
         // Mark the ENTIRE read range critical UP FRONT so its pieces download in PARALLEL. Without this the
@@ -1762,6 +1808,7 @@ public partial class Torrent : IAsyncDisposable
             int lastReadPiece = (int)((absOffset + (long)length - 1) / PieceLength);
             if (lastReadPiece > firstReadPiece) Critical(firstReadPiece, lastReadPiece);
         }
+        if (TraceEnsurePiece) ReadSetupMs += System.Diagnostics.Stopwatch.GetElapsedTime(_tSetup).TotalMilliseconds;
 
         while (resultPos < length)
         {
@@ -1781,11 +1828,15 @@ public partial class Torrent : IAsyncDisposable
                 {
                     // Read ONLY the needed sub-range directly from the OPFS file (File.slice → ArrayBuffer),
                     // never the whole piece — memory-bounded, and the bytes stay JS-side (zero-copy).
+                    long _tStore = TraceEnsurePiece ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
                     using var slice = await opfs!.GetUint8ArrayAsync(pieceIdx, pieceOffset, toRead, ct);
+                    if (TraceEnsurePiece) ReadStoreMs += System.Diagnostics.Stopwatch.GetElapsedTime(_tStore).TotalMilliseconds;
                     if (slice != null)
                     {
                         int got = (int)slice.Length;
+                        long _tSet = TraceEnsurePiece ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
                         result.Set(slice, resultPos);
+                        if (TraceEnsurePiece) ReadSetMs += System.Diagnostics.Stopwatch.GetElapsedTime(_tSet).TotalMilliseconds;
                         resultPos += got;
                         absOffset += got;
                         continue;
@@ -1826,6 +1877,11 @@ public partial class Torrent : IAsyncDisposable
                 + $"Store says: {storeState}");
         }
 
+        if (TraceEnsurePiece)
+        {
+            ReadTotalMs += System.Diagnostics.Stopwatch.GetElapsedTime(_tTotal).TotalMilliseconds;
+            ReadRangeCalls++;
+        }
         return result;
     }
 

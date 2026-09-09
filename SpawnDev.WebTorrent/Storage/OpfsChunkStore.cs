@@ -31,6 +31,105 @@ public class AsyncFSChunkStore : IChunkStore
     // player reading the front AND range-requesting the tail moov) don't evict each other every chunk.
     // Invalidated per-index on Put. Single-threaded WASM, so a lost interleave race just costs a redundant getFile.
     private readonly Dictionary<int, SpawnDev.SpawnJS.JSObjects.File> _fileCache = new();
+
+    // ── Sync-access read handles (the fast path) ────────────────────────────────────────────────────
+    // 🔴 WHY THIS EXISTS. Reading a range via getFile()+slice()+arrayBuffer() measured 23 MB/s cold on
+    // OPFS-cached model weights, with getFile alone costing ~40 ms per piece - so loading a 2.4 GB model
+    // spent 130 s in this store while the GPU consumed the same bytes at 9.5 GB/s. A sync access handle
+    // is opened ONCE per piece and reads a range straight into a JS buffer.
+    //
+    // ⚠️ IT TAKES AN EXCLUSIVE LOCK on the file, so a handle must be closed before that piece is written
+    // and on eviction. It is also worker-only; outside a worker CreateSyncAccessHandle throws, which is
+    // why the Blob path is kept and used as the fallback rather than removed.
+    private readonly Dictionary<int, SpawnDev.SpawnJS.JSObjects.FileSystemSyncAccessHandle> _syncHandles = new();
+    private readonly Queue<int> _syncOrder = new();
+    private const int SyncHandleMax = 8;
+    /// <summary>Set once a sync handle cannot be created, so the cost is paid at most once per store.</summary>
+    private bool _syncUnavailable;
+
+    /// <summary>
+    /// The piece directory, resolved ONCE. Looking a piece up by full path re-walks it every time.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 MEASURED: resolving "{_basePath}/piece_N" from the root cost 178 ms per call on a 2.4 GB model
+    /// (681 opens = 121.5 s), while createSyncAccessHandle on the resolved handle cost 1.6 ms. Path
+    /// resolution splits the path and makes a separate async OPFS call per segment, so every piece paid
+    /// the whole walk. Holding the directory turns that into one lookup on an already-open handle.
+    /// </remarks>
+    private SpawnDev.SpawnJS.JSObjects.FileSystemDirectoryHandle? _pieceDir;
+    private bool _pieceDirResolved;
+
+    /// <summary>Open (or reuse) a sync access handle for a piece, or null when unavailable.</summary>
+    private async Task<SpawnDev.SpawnJS.JSObjects.FileSystemSyncAccessHandle?> GetSyncHandleAsync(int index)
+    {
+        if (_syncUnavailable || _browserFs == null) return null;
+        if (_syncHandles.TryGetValue(index, out var open)) return open;
+        try
+        {
+            long tOpen = TraceReadTiming ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+            // Resolve the piece DIRECTORY once, then look the file up on it - one OPFS call per piece
+            // instead of a full path walk. See _pieceDir.
+            if (!_pieceDirResolved)
+            {
+                _pieceDirResolved = true;
+                try { _pieceDir = await _browserFs.GetDirectoryHandle(_basePath); }
+                catch { _pieceDir = null; }
+            }
+            SpawnDev.SpawnJS.JSObjects.FileSystemFileHandle? handle;
+            if (_pieceDir != null)
+            {
+                try { handle = await _pieceDir.GetFileHandle($"piece_{index}", false); }
+                catch { handle = null; }
+            }
+            else handle = await _browserFs.GetFileHandle($"{_basePath}/piece_{index}");
+            if (TraceReadTiming) SyncResolveMs += System.Diagnostics.Stopwatch.GetElapsedTime(tOpen).TotalMilliseconds;
+            if (handle == null) return null;
+            long tCreate = TraceReadTiming ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+            var sync = await handle.CreateSyncAccessHandle();
+            if (TraceReadTiming) SyncCreateMs += System.Diagnostics.Stopwatch.GetElapsedTime(tCreate).TotalMilliseconds;
+            handle.Dispose();
+            if (TraceReadTiming)
+            {
+                SyncOpenMs += System.Diagnostics.Stopwatch.GetElapsedTime(tOpen).TotalMilliseconds;
+                SyncOpens++;
+            }
+            if (sync == null) return null;
+
+            _syncHandles[index] = sync;
+            _syncOrder.Enqueue(index);
+            while (_syncOrder.Count > SyncHandleMax)
+            {
+                var evict = _syncOrder.Dequeue();
+                if (evict != index) CloseSyncHandle(evict);
+            }
+            return sync;
+        }
+        catch
+        {
+            // Not a worker, the file is locked, or the browser lacks it. Fall back permanently rather
+            // than paying a failed open on every read.
+            _syncUnavailable = true;
+            return null;
+        }
+    }
+
+    /// <summary>Close and forget the sync handle for a piece, releasing its exclusive lock.</summary>
+    private void CloseSyncHandle(int index)
+    {
+        if (!_syncHandles.Remove(index, out var h)) return;
+        try { h.Close(); } catch { /* already closed or the file is gone */ }
+        try { h.Dispose(); } catch { }
+    }
+
+    /// <summary>Close every open sync handle - required before writes and on teardown.</summary>
+    private void CloseAllSyncHandles()
+    {
+        foreach (var idx in _syncHandles.Keys.ToList()) CloseSyncHandle(idx);
+        _syncOrder.Clear();
+        try { _pieceDir?.Dispose(); } catch { }
+        _pieceDir = null;
+        _pieceDirResolved = false;
+    }
     private readonly Queue<int> _fileCacheOrder = new();
     private const int FileCacheMax = 4;
 
@@ -83,11 +182,111 @@ public class AsyncFSChunkStore : IChunkStore
     /// 64 KiB, not 4 MB (the old GetUint8ArrayAsync(index) read the entire piece every chunk). Browser/OPFS
     /// only; the caller owns + disposes the returned Uint8Array.
     /// </summary>
+    /// <summary>
+    /// Set true to time the pieces of a ranged read. Off by default; the counters below are only
+    /// meaningful while it is on.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 ADDED TO FIND WHERE A MODEL LOAD GOES. Reading a 6.87 GB GGUF through this store measured
+    /// 20.7 MB/s while the GPU accepted the same bytes at 9.8 GB/s, so ~99.8% of a model load is this
+    /// read path. Reading the SAME piece files directly through IAsyncFS measures 707 MB/s, so the gap
+    /// is in how a range is fetched here, not in OPFS itself. These counters say which call it is.
+    /// </remarks>
+    public static bool TraceReadTiming { get; set; }
+
+    /// <summary>Milliseconds spent obtaining the piece's File handle (cache hit or getFile).</summary>
+    public static double ReadHandleMs;
+    /// <summary>Milliseconds spent in Blob.slice() - expected to be near zero (it is lazy).</summary>
+    public static double ReadSliceMs;
+    /// <summary>Milliseconds spent in Blob.arrayBuffer() - the call that actually reads bytes.</summary>
+    public static double ReadArrayBufferMs;
+    /// <summary>Milliseconds spent wrapping the ArrayBuffer as a Uint8Array.</summary>
+    public static double ReadWrapMs;
+    /// <summary>Bytes returned, and how many ranged reads were made.</summary>
+    public static long ReadBytes;
+    /// <summary>Number of ranged reads.</summary>
+    public static long ReadCalls;
+    /// <summary>How many of those reads had to fetch a File handle rather than reuse a cached one.</summary>
+    public static long ReadHandleMisses;
+    /// <summary>Milliseconds spent in sync-access-handle reads (the fast path).</summary>
+    public static double ReadSyncMs;
+    /// <summary>How many reads took the sync-access fast path.</summary>
+    public static long ReadSyncCalls;
+    /// <summary>Milliseconds spent OPENING sync access handles.</summary>
+    public static double SyncOpenMs;
+    /// <summary>How many sync access handles were opened.</summary>
+    public static long SyncOpens;
+    /// <summary>Milliseconds resolving the path to a FileSystemFileHandle.</summary>
+    public static double SyncResolveMs;
+    /// <summary>Milliseconds in createSyncAccessHandle() itself.</summary>
+    public static double SyncCreateMs;
+
+    /// <summary>Zero the ranged-read counters.</summary>
+    public static void ResetReadTiming()
+    {
+        ReadHandleMs = ReadSliceMs = ReadArrayBufferMs = ReadWrapMs = ReadSyncMs = 0;
+        ReadBytes = ReadCalls = ReadHandleMisses = ReadSyncCalls = SyncOpens = 0;
+        SyncOpenMs = SyncResolveMs = SyncCreateMs = 0;
+    }
+
     public async Task<Uint8Array?> GetUint8ArrayAsync(int index, int offset, int length, CancellationToken ct = default)
     {
         if (_browserFs == null) return null;
         await EnsureInitializedAsync();
+        bool trace = TraceReadTiming;
+
+        // ── FAST PATH FIRST, and it must not call getFile() at all ──────────────────────────────────
+        // 🔴 MEASURED THE HARD WAY. Trying the sync handle AFTER GetPieceFileAsync kept the fast read but
+        // still paid the Blob open - and made it FOUR TIMES WORSE (40 ms -> 175 ms per open, 723 opens =
+        // 127 s), because a sync access handle holds an EXCLUSIVE LOCK and getFile() on the same file then
+        // contends with it. The two must never both be used for a piece. GetSize() gives the length the
+        // Blob was only being opened to provide.
+        var syncHandle = await GetSyncHandleAsync(index);
+        if (syncHandle != null)
+        {
+            long tF = trace ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+            long size;
+            try { size = syncHandle.GetSize(); }
+            catch { CloseSyncHandle(index); size = -1; }
+            if (size >= 0)
+            {
+                long want = Math.Min(length, size - offset);
+                if (want <= 0) return null;
+                var fast = new Uint8Array((int)want);
+                try
+                {
+                    var read = syncHandle.Read(fast, new SpawnDev.SpawnJS.JSObjects.FileSystemSyncReadWriteOptions { At = offset });
+                    if (read == want)
+                    {
+                        if (trace)
+                        {
+                            ReadSyncMs += System.Diagnostics.Stopwatch.GetElapsedTime(tF).TotalMilliseconds;
+                            ReadBytes += want;
+                            ReadCalls++;
+                            ReadSyncCalls++;
+                        }
+                        return fast;
+                    }
+                    fast.Dispose();   // short read - fall through to the Blob path rather than lie
+                }
+                catch
+                {
+                    fast.Dispose();
+                    CloseSyncHandle(index);
+                    _syncUnavailable = true;
+                }
+            }
+        }
+
+        // ── FALLBACK: getFile + slice + arrayBuffer (no worker, locked file, or an unexpected short read)
+        long t0 = trace ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+        bool cached = trace && _fileCache.ContainsKey(index);
         var file = await GetPieceFileAsync(index);                 // cached File (Blob) handle — NOT the data
+        if (trace)
+        {
+            ReadHandleMs += System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+            if (!cached) ReadHandleMisses++;
+        }
         if (file == null) return null;
         long actualLen = Math.Min(length, file.Size - offset);
         // Return null (NOT an empty Uint8Array) for an out-of-range / short read, matching the byte[]
@@ -95,9 +294,24 @@ public class AsyncFSChunkStore : IChunkStore
         // (Torrent.ReadFileUint8ArrayAsync) advance 0 bytes and spin FOREVER (got==0 → resultPos stuck);
         // returning null routes it to its fail-loud "data not in store" throw instead of hanging.
         if (actualLen <= 0) return null;
+
+        long tS = trace ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         using var slice = file.Slice(offset, offset + actualLen);  // lazy Blob slice — no copy
+        if (trace) ReadSliceMs += System.Diagnostics.Stopwatch.GetElapsedTime(tS).TotalMilliseconds;
+
+        long tA = trace ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         using var ab = await slice.ArrayBuffer();                  // reads ONLY this range from OPFS
-        return new Uint8Array(ab);
+        if (trace) ReadArrayBufferMs += System.Diagnostics.Stopwatch.GetElapsedTime(tA).TotalMilliseconds;
+
+        long tW = trace ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+        var u8 = new Uint8Array(ab);
+        if (trace)
+        {
+            ReadWrapMs += System.Diagnostics.Stopwatch.GetElapsedTime(tW).TotalMilliseconds;
+            ReadBytes += actualLen;
+            ReadCalls++;
+        }
+        return u8;
     }
 
     /// <summary>
@@ -129,6 +343,9 @@ public class AsyncFSChunkStore : IChunkStore
         await EnsureInitializedAsync();
         var piecePath = $"{_basePath}/piece_{index}";
         var expected = data.Length;
+        // 🔴 RELEASE THE EXCLUSIVE LOCK FIRST. A sync access handle blocks any write to its file, so
+        // closing it after the write would be too late - the write itself would fail.
+        CloseSyncHandle(index);
         await _browserFs.Write(piecePath, (TypedArray)data);
         if (_cachedIndex == index) { _cachedIndex = -1; _cachedFull = null; }   // invalidate stale read cache
         InvalidateFileCache(index);                                             // the piece changed — drop its cached File handle
@@ -188,6 +405,7 @@ public class AsyncFSChunkStore : IChunkStore
 
     private void InvalidateFileCache(int index)
     {
+        CloseSyncHandle(index);
         if (_fileCache.Remove(index, out var f)) f.Dispose();
     }
 
@@ -378,6 +596,7 @@ public class AsyncFSChunkStore : IChunkStore
 
     public async Task ClearAsync(CancellationToken ct = default)
     {
+        CloseAllSyncHandles();
         foreach (var f in _fileCache.Values) f.Dispose();
         _fileCache.Clear();
         _fileCacheOrder.Clear();
@@ -388,6 +607,7 @@ public class AsyncFSChunkStore : IChunkStore
 
     public ValueTask DisposeAsync()
     {
+        CloseAllSyncHandles();
         foreach (var f in _fileCache.Values) f.Dispose();
         _fileCache.Clear();
         _fileCacheOrder.Clear();

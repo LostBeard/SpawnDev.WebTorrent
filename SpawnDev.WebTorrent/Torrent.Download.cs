@@ -39,10 +39,24 @@ public partial class Torrent
     //    leaf digests / waiting on SubtleCrypto / reading hashes into .NET / the .NET tree / OPFS store). Gated
     //    because Stopwatch can itself be an interop crossing in WASM; production pays nothing. Reset + read via
     //    ResetZcProfile / the Zc* fields. ──
+    //    🔴 `ZcPieces` USED TO LIVE HERE AND WAS A DEAD COUNTER - REMOVED 2026-09-08. It was declared,
+    //    zeroed by ResetZcProfile, and NEVER INCREMENTED anywhere (verified by a full-tree grep: the only
+    //    other reference in any SpawnDev repo was a consumer READING it). The span-coalescing rewrite
+    //    (`ced9d17`) replaced the per-piece loop it belonged to and left it behind, so it reported a
+    //    constant 0 while the download worked fine.
+    //
+    //    It was not harmless. SpawnDev.ILGPU.ML's `WebTorrent_Measure_DistilGpt2_Download` printed
+    //    `zeroCopyPieces={ZcPieces}` AND derived `~{fetchedMB}MB fetched` from it, so a real measurement
+    //    reported "zeroCopyPieces=0 (~0MB fetched)" for a 313 MB download that had in fact zero-copied
+    //    312 MB. Two numbers in a perf report that could never be anything but zero.
+    //
+    //    ⭐ The counter you want is the INSTANCE property <see cref="ZeroCopyPiecesVerified"/> - it is
+    //    incremented in ProcessSpanPieceAsync at the point a piece is verified AND stored, and this
+    //    library's own HuggingFaceProxy tests already gate on it. `ZcSpanCount`/`ZcSpanPiecesTotal` are
+    //    the span-level counters, deliberately `internal`.
     public static bool EnableZcProfiling = false;
     public static double ZcFetchMs, ZcDigestFireMs, ZcDigestWaitMs, ZcReadMs, ZcTreeMs, ZcStoreMs;
-    public static int ZcPieces;
-    public static void ResetZcProfile() { ZcFetchMs = ZcDigestFireMs = ZcDigestWaitMs = ZcReadMs = ZcTreeMs = ZcStoreMs = 0; ZcPieces = 0; }
+    public static void ResetZcProfile() { ZcFetchMs = ZcDigestFireMs = ZcDigestWaitMs = ZcReadMs = ZcTreeMs = ZcStoreMs = 0; }
 
     // ========================
     // DOWNLOAD STATE

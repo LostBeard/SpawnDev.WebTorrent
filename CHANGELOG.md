@@ -1,5 +1,27 @@
 ﻿# Changelog
 
+## 4.2.5 (unreleased) - remove a zero-copy counter that could only ever report 0
+
+### Fixed - `Torrent.ZcPieces` was a dead public counter (REMOVED, source-breaking)
+
+`ZcPieces` was declared, zeroed by `ResetZcProfile`, and **never incremented anywhere**. A full-tree grep
+across every SpawnDev repo found exactly three references: the declaration, the reset, and one CONSUMER
+reading it. The span-coalescing rewrite (`ced9d17`) replaced the per-piece loop the counter belonged to and
+left it behind, so it reported a constant 0 while downloads worked correctly.
+
+⚠️ It was not harmless, because a consumer was reporting it as a measurement.
+`SpawnDev.ILGPU.ML`'s `WebTorrent_Measure_DistilGpt2_Download` printed `zeroCopyPieces={ZcPieces}` and
+DERIVED `~{fetchedMB}MB fetched` from it, so a real 313 MB download that zero-copied 312 MB was reported as
+`zeroCopyPieces=0 (~0MB fetched)` - two figures that could never be anything but zero, in a report used to
+judge download performance. MEASURED 2026-09-08 on all six backends.
+
+**Use `Torrent.ZeroCopyPiecesVerified`** (public instance property, incremented in `ProcessSpanPieceAsync`
+at the point a piece is verified AND stored). This library's own `HuggingFaceProxyTests` already gate on it.
+`ZcSpanCount` / `ZcSpanPiecesTotal` remain `internal` span-level counters.
+
+Removed rather than repaired: a second counter for a quantity `ZeroCopyPiecesVerified` already reports
+correctly would be two mechanisms for one job, and nobody would know which is authoritative.
+
 ## 4.2.4 (2026-09-08) - a cleared OPFS cache is a re-download, not a fatal error
 
 ### Fixed - a restored torrent whose pieces are gone now re-fetches them

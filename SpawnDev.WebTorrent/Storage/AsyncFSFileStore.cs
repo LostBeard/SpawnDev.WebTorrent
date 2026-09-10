@@ -356,6 +356,9 @@ public sealed class AsyncFSFileStore : IJSChunkStore
     /// <summary>Files whose final length has been established, so it is set once rather than per write.</summary>
     private readonly HashSet<string> _lengthEstablished = new();
 
+    /// <summary>Files already reported as having gone stale mid-read, so it is said once, not per read.</summary>
+    private readonly HashSet<string> _staleReported = new();
+
     /// <inheritdoc/>
     public bool SupportsUint8Array => _browserFs != null;
 
@@ -538,13 +541,26 @@ public sealed class AsyncFSFileStore : IJSChunkStore
         // So: re-acquire once and retry. A stale snapshot is expected here, not exceptional - it means a
         // piece landed while we were reading, which is the normal case for a model that starts loading
         // before its download finishes.
+        // 🔴 A SNAPSHOT IS ONLY CACHED ONCE THE FILE HAS STOPPED CHANGING. `getFile()` returns a snapshot
+        // that the browser INVALIDATES the moment its file is written, and this store's whole purpose is to
+        // be read WHILE the torrent writes. Caching one across writes therefore does not save a read - it
+        // guarantees that every read throws, is caught, re-acquires and redoes the work. MEASURED on a real
+        // shared-worker load: a continuous stream of "snapshot went stale mid-read", one per read, and
+        // "[model-load] 626.0s parse 100%" - ten minutes, against 21 s for the same model on the sync path.
+        //
+        // ⚠️ AN EXCEPTION PER READ IS NOT A SLOW PATH, IT IS A BROKEN ONE. Acquiring the handle fresh costs
+        // ~0.7 ms (MEASURED: 681 getFile calls in 468 ms), which is the price of a read, not a catastrophe.
+        // Caching only pays once nothing can invalidate it.
+        var stable = PiecesStored >= _pieceCount;
         for (var attempt = 0; attempt < 2; attempt++)
         {
+            if (!stable) DropBlob(path);
             if (!_blobCache.TryGetValue(path, out var blob))
             {
                 blob = await _browserFs!.ReadFile(path).ConfigureAwait(false);
                 if (blob == null) return null;
-                _blobCache[path] = blob;
+                // Only keep it when the file can no longer change under us.
+                if (stable) _blobCache[path] = blob;
             }
             if (fileOffset + length > blob.Size)
             {
@@ -561,10 +577,19 @@ public sealed class AsyncFSFileStore : IJSChunkStore
             }
             catch (Exception ex) when (attempt == 0)
             {
-                // Say it once per occurrence rather than silently retrying: a retry that never reports is
-                // indistinguishable from a path that is not being exercised.
-                Console.WriteLine($"[filestore] {path}: snapshot went stale mid-read - a piece landed while reading; re-reading the file (" + ex.GetType().Name + ")");
+                // ⚠️ Reported ONCE per file, not per read. While the file is still being written this can
+                // fire on every read, and a message per read is how a diagnostic becomes the cost it is
+                // meant to be measuring.
+                if (_staleReported.Add(path))
+                    Console.WriteLine("[filestore] " + path + ": snapshot went stale mid-read - a piece "
+                        + "landed while reading; re-reading (" + ex.GetType().Name + "). Reported once per file.");
                 DropBlob(path);
+            }
+            finally
+            {
+                // ⚠️ Only ours to dispose when it was NOT cached; a cached one is owned by _blobCache and
+                // disposing it here would hand the next read a dead handle.
+                if (!stable) { try { blob.Dispose(); } catch { } }
             }
         }
         return null;

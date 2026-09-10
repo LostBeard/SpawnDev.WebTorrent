@@ -1,4 +1,4 @@
-﻿using SpawnDev.SpawnJS;
+using SpawnDev.SpawnJS;
 // Narrow aliases (not the whole JSObjects namespace) so JS `Array` doesn't shadow System.Array.
 using Uint8Array = SpawnDev.SpawnJS.JSObjects.Uint8Array;
 using SubtleCrypto = SpawnDev.SpawnJS.JSObjects.SubtleCrypto;
@@ -140,7 +140,7 @@ public partial class Torrent
         // Lazy-Hash takes this path too: VerifyPieceZeroCopyAsync COMPUTES+stores the hash JS-side (SubtleCrypto)
         // for lazy instead of verifying — so a lazy browser download stays zero-copy (JS.Fetch -> Uint8Array ->
         // SubtleCrypto -> OPFS), never crossing into .NET. RequestSpanZeroCopy coalesces ~1 MiB of pieces per GET.
-        if (isWebSeed && _store is Storage.AsyncFSChunkStore { SupportsUint8Array: true }
+        if (isWebSeed && _store is Storage.IJSChunkStore { SupportsUint8Array: true }
             && Files != null && (Files.Length == 1 || !PieceSpansMultipleFiles(index)))
         {
             var wc = _webConns.FirstOrDefault(c => c.WireInstance == wire);
@@ -461,7 +461,7 @@ public partial class Torrent
             // with a store directory that did not even exist. Same shape as the seed-from-data bug fixed in
             // WebTorrentClient; this was the third instance. Every store gets the bytes, and a store that
             // cannot take them keeps the bit clear so the piece is re-fetched instead of trusted.
-            if (_store is Storage.AsyncFSChunkStore afs)
+            if (_store is Storage.IJSChunkStore { SupportsUint8Array: true } afs)
             {
                 await afs.PutUint8ArrayAsync(p, pieceUa);                          // JS Uint8Array -> OPFS, no .NET copy
             }
@@ -701,7 +701,7 @@ public partial class Torrent
         // completion — O(pieces^2), GetRarestPiece is an O(pieces) scan — which made SD-Turbo model loads
         // crawl at ~1.5 pieces/s (~750ms/piece in interpreted WASM). Regression introduced in 4da1613.
         bool ZeroCopyFull() => wire.Type == "webSeed" && _zeroCopyInFlight.Count >= MaxWebConns
-            && _store is Storage.AsyncFSChunkStore { SupportsUint8Array: true };
+            && _store is Storage.IJSChunkStore { SupportsUint8Array: true };
         if (wire.Requests.Count >= maxOutstanding || ZeroCopyFull()) return true;
 
         // CRITICAL-FIRST pass: read-awaited pieces (ReadFileAsync / streaming) must be

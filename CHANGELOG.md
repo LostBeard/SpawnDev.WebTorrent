@@ -1,4 +1,103 @@
-﻿# Changelog
+# Changelog
+
+## 4.2.6 (unreleased) - store a torrent's files AS files, and say when the fast read path is off
+
+### Added - `TorrentStorageLayout.ContentFiles` / `AsyncFSFileStore`
+
+A persistent store that writes a torrent's own files and folders literally
+(`webtorrent-files/{key}/files/{path}`), writing each piece into its content file at the right offset -
+what a desktop torrent client does - instead of one file per piece.
+
+**Why, measured rather than assumed.** `OpfsLayoutProbe` (new, `Storage/OpfsLayoutProbe.cs`) lays the same
+bytes out both ways and times reading them back through the API production uses. Dedicated worker, warm:
+
+```
+  128 x   65536 B, 8 held: pieces   346 ms (0.51 ms/open) | one file  15 ms | 22.50x
+  341 x   65536 B, 8 held: pieces   884 ms (0.49 ms/open) | one file  40 ms | 21.99x
+  681 x   65536 B, 8 held: pieces  1733 ms (0.46 ms/open) | one file  66 ms | 26.18x
+ 1362 x   65536 B, 8 held: pieces  3336 ms (0.44 ms/open) | one file 100 ms | 33.27x
+  681 x   65536 B, 0 held: pieces  1684 ms (0.42 ms/open) | one file  56 ms | 30.28x
+   64 x 4194304 B, 8 held: pieces   191 ms (0.42 ms/open) | one file  30 ms |  6.40x
+```
+
+The per-piece tax is `createSyncAccessHandle` (1.66 ms) + `getFileHandle` (0.46 ms) + `close` (0.28 ms).
+One file pays each ONCE, which is why its column is flat and the ratio GROWS with piece count. The reads
+themselves were never the problem: 256 MB in 27 ms (9.5 GB/s) at the real 4 MB piece size.
+
+⚠️ Three plausible causes were KILLED by the sweep, and are recorded so nobody re-proposes them:
+**directory size** (0.514 ms/open at 128 entries -> 0.442 ms at 1362 - 10.6x the entries, cost slightly
+DOWN), **held exclusive locks** (311 ms vs 285 ms of `getFileHandle`, 1.09x), and **entry size**
+(0.42 ms/open at 4 MB vs 0.43 ms at 64 KB).
+
+⚠️ **Still unexplained:** the probe's 0.46 ms/open does not reproduce the 172 ms/open measured on a real
+COLD qwen3:4b load with pieces still downloading. The probe is warm and has no concurrent writer. Write
+contention is an untested candidate - do not state it as the cause. The design does not rest on it: 681
+opens becoming 1 wins whatever the per-open cost turns out to be.
+
+**End-to-end A/B**, same model, same machine, cached both ways, only `StorageLayout` differing
+(qwen2.5:0.5b-instruct-q8_0, 638.5 MB of weights, dedicated worker):
+
+| | `PieceFiles` | `ContentFiles` |
+|---|---|---|
+| stream READ (OPFS) | 3745 ms (170.5 MB/s) | **647 ms (986.5 MB/s)** |
+| sync-handle OPENS | 171, costing 2835 ms | one per content file |
+| model-load to ready | 20.6 s | **8.8 s** |
+
+2835 of the 3745 ms were the 171 opens. Host-materialised stayed 0.3 MB of 638.7 MB in both - no bulk
+data through the .NET heap either way.
+
+⚠️ Per-open cost was 16.6 ms here and 172 ms on a cold qwen3:4b load with pieces still downloading. It
+varies with conditions; the reliable quantity is the open COUNT going from one-per-piece to one-per-file.
+
+Opt in with `WebTorrentClientOptions.StorageLayout = TorrentStorageLayout.ContentFiles`. Default is
+unchanged (`PieceFiles`).
+
+🔴 The layouts use SEPARATE ROOTS (`webtorrent/{key}` vs `webtorrent-files/{key}`) so neither can ever
+open the other's directory - a `piece_0` read as content bytes is silent corruption. A torrent cached
+under one layout re-downloads once under the other.
+
+🔴 `ContentFiles` PERSISTS THE BITFIELD (`{base}/bitfield.bin`), because the piece layout got that for
+free and this one cannot. `RestoreFromStorageAsync` rebuilds a restored torrent's bitfield by asking
+whether each piece FILE exists; here a piece has no file of its own. Bytes are flushed to their content
+file BEFORE the bit is set: a bitfield that under-reports costs a re-download, one that over-reports makes
+the torrent advertise pieces it cannot serve.
+
+### Added - `Torrent.MigrateStorageLayoutAsync` / `WebTorrentClient.MigrateStorageLayoutAsync`
+
+Copies an existing piece-per-file cache into the content-file layout OPFS-to-OPFS, so switching layouts
+does not mean re-downloading. Every piece moves as a JS `Uint8Array` - no managed copies. VERIFIED
+2026-09-09 on a real profile: 438 pieces of Qwen3-1.7B, 175 of LFM2-1.2B and 163 of an ONNX model all
+migrated with no network fetch.
+
+🔴 The old directory is removed ONLY after every piece it held is verified readable from the new store.
+Migration copies rather than moves (a partial copy has to be able to fall back), so without that step a
+7 GB model occupies 14 GB of quota; and without the verification, an interrupted migration would become
+permanent data loss.
+
+### Fixed - an `AddAsync` that overtakes restore re-downloads a cached model
+
+`RestoreFromStorageAsync` is async and every caller fires it and forgets. `Add` dedups against torrents
+already in the list, so an add that wins the race creates a SECOND torrent with an empty bitfield and
+fetches what is already in OPFS. New `InitStorageAsync()` runs restore + layout migration and gates every
+later `AddAsync` on itself; without it, MEASURED 2026-09-09, migration finished AFTER a model load had
+already completed. Callers should use it instead of calling `RestoreFromStorageAsync` directly.
+
+### Added - `IJSChunkStore`, replacing eight concrete `is AsyncFSChunkStore` checks
+
+The download and read paths tested for the concrete store type in eight places, and the ELSE branch of the
+download one is `_store.PutAsync(p, pieceUa.ReadBytes())` - a full JS->.NET copy of every 4 MB piece. A
+second OPFS-backed store behind a concrete check would therefore have silently routed a multi-GB model
+through the managed heap. The capability now lives in a contract; check `SupportsUint8Array`, not a type.
+
+### Fixed - a silent fallback that cost ~100x on every read, with nothing saying why
+
+`AsyncFSChunkStore.GetSyncHandleAsync` caught every failure and set `_syncUnavailable = true` in silence.
+The fallback is `getFile()+slice()+arrayBuffer()` - 23 MB/s cold against ~2.2 GB/s for a sync handle.
+
+⚠️ **The usual cause is not an error at all.** MEASURED 2026-09-09, same code, one variable:
+`createSyncAccessHandle()` exists ONLY in a **dedicated** worker - in a shared worker it is `undefined`.
+So a host running its loader in a shared worker (SpawnDev.AI's demo default) took the slow path every
+time, by design, invisibly. It now logs the reason once.
 
 ## 4.2.5 (unreleased) - remove a zero-copy counter that could only ever report 0
 

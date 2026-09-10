@@ -132,6 +132,9 @@ public class WebTorrentClient : IAsyncDisposable
     /// <summary>Async file system for persistent storage.</summary>
     public SpawnDev.AsyncFileSystem.IAsyncFS? AsyncFileSystem { get; set; }
 
+    /// <summary>How persistent stores lay a torrent's data out. See <see cref="TorrentStorageLayout"/>.</summary>
+    public TorrentStorageLayout StorageLayout { get; set; } = TorrentStorageLayout.PieceFiles;
+
     /// <summary>Upload rate limiter. Rate = -1 for unlimited, 0 for paused, positive for bytes/sec.</summary>
     public RateLimiter UploadRateLimiter { get; } = new RateLimiter(-1);
 
@@ -243,6 +246,7 @@ public class WebTorrentClient : IAsyncDisposable
 
         _http = opts.HttpClient ?? new HttpClient();
         AsyncFileSystem = opts.AsyncFileSystem;
+        StorageLayout = opts.StorageLayout;
         Crypto = opts.Crypto;
 
         // Wire up stream handler if provided
@@ -304,6 +308,12 @@ public class WebTorrentClient : IAsyncDisposable
     public async Task<Torrent> AddAsync(string magnetOrInfoHash, AddTorrentOptions? opts = null,
         CancellationToken ct = default)
     {
+        // 🔴 AN ADD THAT OVERTAKES RESTORE RE-DOWNLOADS WHAT IS ALREADY ON DISK. Add() dedups against
+        // torrents already in the list, so if startup restore has not put them there yet this creates a
+        // fresh torrent with an empty bitfield and fetches gigabytes that were sitting in OPFS the whole
+        // time. MEASURED 2026-09-09: layout migration finished AFTER a model load had already completed.
+        // Waiting is only possible when the caller opted into InitStorageAsync; otherwise this is a no-op.
+        if (_storageInit != null) await _storageInit.ConfigureAwait(false);
         var torrent = Add(magnetOrInfoHash, opts);
         if (torrent.HasMetadata) return torrent;
 
@@ -608,6 +618,31 @@ public class WebTorrentClient : IAsyncDisposable
     /// Restore previously persisted torrents from async file system storage.
     /// Call after construction if using persistent storage.
     /// </summary>
+    /// <summary>
+    /// Restore persisted torrents, then migrate them to the configured <see cref="StorageLayout"/>.
+    /// Every subsequent <see cref="AddAsync(string, AddTorrentOptions?, CancellationToken)"/> waits for it.
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ PREFER THIS OVER CALLING <see cref="RestoreFromStorageAsync"/> DIRECTLY. Restore is async and
+    /// callers fire it and forget; an <c>AddAsync</c> that beats it to the list creates a second torrent
+    /// with an empty bitfield and re-downloads a cached model. Registering the startup work here is what
+    /// lets adds wait for it. Idempotent - the second call returns the first call's task.
+    /// </remarks>
+    public Task InitStorageAsync()
+    {
+        // Assigned BEFORE the first await so an AddAsync on the next line already sees the gate.
+        return _storageInit ??= RunAsync();
+
+        async Task RunAsync()
+        {
+            await RestoreFromStorageAsync().ConfigureAwait(false);
+            await MigrateStorageLayoutAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>The startup restore+migrate task, once <see cref="InitStorageAsync"/> has been called.</summary>
+    private Task? _storageInit;
+
     public async Task RestoreFromStorageAsync()
     {
         if (AsyncFileSystem == null) return;
@@ -687,7 +722,7 @@ public class WebTorrentClient : IAsyncDisposable
 
                     // Mark which pieces are already stored — metadata-only existence check (no byte reads). Updates
                     // progress live now that the torrent is already in the list.
-                    if (torrent._store is Storage.AsyncFSChunkStore afsStore)
+                    if (torrent._store is Storage.IJSChunkStore afsStore)
                     {
                         for (int i = 0; i < torrent.PieceCount; i++)
                         {
@@ -712,6 +747,41 @@ public class WebTorrentClient : IAsyncDisposable
         {
             if (VerboseLogging) Console.WriteLine($"[WebTorrentClient] Restore error: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Migrate every restored torrent's cached pieces into the content-file layout, locally.
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ Call this AFTER <see cref="RestoreFromStorageAsync"/> and BEFORE anything asks a torrent for
+    /// data. A restored torrent under <see cref="TorrentStorageLayout.ContentFiles"/> starts with an empty
+    /// bitfield, because its pieces are still sitting in the old <c>webtorrent/{key}</c> directory - so
+    /// anything that reads it first sees 0% and starts downloading what is already on disk.
+    /// </remarks>
+    /// <param name="progress">Called with (torrentName, copied, total).</param>
+    /// <param name="ct">Cancellation. Partial progress is kept and finished on the next call.</param>
+    /// <returns>Total pieces copied across all torrents.</returns>
+    public async Task<int> MigrateStorageLayoutAsync(Action<string, int, int>? progress = null,
+        CancellationToken ct = default)
+    {
+        if (StorageLayout != TorrentStorageLayout.ContentFiles || AsyncFileSystem == null) return 0;
+        int total = 0;
+        foreach (var t in Torrents.ToArray())
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                total += await t.MigrateStorageLayoutAsync(
+                    progress == null ? null : (c, n) => progress(t.Name ?? "", c, n), ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                // One torrent failing to migrate must not block the others; it simply re-downloads.
+                Console.WriteLine($"[WebTorrentClient] could not migrate '{t.Name}': {ex.Message}");
+            }
+        }
+        return total;
     }
 
     // ========================
@@ -986,8 +1056,45 @@ public class WebTorrentClient : IAsyncDisposable
 // OPTIONS
 // ========================
 
+/// <summary>How a persistent store lays a torrent's data out on disk.</summary>
+public enum TorrentStorageLayout
+{
+    /// <summary>
+    /// One file per PIECE (<c>{basePath}/piece_{index}</c>). The original layout.
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ Every read of a piece pays a per-file open. MEASURED 2026-09-09 in a dedicated worker
+    /// (<c>OpfsLayoutProbe</c>): 681 x 64 KiB entries cost 1733 ms against 66 ms for the same bytes in one
+    /// file, and the gap GROWS with piece count (22.5x at 128 entries, 33.3x at 1362) because the one-file
+    /// cost is flat. Kept as the default so existing caches are not orphaned.
+    /// </remarks>
+    PieceFiles = 0,
+
+    /// <summary>
+    /// The torrent's own files and folders, written literally (<c>{basePath}/files/{path}</c>), the way a
+    /// desktop torrent client does. Pieces are written into their content files at the right offsets.
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ Requires the file list, so a torrent gets this layout only once metadata is known. It also needs
+    /// a persisted bitfield, because a piece no longer has a file whose existence can be tested - see
+    /// <see cref="Storage.AsyncFSFileStore"/>.
+    /// </remarks>
+    ContentFiles = 1,
+}
+
 public class WebTorrentClientOptions
 {
+    /// <summary>
+    /// How persistent stores lay data out. Defaults to <see cref="TorrentStorageLayout.PieceFiles"/>.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 CHANGING THIS ORPHANS AN EXISTING CACHE. The two layouts use different store directories
+    /// (<c>webtorrent/{key}</c> vs <c>webtorrent-files/{key}</c>) precisely so they can never be read as
+    /// each other - a piece store's <c>piece_0</c> interpreted as content bytes would be silent corruption.
+    /// A torrent already cached under the other layout re-downloads once.
+    /// </remarks>
+    public TorrentStorageLayout StorageLayout { get; set; } = TorrentStorageLayout.PieceFiles;
+
     public string? PeerId { get; set; }
     public int MaxConns { get; set; } = WebTorrentClient.DefaultMaxConns;
     /// <summary>Enable BEP 19 web seeds. Default true.</summary>

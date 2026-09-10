@@ -1,4 +1,4 @@
-﻿using SpawnDev.WebTorrent.Storage;
+using SpawnDev.WebTorrent.Storage;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -766,7 +766,21 @@ public partial class Torrent : IAsyncDisposable
             var storeHash = PersistKey;
             if (_client?.AsyncFileSystem != null && !string.IsNullOrEmpty(storeHash))
             {
-                _store = new Storage.AsyncFSChunkStore(_client.AsyncFileSystem, $"webtorrent/{storeHash}", PieceLength);
+                // ⚠️ SEPARATE ROOTS PER LAYOUT, and not for tidiness. A piece store's `piece_0` read as
+                // content bytes is silent corruption, so the two layouts must never be able to open each
+                // other's directory. A torrent cached under one and then opened under the other re-downloads
+                // once, which is the correct outcome.
+                //
+                // ⚠️ ContentFiles needs the FILE LIST, which a magnet does not have until metadata arrives.
+                // Falling back to the piece layout in that case would leave the torrent in the wrong root
+                // permanently, so the guard is on Files being present here - this runs inside
+                // InitFromMetadata, where it is.
+                bool contentLayout = _client.StorageLayout == TorrentStorageLayout.ContentFiles
+                    && Files is { Length: > 0 } && Length > 0;
+                _store = contentLayout
+                    ? new Storage.AsyncFSFileStore(_client.AsyncFileSystem, $"webtorrent-files/{storeHash}",
+                        PieceLength, Files!, Length)
+                    : new Storage.AsyncFSChunkStore(_client.AsyncFileSystem, $"webtorrent/{storeHash}", PieceLength);
             }
             else if (_client?.AsyncFileSystem != null)
             {
@@ -1749,7 +1763,7 @@ public partial class Torrent : IAsyncDisposable
             // reason, so reaching here again means something new.
             if (TryRecoverUnservablePiece(pieceIdx, recovered)) continue;   // cache gone - fetch it again
 
-            var storeState = _store is Storage.AsyncFSChunkStore afsDiag
+            var storeState = _store is Storage.IJSChunkStore afsDiag
                 ? await afsDiag.DescribePieceAsync(pieceIdx, ct)
                 : $"store is {_store?.GetType().Name ?? "null"} (no description available)";
             throw new InvalidOperationException(
@@ -1791,7 +1805,7 @@ public partial class Torrent : IAsyncDisposable
         if (TraceEnsurePiece) ReadAllocMs += System.Diagnostics.Stopwatch.GetElapsedTime(_tAlloc).TotalMilliseconds;
         int resultPos = 0;
         // Zero-copy JS path only when the store is OPFS-backed and can hand back Uint8Arrays.
-        var opfs = _store as Storage.AsyncFSChunkStore;
+        var opfs = _store as Storage.IJSChunkStore;
         bool jsPath = opfs != null && opfs.SupportsUint8Array;
         var recovered = new HashSet<int>();
 
@@ -1868,7 +1882,7 @@ public partial class Torrent : IAsyncDisposable
             // file that EXISTS but is EMPTY: restore marks the bitfield from an existence check while the
             // read path needs bytes. AsyncFSChunkStore.PieceExistsAsync now checks SIZE for exactly that
             // reason, so reaching here again means something new.
-            var storeState = _store is Storage.AsyncFSChunkStore afsDiag
+            var storeState = _store is Storage.IJSChunkStore afsDiag
                 ? await afsDiag.DescribePieceAsync(pieceIdx, ct)
                 : $"store is {_store?.GetType().Name ?? "null"} (no description available)";
             throw new InvalidOperationException(
@@ -2122,7 +2136,7 @@ public class TorrentFileInfo
         if (Torrent == null || !Done) return null;
 
         // Try zero-copy path: assemble Blob from Uint8Array pieces directly in JS
-        if (Torrent._store is Storage.AsyncFSChunkStore opfsStore && opfsStore.SupportsUint8Array)
+        if (Torrent._store is Storage.IJSChunkStore opfsStore && opfsStore.SupportsUint8Array)
         {
             var parts = new List<SpawnDev.SpawnJS.JSObjects.Uint8Array>();
             try

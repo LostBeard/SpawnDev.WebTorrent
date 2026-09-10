@@ -1,4 +1,4 @@
-﻿using SpawnDev.AsyncFileSystem;
+using SpawnDev.AsyncFileSystem;
 using SpawnDev.SpawnJS.JSObjects;
 using SpawnDev.SpawnJS.Toolbox;
 
@@ -11,7 +11,7 @@ namespace SpawnDev.WebTorrent.Storage;
 ///
 /// Each piece is stored as a file: {basePath}/piece_{index}
 /// </summary>
-public class AsyncFSChunkStore : IChunkStore
+public class AsyncFSChunkStore : IJSChunkStore
 {
     private readonly IAsyncFS _fs;
     private readonly IAsyncBrowserFileSystem? _browserFs;
@@ -104,11 +104,22 @@ public class AsyncFSChunkStore : IChunkStore
             }
             return sync;
         }
-        catch
+        catch (Exception ex)
         {
-            // Not a worker, the file is locked, or the browser lacks it. Fall back permanently rather
-            // than paying a failed open on every read.
+            // Not a dedicated worker, the file is locked, or the browser lacks it. Fall back permanently
+            // rather than paying a failed open on every read.
+            //
+            // 🔴 AND SAY SO, ONCE. This used to swallow the reason entirely, which made the single most
+            // expensive condition in the whole cache completely invisible: the fallback is
+            // getFile()+slice()+arrayBuffer(), measured at 23 MB/s cold against ~2.2 GB/s for a sync
+            // handle, so a multi-GB model quietly takes ~100x longer to load and nothing anywhere says
+            // why. The most common cause is not an error at all - createSyncAccessHandle() exists ONLY in
+            // a DEDICATED worker, so an app hosting its loader in a SHARED worker (or on the main thread)
+            // takes the slow path every time, by design and in silence.
             _syncUnavailable = true;
+            Console.WriteLine("[OpfsChunkStore] sync access handles are unavailable here, falling back to "
+                + "getFile()+slice()+arrayBuffer() for every read - MUCH slower on large files. "
+                + "createSyncAccessHandle() requires a DEDICATED worker. Reason: " + ex.Message);
             return null;
         }
     }

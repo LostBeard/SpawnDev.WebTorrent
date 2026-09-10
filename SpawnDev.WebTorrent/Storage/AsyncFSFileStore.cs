@@ -62,6 +62,23 @@ public sealed class AsyncFSFileStore : IJSChunkStore
     /// <summary>Set once a sync handle cannot be created, so the failed open is paid at most once.</summary>
     private bool _syncUnavailable;
 
+    /// <summary>
+    /// Force the <c>createWritable</c> / Blob fallback even where sync access handles exist. Diagnostic.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 THIS EXISTS BECAUSE THE FALLBACK IS THE PATH WE CANNOT SEE. Sync access handles are
+    /// DEDICATED-worker only, so the fallback runs precisely where a SHARED worker runs - and a shared
+    /// worker's console never reaches the page. Two real defects lived there undetected (a file sized by
+    /// how much had arrived rather than its true length, and a cached Blob snapshot going stale mid-read)
+    /// while every gate passed, because every gate ran with <c>?worker=dedicated</c> to be able to read the
+    /// logs at all. That is a gate selecting the configuration that hides the bug.
+    /// <para>
+    /// Setting this reproduces the fallback in a DEDICATED worker, where the console is visible and a
+    /// Playwright gate can assert on it. Never set it in production: it gives up the sync path's speed.
+    /// </para>
+    /// </remarks>
+    public static bool ForceWritableFallback;
+
     /// <summary>Which pieces this store holds. The only record - see the class remarks.</summary>
     private bool[] _bitfield = System.Array.Empty<bool>();
     private bool _bitfieldDirty;
@@ -175,7 +192,7 @@ public sealed class AsyncFSFileStore : IJSChunkStore
     /// <summary>Open (or reuse) the sync access handle for one content file, or null when unavailable.</summary>
     private async Task<FileSystemSyncAccessHandle?> GetSyncHandleAsync(TorrentFileInfo f, bool create)
     {
-        if (_syncUnavailable || _browserFs == null) return null;
+        if (ForceWritableFallback || _syncUnavailable || _browserFs == null) return null;
         var path = PathOf(f);
         if (_syncHandles.TryGetValue(path, out var open)) return open;
         try
@@ -252,9 +269,23 @@ public sealed class AsyncFSFileStore : IJSChunkStore
             }
             else
             {
-                await WriteViaWritableAsync(path, fileOffset, data.Slice(bufPos, span)).ConfigureAwait(false);
+                await WriteViaWritableAsync(file, fileOffset, data.Slice(bufPos, span)).ConfigureAwait(false);
             }
-            DropBlob(path);   // the Blob snapshot is now stale
+            // 🔴 THE SNAPSHOT IS *NOT* DROPPED HERE, and that reversal is the difference between a model
+            // loading in seconds and in ten minutes. Dropping eagerly on every write means that while the
+            // torrent is still downloading, the next read must re-acquire the file with getFile() - which
+            // is precisely the per-read cost this layout exists to remove (MEASURED 483 ms per piece under
+            // the old piece layout against 0.6 ms once per content file). Warm, nothing notices, which is
+            // why every gate passed. DOWNLOADING - the case that actually matters, because the demo loads
+            // a model while its remaining pieces arrive - it turned a load into 626 SECONDS on a real run,
+            // and hands-free simply timed out and went back to listening.
+            //
+            // ⚠️ SAFE BECAUSE OF HOW A SNAPSHOT FAILS, not because staleness is tolerable. The browser
+            // INVALIDATES a File snapshot when its file changes, so a stale one throws rather than
+            // returning old bytes - ReadViaBlobAsync catches exactly that and re-acquires once. And a
+            // piece is written once and never rewritten, so a snapshot that is still valid cannot be
+            // serving superseded data for a region; an unwritten region is refused by the bitfield before
+            // any read reaches here.
         }
 
         // Bytes are flushed above BEFORE the bit is set - see the class remarks on ordering.
@@ -267,16 +298,17 @@ public sealed class AsyncFSFileStore : IJSChunkStore
     /// ⚠️ Deliberately <c>keepExistingData: true</c>. Without it <c>createWritable</c> starts from an EMPTY
     /// file, so writing piece 500 of a torrent would destroy pieces 0-499. Slow, but it must be correct.
     /// </remarks>
-    private async Task WriteViaWritableAsync(string path, long fileOffset, ReadOnlyMemory<byte> data)
+    private async Task WriteViaWritableAsync(TorrentFileInfo file, long fileOffset, ReadOnlyMemory<byte> data)
     {
         using var buf = new Uint8Array(data.Length);
         buf.WriteBytes(data.ToArray());
-        await WriteViewViaWritableAsync(path, fileOffset, buf).ConfigureAwait(false);
+        await WriteViewViaWritableAsync(file, fileOffset, buf).ConfigureAwait(false);
     }
 
     /// <summary>Fallback write from a JS buffer - no managed copy. See <see cref="WriteViaWritableAsync"/>.</summary>
-    private async Task WriteViewViaWritableAsync(string path, long fileOffset, Uint8Array data)
+    private async Task WriteViewViaWritableAsync(TorrentFileInfo file, long fileOffset, Uint8Array data)
     {
+        var path = PathOf(file);
         var handle = await _browserFs!.GetFileHandle(path).ConfigureAwait(false);
         if (handle == null)
         {
@@ -290,6 +322,29 @@ public sealed class AsyncFSFileStore : IJSChunkStore
                 .ConfigureAwait(false);
             try
             {
+                // 🔴 THE FILE IS GIVEN ITS FINAL LENGTH, exactly as the sync path does, and for a reason that
+                // took a user-visible crash to find. GetSyncHandleAsync creates at full length "so GetSize()
+                // means what it says"; this path did not, so in a SHARED worker - which has no sync access
+                // handles at all, and is the default - a file's size was however many bytes had arrived so
+                // far. Under the ContentFiles layout a consumer reads the content file DIRECTLY rather than
+                // through the piece API, so a half-downloaded model is not detectably incomplete: it is
+                // simply a shorter file.
+                //
+                // MEASURED on the demo: whisper-tiny's encoder_model.onnx sat in OPFS at 29,360,128 bytes -
+                // EXACTLY 7 x 4 MiB, against a true length of 32,909,539. Seven of its eight pieces had
+                // arrived. The ONNX parser read to the end of what was there and threw
+                // `Unknown wire type: 6` - protobuf wire types stop at 5 - which surfaced to the user as
+                // "Transcription failed: POST /api/transcribe -> 500". Nothing in that message points here.
+                //
+                // ⚠️ Truncate() GROWS as well as shrinks (it sets the length), and the region it adds reads
+                // as zeros - so an unwritten span now reads as zeros at the right OFFSET instead of moving
+                // every later byte, which is what made the size lie in the first place.
+                // ⚠️ NO getFile() HERE. A FileSystemWritableFileStream holds a lock on the file, so asking
+                // the same handle for a snapshot while it is open is a hazard in its own right - and the
+                // query bought nothing: Truncate SETS the length, so calling it when the length is already
+                // right is a no-op. Once per file per session is enough.
+                if (_lengthEstablished.Add(path))
+                    await writable.Truncate((ulong)file.Length).ConfigureAwait(false);
                 await writable.Seek((ulong)fileOffset).ConfigureAwait(false);
                 await writable.Write(data).ConfigureAwait(false);
             }
@@ -297,6 +352,9 @@ public sealed class AsyncFSFileStore : IJSChunkStore
         }
         finally { handle.Dispose(); }
     }
+
+    /// <summary>Files whose final length has been established, so it is set once rather than per write.</summary>
+    private readonly HashSet<string> _lengthEstablished = new();
 
     /// <inheritdoc/>
     public bool SupportsUint8Array => _browserFs != null;
@@ -334,9 +392,9 @@ public sealed class AsyncFSFileStore : IJSChunkStore
             }
             else
             {
-                await WriteViewViaWritableAsync(path, fileOffset, view).ConfigureAwait(false);
+                await WriteViewViaWritableAsync(file, fileOffset, view).ConfigureAwait(false);
             }
-            DropBlob(path);
+            // Not dropped - see the note on the byte[] write path above.
         }
 
         MarkStored(index);
@@ -463,16 +521,53 @@ public sealed class AsyncFSFileStore : IJSChunkStore
         // ⚠️ No whole-file read here on purpose. Reading a multi-GB content file into a byte[] to serve a
         // 4 MB range is exactly the copy this store exists to avoid; the constructor guarantees _browserFs.
         var path = PathOf(file);
-        if (!_blobCache.TryGetValue(path, out var blob))
+
+        // 🔴 A CACHED Blob GOES STALE THE MOMENT THE FILE IS WRITTEN, and this store's whole purpose is to
+        // be read WHILE the torrent is still writing. `getFile()` returns a SNAPSHOT; once the underlying
+        // file changes, every read from that snapshot throws
+        //   "The requested file could not be read, typically due to permission problems that have occurred
+        //    after a reference to a file was acquired"
+        // - a NotReadableError, whose text names permissions and has nothing to do with them.
+        //
+        // `DropBlob` on the write side is not sufficient by itself: the read is a sequence of awaits
+        // (Slice -> ArrayBuffer), so a write can land BETWEEN acquiring the snapshot and using it, and the
+        // entry that gets dropped is the one the in-flight read is already holding. MEASURED: a model load
+        // racing its own download failed this way with the demo reporting
+        // "POST /api/transcribe -> 500".
+        //
+        // So: re-acquire once and retry. A stale snapshot is expected here, not exceptional - it means a
+        // piece landed while we were reading, which is the normal case for a model that starts loading
+        // before its download finishes.
+        for (var attempt = 0; attempt < 2; attempt++)
         {
-            blob = await _browserFs!.ReadFile(path).ConfigureAwait(false);
-            if (blob == null) return null;
-            _blobCache[path] = blob;
+            if (!_blobCache.TryGetValue(path, out var blob))
+            {
+                blob = await _browserFs!.ReadFile(path).ConfigureAwait(false);
+                if (blob == null) return null;
+                _blobCache[path] = blob;
+            }
+            if (fileOffset + length > blob.Size)
+            {
+                // Short only because the snapshot predates a write that has since extended the file - a
+                // fresh one may well cover the range. Never treat the first look as the final answer.
+                if (attempt == 0) { DropBlob(path); continue; }
+                return null;
+            }
+            try
+            {
+                using var sliced = blob.Slice(fileOffset, fileOffset + length);
+                using var ab = await sliced.ArrayBuffer().ConfigureAwait(false);
+                return new Uint8Array(ab);
+            }
+            catch (Exception ex) when (attempt == 0)
+            {
+                // Say it once per occurrence rather than silently retrying: a retry that never reports is
+                // indistinguishable from a path that is not being exercised.
+                Console.WriteLine($"[filestore] {path}: snapshot went stale mid-read - a piece landed while reading; re-reading the file (" + ex.GetType().Name + ")");
+                DropBlob(path);
+            }
         }
-        if (fileOffset + length > blob.Size) return null;
-        using var sliced = blob.Slice(fileOffset, fileOffset + length);
-        using var ab = await sliced.ArrayBuffer().ConfigureAwait(false);
-        return new Uint8Array(ab);
+        return null;
     }
 
     /// <inheritdoc/>

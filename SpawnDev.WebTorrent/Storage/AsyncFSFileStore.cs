@@ -289,8 +289,9 @@ public sealed class AsyncFSFileStore : IJSChunkStore
         }
 
         // Bytes are flushed above BEFORE the bit is set - see the class remarks on ordering.
-        MarkStored(index);
-        if (_bitfieldDirty && PiecesStored % 64 == 0) await SaveBitfieldAsync().ConfigureAwait(false);
+        // ⚠️ On the writable path the bytes are NOT readable until the batch is committed, so the bit waits
+        // for that commit. Setting it here would advertise a piece still sitting in a swap file.
+        await MarkStoredWhenReadableAsync(index).ConfigureAwait(false);
     }
 
     /// <summary>Fallback write for hosts with no sync access handles (not a dedicated worker).</summary>
@@ -309,6 +310,60 @@ public sealed class AsyncFSFileStore : IJSChunkStore
     private async Task WriteViewViaWritableAsync(TorrentFileInfo file, long fileOffset, Uint8Array data)
     {
         var path = PathOf(file);
+        var writable = await GetWritableAsync(file, path).ConfigureAwait(false);
+        await writable.Seek((ulong)fileOffset).ConfigureAwait(false);
+        await writable.Write(data).ConfigureAwait(false);
+        _writesSinceCommit++;
+        if (_writesSinceCommit >= WritesPerCommit) await CommitWritablesAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>Writes buffered into an open writable before it is committed and becomes readable.</summary>
+    private readonly Dictionary<string, FileSystemWritableFileStream> _writables = new();
+    private int _writesSinceCommit;
+
+    /// <summary>
+    /// How many piece-writes share one <c>createWritable</c>.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 THE SINGLE MOST EXPENSIVE THING THIS CLASS DOES, and it is paid at OPEN, not at write.
+    /// <c>createWritable({keepExistingData:true})</c> copies the ENTIRE existing file into a swap file
+    /// before you may touch it. MEASURED inside a live shared worker, instrumenting the browser's own
+    /// FileSystemFileHandle.prototype:
+    /// <code>
+    ///   opens:  5   openMs: 25850   -> 5.2 SECONDS each (copying a 2.5 GB file at ~480 MB/s)
+    ///   writes: 4   bytes: 16 MiB   writeMs: 65.8   -> 16 ms per 4 MiB piece
+    ///   closes: 4   closeMs: 476.6
+    /// </code>
+    /// Opened once per piece, a 1.8 GB model pays ~450 x 5.2 s - about forty minutes of file copying to
+    /// write sixteen milliseconds of data each time. That is the ten-minute model load the Captain hit,
+    /// and it is quadratic in file size: the bigger the model, the worse each individual piece gets.
+    /// <para>
+    /// ⚠️ WHY NOT SIMPLY HOLD IT OPEN FOREVER: data written to a writable is NOT visible to a reader until
+    /// <c>close()</c>. This store is read WHILE it is written, so never committing would hide every piece
+    /// from the model loader. Batching keeps both properties - the copy is amortised over N pieces, and a
+    /// piece still becomes readable at a commit. 64 matches the bitfield's own save cadence.
+    /// </para>
+    /// <para>
+    /// 🔴 THE ORDERING RULE STILL HOLDS, and it is why <see cref="MarkStored"/> is now deferred: a piece's
+    /// bit may only be set once its bytes are READABLE. Setting it at write time would advertise a piece
+    /// that is still sitting in an uncommitted swap file, and the class remarks are explicit that a
+    /// bitfield which over-reports is the one failure mode that matters.
+    /// </para>
+    /// </remarks>
+    private const int WritesPerCommit = 64;
+
+    /// <summary>Pieces written but not yet committed, so their bits are set only once they are readable.</summary>
+    private readonly List<int> _pendingPieces = new();
+
+    /// <summary>Files whose final length has been established, so it is set once rather than per write.</summary>
+    private readonly HashSet<string> _lengthEstablished = new();
+
+    /// <summary>Files already reported as having gone stale mid-read, so it is said once, not per read.</summary>
+    private readonly HashSet<string> _staleReported = new();
+
+    private async Task<FileSystemWritableFileStream> GetWritableAsync(TorrentFileInfo file, string path)
+    {
+        if (_writables.TryGetValue(path, out var open)) return open;
         var handle = await _browserFs!.GetFileHandle(path).ConfigureAwait(false);
         if (handle == null)
         {
@@ -318,46 +373,44 @@ public sealed class AsyncFSFileStore : IJSChunkStore
         }
         try
         {
-            var writable = await handle.CreateWritable(new FileSystemCreateWritableOptions { KeepExistingData = true })
+            var w = await handle.CreateWritable(new FileSystemCreateWritableOptions { KeepExistingData = true })
                 .ConfigureAwait(false);
-            try
-            {
-                // 🔴 THE FILE IS GIVEN ITS FINAL LENGTH, exactly as the sync path does, and for a reason that
-                // took a user-visible crash to find. GetSyncHandleAsync creates at full length "so GetSize()
-                // means what it says"; this path did not, so in a SHARED worker - which has no sync access
-                // handles at all, and is the default - a file's size was however many bytes had arrived so
-                // far. Under the ContentFiles layout a consumer reads the content file DIRECTLY rather than
-                // through the piece API, so a half-downloaded model is not detectably incomplete: it is
-                // simply a shorter file.
-                //
-                // MEASURED on the demo: whisper-tiny's encoder_model.onnx sat in OPFS at 29,360,128 bytes -
-                // EXACTLY 7 x 4 MiB, against a true length of 32,909,539. Seven of its eight pieces had
-                // arrived. The ONNX parser read to the end of what was there and threw
-                // `Unknown wire type: 6` - protobuf wire types stop at 5 - which surfaced to the user as
-                // "Transcription failed: POST /api/transcribe -> 500". Nothing in that message points here.
-                //
-                // ⚠️ Truncate() GROWS as well as shrinks (it sets the length), and the region it adds reads
-                // as zeros - so an unwritten span now reads as zeros at the right OFFSET instead of moving
-                // every later byte, which is what made the size lie in the first place.
-                // ⚠️ NO getFile() HERE. A FileSystemWritableFileStream holds a lock on the file, so asking
-                // the same handle for a snapshot while it is open is a hazard in its own right - and the
-                // query bought nothing: Truncate SETS the length, so calling it when the length is already
-                // right is a no-op. Once per file per session is enough.
-                if (_lengthEstablished.Add(path))
-                    await writable.Truncate((ulong)file.Length).ConfigureAwait(false);
-                await writable.Seek((ulong)fileOffset).ConfigureAwait(false);
-                await writable.Write(data).ConfigureAwait(false);
-            }
-            finally { await writable.Close().ConfigureAwait(false); writable.Dispose(); }
+            // The file is given its final length once, so an unwritten span reads as zeros at the right
+            // OFFSET rather than shifting every later byte - see the note on GetSyncHandleAsync, which has
+            // always done this. Truncate SETS the length, so repeating it would be a no-op anyway.
+            if (_lengthEstablished.Add(path)) await w.Truncate((ulong)file.Length).ConfigureAwait(false);
+            _writables[path] = w;
+            return w;
         }
         finally { handle.Dispose(); }
     }
 
-    /// <summary>Files whose final length has been established, so it is set once rather than per write.</summary>
-    private readonly HashSet<string> _lengthEstablished = new();
-
-    /// <summary>Files already reported as having gone stale mid-read, so it is said once, not per read.</summary>
-    private readonly HashSet<string> _staleReported = new();
+    /// <summary>
+    /// Close every open writable, making its bytes readable, then mark the pieces that are now durable.
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ Bits are set AFTER the closes, never before - see <see cref="WritesPerCommit"/>. A reader that
+    /// sees a bit must be able to read the bytes behind it.
+    /// </remarks>
+    private async Task CommitWritablesAsync()
+    {
+        if (_writables.Count > 0)
+        {
+            foreach (var kv in _writables)
+            {
+                try { await kv.Value.Close().ConfigureAwait(false); }
+                catch (Exception ex) { Console.WriteLine($"[filestore] closing {kv.Key} failed: {ex.Message}"); }
+                finally { kv.Value.Dispose(); }
+            }
+            _writables.Clear();
+            // A committed write makes every cached snapshot of those files stale by definition.
+            foreach (var path in _blobCache.Keys.ToList()) DropBlob(path);
+        }
+        _writesSinceCommit = 0;
+        foreach (var index in _pendingPieces) MarkStored(index);
+        _pendingPieces.Clear();
+        if (_bitfieldDirty) await SaveBitfieldAsync().ConfigureAwait(false);
+    }
 
     /// <inheritdoc/>
     public bool SupportsUint8Array => _browserFs != null;
@@ -400,6 +453,30 @@ public sealed class AsyncFSFileStore : IJSChunkStore
             // Not dropped - see the note on the byte[] write path above.
         }
 
+        await MarkStoredWhenReadableAsync(index).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Set a piece's bit now if its bytes are already readable, or at the next commit if they are not.
+    /// </summary>
+    /// <remarks>
+    /// The sync path writes straight through, so its bytes are readable the moment they are flushed. The
+    /// writable path buffers until <see cref="CommitWritablesAsync"/>, and a bit set before that would
+    /// claim a piece no reader could fetch.
+    /// </remarks>
+    private async Task MarkStoredWhenReadableAsync(int index)
+    {
+        if (_writables.Count > 0)
+        {
+            _pendingPieces.Add(index);
+            // ⚠️ COMMIT THE TAIL. Without this the last (fewer than WritesPerCommit) pieces of a download
+            // would sit uncommitted until disposal - so a torrent could finish downloading and still report
+            // itself incomplete, and the model waiting on those pieces would never load. The end of a
+            // transfer is exactly when the reader is waiting.
+            if (PiecesStored + _pendingPieces.Count >= _pieceCount)
+                await CommitWritablesAsync().ConfigureAwait(false);
+            return;
+        }
         MarkStored(index);
         if (_bitfieldDirty && PiecesStored % 64 == 0) await SaveBitfieldAsync().ConfigureAwait(false);
     }
@@ -761,6 +838,10 @@ public sealed class AsyncFSFileStore : IJSChunkStore
     /// <inheritdoc/>
     public async ValueTask DisposeAsync()
     {
+        // Commit FIRST: anything still in an open writable is neither readable nor recorded, and closing
+        // is what makes it both.
+        try { await CommitWritablesAsync().ConfigureAwait(false); }
+        catch (Exception ex) { Console.WriteLine($"[filestore] final commit failed: {ex.Message}"); }
         if (_bitfieldDirty) await SaveBitfieldAsync().ConfigureAwait(false);
         foreach (var path in _syncHandles.Keys.ToList()) CloseSyncHandle(path);
         foreach (var path in _blobCache.Keys.ToList()) DropBlob(path);

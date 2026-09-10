@@ -66,8 +66,9 @@ the torrent advertise pieces it cannot serve.
 
 Copies an existing piece-per-file cache into the content-file layout OPFS-to-OPFS, so switching layouts
 does not mean re-downloading. Every piece moves as a JS `Uint8Array` - no managed copies. VERIFIED
-2026-09-09 on a real profile: 438 pieces of Qwen3-1.7B, 175 of LFM2-1.2B and 163 of an ONNX model all
-migrated with no network fetch.
+2026-09-09 against a real model cache: **13 torrents, 3030 pieces, ~12 GB, zero network fetches** -
+including gemma4 at 1760 pieces and Qwen3-4B at 596 - and all 13 old directories reclaimed
+(13 removed, 0 kept, 0 failures).
 
 🔴 The old directory is removed ONLY after every piece it held is verified readable from the new store.
 Migration copies rather than moves (a partial copy has to be able to fall back), so without that step a

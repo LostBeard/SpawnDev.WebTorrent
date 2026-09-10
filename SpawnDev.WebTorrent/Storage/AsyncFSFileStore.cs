@@ -466,18 +466,23 @@ public sealed class AsyncFSFileStore : IJSChunkStore
     /// </remarks>
     private async Task MarkStoredWhenReadableAsync(int index)
     {
-        if (_writables.Count > 0)
-        {
-            _pendingPieces.Add(index);
-            // ⚠️ COMMIT THE TAIL. Without this the last (fewer than WritesPerCommit) pieces of a download
-            // would sit uncommitted until disposal - so a torrent could finish downloading and still report
-            // itself incomplete, and the model waiting on those pieces would never load. The end of a
-            // transfer is exactly when the reader is waiting.
-            if (PiecesStored + _pendingPieces.Count >= _pieceCount)
-                await CommitWritablesAsync().ConfigureAwait(false);
-            return;
-        }
+        // 🔴 THE BIT IS SET NOW, NOT AT THE COMMIT. Deferring it broke the contract this store has with the
+        // torrent and produced, on a real run:
+        //
+        //   "Piece 0 is marked verified in the bitfield but the store cannot serve it ... Store says: the
+        //    bitfield does not claim piece 0"
+        //
+        // A successful Put IS the store saying it holds the piece; the torrent records it verified on that
+        // basis. Withholding the bit until a later commit made the two disagree, and the load simply hung.
+        // Correctness of the handshake beats the tidiness of "the bit means it is on disk".
         MarkStored(index);
+        // Readability is kept honest at the READ end instead - see GetUint8ArrayAsync, which commits before
+        // serving a piece whose bytes may still be in an open writable.
+        if (_writables.Count > 0) { _pendingPieces.Add(index); return; }
+        // ⚠️ The PERSISTED bitfield still only advances at a commit (CommitWritablesAsync saves it), so a
+        // crash can lose bytes but can never leave a bitfield on disk claiming pieces that were never
+        // written. Over-reporting across a restart is the failure that matters; in-memory it is not,
+        // because the writable is right there to be committed.
         if (_bitfieldDirty && PiecesStored % 64 == 0) await SaveBitfieldAsync().ConfigureAwait(false);
     }
 
@@ -559,6 +564,12 @@ public sealed class AsyncFSFileStore : IJSChunkStore
         await EnsureInitializedAsync().ConfigureAwait(false);
         if (index < 0 || index >= _pieceCount) return null;
         if (!_bitfield[index]) return null;
+
+        // 🔴 A piece whose bytes are still inside an open writable is INVISIBLE to a reader - createWritable
+        // buffers into a swap file and only publishes on close(). Committing here is what lets writes be
+        // batched (the expensive part is the OPEN, which copies the whole file) without a reader ever being
+        // told "yes" by the bitfield and then handed nothing.
+        if (_pendingPieces.Contains(index)) await CommitWritablesAsync().ConfigureAwait(false);
 
         var (pieceOffset, pieceLength) = PieceRange(index);
         if (offset >= pieceLength) return null;

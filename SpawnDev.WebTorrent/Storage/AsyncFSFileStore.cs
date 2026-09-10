@@ -592,9 +592,14 @@ public sealed class AsyncFSFileStore : IJSChunkStore
     /// <param name="pieceCount">Pieces in the torrent.</param>
     /// <param name="progress">Called with (copied, total) as it goes.</param>
     /// <param name="ct">Cancellation. Cancelling leaves the store consistent, just incomplete.</param>
-    /// <returns>How many pieces were copied.</returns>
-    public async Task<int> MigrateFromAsync(IJSChunkStore source, int pieceCount,
-        Action<int, int>? progress = null, CancellationToken ct = default)
+    /// <returns>
+    /// How many pieces were copied, and whether EVERY piece the source held is now present here - the
+    /// precondition for deleting the source. Reported from this loop rather than re-derived afterwards
+    /// because the caller would otherwise ask both stores about every piece a second time, and on the
+    /// piece layout each of those questions is two OPFS metadata calls.
+    /// </returns>
+    public async Task<(int Copied, bool SourceFullyCovered)> MigrateFromAsync(IJSChunkStore source,
+        int pieceCount, Action<int, int>? progress = null, CancellationToken ct = default)
     {
         await EnsureInitializedAsync().ConfigureAwait(false);
         if (!source.SupportsUint8Array)
@@ -603,6 +608,7 @@ public sealed class AsyncFSFileStore : IJSChunkStore
                 + "through the .NET heap - which is the cost this layout exists to remove.");
 
         int copied = 0;
+        bool covered = true;
         try
         {
             for (int i = 0; i < pieceCount && i < _bitfield.Length; i++)
@@ -612,18 +618,24 @@ public sealed class AsyncFSFileStore : IJSChunkStore
                 if (!await source.PieceExistsAsync(i, ct).ConfigureAwait(false)) continue;
 
                 using var ua = await source.GetUint8ArrayAsync(i, ct).ConfigureAwait(false);
-                if (ua == null) continue;                      // source lost it - leave the bit clear
+                if (ua == null) { covered = false; continue; } // source lost it - leave the bit clear
                 await PutUint8ArrayAsync(i, ua, ct).ConfigureAwait(false);
+                if (!_bitfield[i]) covered = false;            // the write did not take
                 copied++;
                 progress?.Invoke(copied, pieceCount);
             }
+        }
+        catch (OperationCanceledException)
+        {
+            covered = false;                                   // an interrupted pass has not covered anything
+            throw;
         }
         finally
         {
             // Even on cancellation, persist what really landed - those pieces are on disk either way.
             await SaveBitfieldAsync().ConfigureAwait(false);
         }
-        return copied;
+        return (copied, covered);
     }
 
     /// <inheritdoc/>

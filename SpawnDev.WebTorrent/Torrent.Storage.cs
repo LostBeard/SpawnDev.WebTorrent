@@ -38,7 +38,8 @@ public partial class Torrent
         try
         {
             if (!old.SupportsUint8Array) return 0;
-            var copied = await fileStore.MigrateFromAsync(old, PieceCount, progress, ct).ConfigureAwait(false);
+            var (copied, covered) = await fileStore.MigrateFromAsync(old, PieceCount, progress, ct)
+                .ConfigureAwait(false);
             if (copied == 0) return 0;
 
             // The in-memory bitfield is what the download scheduler reads, so it has to learn what just
@@ -59,13 +60,7 @@ public partial class Torrent
             // 7 GB model occupies 14 GB of a quota it was already close to. Only after every piece the
             // source claimed is verified readable from the NEW store: an unverified delete would turn a
             // half-finished migration into permanent data loss, and re-downloading beats that.
-            bool complete = true;
-            for (int i = 0; i < PieceCount && complete; i++)
-            {
-                if (!await old.PieceExistsAsync(i, ct).ConfigureAwait(false)) continue;   // source never had it
-                if (!await fileStore.PieceExistsAsync(i, ct).ConfigureAwait(false)) complete = false;
-            }
-            if (complete)
+            if (covered)
             {
                 try
                 {
@@ -82,8 +77,8 @@ public partial class Torrent
             }
             else
             {
-                Console.WriteLine($"[Torrent] '{Name}': KEEPING {oldBase} - the migration did not carry every "
-                    + "piece across, so the old copy is still the complete one.");
+                Console.WriteLine($"[Torrent] '{Name}': KEEPING {oldBase} - the migration did not carry "
+                    + "every piece across, so the old copy is still the complete one.");
             }
             return copied;
         }

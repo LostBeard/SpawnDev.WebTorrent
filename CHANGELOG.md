@@ -1,6 +1,6 @@
 # Changelog
 
-## 4.2.6 (unreleased) - store a torrent's files AS files, and say when the fast read path is off
+## 4.2.6 - store a torrent's files AS files, and say when the fast read path is off
 
 ### Added - `TorrentStorageLayout.ContentFiles` / `AsyncFSFileStore`
 

@@ -336,6 +336,221 @@ public static class OpfsLayoutProbe
         }
     }
 
+    /// <summary>One contention measurement: the same ranged reads, idle and under a concurrent writer.</summary>
+    /// <param name="Reads">Ranged reads performed in each pass.</param>
+    /// <param name="ReadBytes">Bytes per read.</param>
+    /// <param name="IdleReadMs">Total read time with nothing else touching OPFS.</param>
+    /// <param name="LoadedReadMs">Total read time while a writer is hammering a different file.</param>
+    /// <param name="WritesCompleted">Writes the background writer got through during the loaded pass.</param>
+    /// <param name="SyncAvailable">False means the Blob path was measured instead.</param>
+    public sealed record ContentionMeasurement(
+        int Reads,
+        int ReadBytes,
+        double IdleReadMs,
+        double LoadedReadMs,
+        long WritesCompleted,
+        bool SyncAvailable)
+    {
+        /// <summary>How much slower reads are while something else is writing. 1.0 = no effect.</summary>
+        public double Ratio => IdleReadMs > 0 ? LoadedReadMs / IdleReadMs : 0;
+    }
+
+    /// <summary>
+    /// Does a concurrent OPFS writer slow ranged reads on an ALREADY-OPEN handle?
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 🔴 WHAT THIS IS FOR. A real model load measured 172 ms per file open while the torrent was still
+    /// downloading, against 0.39-0.46 ms for the same code path idle - a 370x gap that directory size,
+    /// held locks and entry size were all measured and cleared of. Concurrent writing was the remaining
+    /// candidate and was NEVER TESTED, so it stayed a guess and was recorded as one.
+    /// </para>
+    /// <para>
+    /// ⚠️ IT ASKS THE VERSION OF THE QUESTION THAT STILL MATTERS. Under the content-file layout a load
+    /// performs ONE open and then hundreds of ranged reads on that open handle, so inflated OPEN cost is
+    /// no longer interesting - inflated READ cost is, because the demo loads a model while its remaining
+    /// pieces are still arriving. The writer therefore targets a DIFFERENT file: this measures
+    /// whole-filesystem interference, not lock contention on the file being read (which is separately
+    /// impossible - a sync handle holds that file exclusively).
+    /// </para>
+    /// <para>
+    /// ⚠️ The writer is cooperative, not parallel. WASM is single-threaded, so it only advances when the
+    /// read loop awaits - which is exactly how the real download interleaves with the real load, and is
+    /// why the result is representative rather than an artificial worst case.
+    /// </para>
+    /// </remarks>
+    /// <param name="fs">The OPFS filesystem.</param>
+    /// <param name="reads">Ranged reads per pass.</param>
+    /// <param name="readBytes">Bytes per read.</param>
+    /// <param name="writeBytes">Size of each background write.</param>
+    /// <param name="log">Progress.</param>
+    /// <param name="ct">Cancellation.</param>
+    public static async Task<ContentionMeasurement> MeasureWriteContentionAsync(
+        IAsyncFS fs, int reads = 310, int readBytes = 2 * 1024 * 1024, int writeBytes = 4 * 1024 * 1024,
+        Action<string>? log = null, CancellationToken ct = default)
+    {
+        if (fs is not IAsyncBrowserFileSystem browserFs)
+            throw new NotSupportedException(
+                $"MeasureWriteContentionAsync needs an IAsyncBrowserFileSystem (got {fs.GetType().Name}).");
+
+        var readDirPath = $"{ProbeRoot}/contend-read";
+        var writeDirPath = $"{ProbeRoot}/contend-write";
+        await fs.CreateDirectory(readDirPath);
+        await fs.CreateDirectory(writeDirPath);
+        var readDir = await browserFs.GetDirectoryHandle(readDirPath)
+            ?? throw new InvalidOperationException($"could not open {readDirPath}");
+        var writeDir = await browserFs.GetDirectoryHandle(writeDirPath)
+            ?? throw new InvalidOperationException($"could not open {writeDirPath}");
+
+        long total = (long)reads * readBytes;
+        using var readBuf = new Uint8Array(readBytes);
+        using var writeBuf = new Uint8Array(writeBytes);
+
+        try
+        {
+            bool syncAvailable;
+            {
+                using var probeHandle = await readDir.GetFileHandle("_synccheck", create: true);
+                try
+                {
+                    var sync = await probeHandle.CreateSyncAccessHandle();
+                    syncAvailable = sync != null;
+                    if (sync != null) { sync.Close(); sync.Dispose(); }
+                }
+                catch { syncAvailable = false; }
+                try { await readDir.RemoveEntry("_synccheck"); } catch { }
+            }
+
+            // ── The file being read: one content file, laid out once ─────────────────────────────────
+            log?.Invoke($"[contend] writing the {total / 1048576.0:F0} MB file to read from...");
+            {
+                using var h = await readDir.GetFileHandle("whole.bin", create: true);
+                if (syncAvailable)
+                {
+                    var sync = await h.CreateSyncAccessHandle();
+                    try
+                    {
+                        for (int i = 0; i < reads; i++)
+                            sync!.Write(readBuf, new FileSystemSyncReadWriteOptions { At = (long)i * readBytes });
+                        sync!.Flush();
+                    }
+                    finally { sync!.Close(); sync.Dispose(); }
+                }
+                else
+                {
+                    var w = await h.CreateWritable(new FileSystemCreateWritableOptions { KeepExistingData = true });
+                    try
+                    {
+                        for (int i = 0; i < reads; i++)
+                        {
+                            await w.Seek((ulong)((long)i * readBytes));
+                            await w.Write(readBuf);
+                        }
+                    }
+                    finally { await w.Close(); w.Dispose(); }
+                }
+            }
+
+            // ── Pass A: reads with nothing else running ──────────────────────────────────────────────
+            log?.Invoke($"[contend] pass A: {reads} x {readBytes} B reads, idle...");
+            var idleMs = await ReadPassAsync(readDir, readBuf, reads, readBytes, syncAvailable, ct);
+
+            // ── Pass B: the same reads while a writer hammers a DIFFERENT file ───────────────────────
+            log?.Invoke($"[contend] pass B: the same reads while writing {writeBytes} B chunks elsewhere...");
+            long writes = 0;
+            using var writerStop = new CancellationTokenSource();
+            var writer = WriteLoopAsync(writeDir, writeBuf, writeBytes, syncAvailable,
+                () => writes++, writerStop.Token);
+            double loadedMs;
+            try { loadedMs = await ReadPassAsync(readDir, readBuf, reads, readBytes, syncAvailable, ct); }
+            finally
+            {
+                writerStop.Cancel();
+                try { await writer; } catch { /* cancelled, or the write path gave out - either is fine */ }
+            }
+
+            return new ContentionMeasurement(reads, readBytes, idleMs, loadedMs, writes, syncAvailable);
+        }
+        finally
+        {
+            readDir.Dispose();
+            writeDir.Dispose();
+            try { if (await fs.DirectoryExists(ProbeRoot)) await fs.Remove(ProbeRoot, recursive: true); }
+            catch (Exception ex) { log?.Invoke($"[contend] cleanup failed: {ex.Message}"); }
+        }
+    }
+
+    /// <summary>One pass of ranged reads over a single file, timing only the reads.</summary>
+    private static async Task<double> ReadPassAsync(FileSystemDirectoryHandle dir, Uint8Array buf,
+        int reads, int readBytes, bool syncAvailable, CancellationToken ct)
+    {
+        double ms = 0;
+        var h = await dir.GetFileHandle("whole.bin", create: false)
+            ?? throw new InvalidOperationException("the file to read from is gone");
+        if (syncAvailable)
+        {
+            var sync = await h.CreateSyncAccessHandle();
+            h.Dispose();
+            try
+            {
+                for (int i = 0; i < reads; i++)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var t = System.Diagnostics.Stopwatch.GetTimestamp();
+                    var got = sync!.Read(buf, new FileSystemSyncReadWriteOptions { At = (long)i * readBytes });
+                    ms += System.Diagnostics.Stopwatch.GetElapsedTime(t).TotalMilliseconds;
+                    if (got != readBytes)
+                        throw new InvalidOperationException(
+                            $"read {got} of {readBytes} B at {(long)i * readBytes} - the probe cannot read "
+                            + "back what it wrote, so its timings would describe nothing");
+                    // Let anything else pending actually run. Without this the synchronous reads would
+                    // never yield and the "under load" pass would measure no contention BY CONSTRUCTION.
+                    await Task.Yield();
+                }
+            }
+            finally { sync!.Close(); sync.Dispose(); }
+            return ms;
+        }
+
+        using var file = await h.GetFile();
+        h.Dispose();
+        for (int i = 0; i < reads; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var t = System.Diagnostics.Stopwatch.GetTimestamp();
+            using var slice = file.Slice((long)i * readBytes, (long)i * readBytes + readBytes);
+            using var ab = await slice.ArrayBuffer();
+            using var ua = new Uint8Array(ab);
+            ms += System.Diagnostics.Stopwatch.GetElapsedTime(t).TotalMilliseconds;
+            if (ua.Length != readBytes)
+                throw new InvalidOperationException($"Blob read gave {ua.Length} of {readBytes} B");
+        }
+        return ms;
+    }
+
+    /// <summary>Write chunks into a rotating set of files until cancelled. The interference source.</summary>
+    private static async Task WriteLoopAsync(FileSystemDirectoryHandle dir, Uint8Array buf, int writeBytes,
+        bool syncAvailable, Action onWrite, CancellationToken ct)
+    {
+        int n = 0;
+        while (!ct.IsCancellationRequested)
+        {
+            // A fresh file every few writes, so this exercises entry creation as well as raw writing -
+            // a torrent download does both.
+            var name = $"chunk_{n % 64}";
+            try
+            {
+                using var h = await dir.GetFileHandle(name, create: true);
+                await WriteAsync(h, 0, buf, syncAvailable);
+                onWrite();
+            }
+            catch (OperationCanceledException) { return; }
+            catch { return; }            // the filesystem gave out; the read pass still has its numbers
+            n++;
+            await Task.Yield();
+        }
+    }
+
     /// <summary>Write the payload at an offset, via whichever API this context actually has.</summary>
     private static async Task WriteAsync(FileSystemFileHandle h, long at, Uint8Array payload, bool syncAvailable)
     {

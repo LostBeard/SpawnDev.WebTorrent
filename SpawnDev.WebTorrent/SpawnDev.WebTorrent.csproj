@@ -9,7 +9,7 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-		<Version>4.2.7-local.6</Version>
+		<Version>4.2.7</Version>
 		<PackageReleaseNotes>v4.2.4 - Recover from a cleared OPFS cache instead of throwing. OPFS is not ours alone: the browser evicts origin storage under pressure, the user can clear site data, and any other holder of the origin can remove the directory - and a torrent restored from that cache then holds a bitfield that is simply wrong. Until now the only symptom was an unrecoverable InvalidOperationException from the first read. A read that finds the bitfield claiming a piece the store cannot serve now clears the bit, re-arms the piece, resumes if paused and re-fetches it (at most once per piece per read, so a store that genuinely cannot hold it still fails loudly), and it re-persists the .torrent because the pieces are not the whole cache entry. PersistStateAsync no longer leaves a half entry - a state.json without its .torrent cannot be restored. Both piece-completion paths now write to the store BEFORE setting the bitfield bit unconditionally; the zero-copy path wrote only when the store was an AsyncFSChunkStore and set the bit regardless. AsyncFSChunkStore reports a PiecesWritten count and checks DirectoryExists before listing, so "no file" can finally distinguish "never written" from "written and lost".</PackageReleaseNotes>
 		<GeneratePackageOnBuild>True</GeneratePackageOnBuild>
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>

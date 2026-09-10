@@ -1,5 +1,57 @@
 # Changelog
 
+## 4.2.7 - the shared-worker path, which no gate could see
+
+🔴 **Every defect below is in 4.2.6 and only bites in a SHARED worker** - the default for a normal
+visitor. `createSyncAccessHandle` is DEDICATED-worker only, so this store's `createWritable`/Blob fallback
+runs exactly where a shared worker runs, and a shared worker's console does not reach the page. Every gate
+in the stack passes `?worker=dedicated` simply to be able to read anything, so the gates were selecting
+the configuration in which none of this can happen. Upgrade from 4.2.6.
+
+### Fixed - `createWritable` was opened once per PIECE, and it copies the whole file
+
+MEASURED inside a live shared worker, by wrapping the browser's own `FileSystemFileHandle.prototype`:
+
+```
+opens:  5   openMs: 25850   -> 5.2 SECONDS each
+writes: 4   bytes: 16 MiB   writeMs: 65.8   -> 16 ms per 4 MiB piece
+closes: 4   closeMs: 476.6
+```
+
+`createWritable({keepExistingData:true})` copies the ENTIRE existing file into a swap file before you may
+touch it - 2.5 GB at ~480 MB/s. Opened per piece, a 1.8 GB model pays roughly 450 x 5.2 s: about forty
+minutes of file copying to write sixteen milliseconds of data each time, **quadratic in file size**. The
+writing itself was never the cost. One writable is now held open per content file and committed every 64
+writes.
+
+⚠️ Data in a writable is not readable until `close()`, and this store is read WHILE it is written - hence
+batching rather than holding it open indefinitely. 🔴 A piece's bit is set only once its bytes are
+READABLE, so `MarkStored` is deferred to the commit; a bit set at write time would advertise a piece
+still sitting in a swap file, and a bitfield that over-reports is the one failure mode that matters. The
+tail commits as soon as the last piece is pending, or a finished torrent would report itself incomplete.
+
+### Fixed - a content file was sized by how much had ARRIVED
+
+`GetSyncHandleAsync` creates each file at its full length "so `GetSize()` means what it says"; the
+writable path did not. Under `ContentFiles` a consumer reads the content file DIRECTLY, so a
+half-downloaded model was not detectably incomplete - just a shorter file. MEASURED: whisper-tiny's
+`encoder_model.onnx` at 29,360,128 bytes, exactly 7 x 4 MiB, against a true 32,909,539. The ONNX parser
+ran off the end and threw `Unknown wire type: 6` (protobuf wire types stop at 5), surfacing to the user as
+`POST /api/transcribe -> 500`. Now truncated to the file's length on first write.
+
+### Fixed - a cached `File` snapshot went stale on every read
+
+`getFile()` returns a snapshot the browser invalidates the moment the file changes. Caching one per
+content file therefore did not save a read - it made every read throw, be caught, re-acquire and redo the
+work, reported by the browser as "permission problems ... after a reference to a file was acquired". A
+snapshot is now cached only once `PiecesStored >= _pieceCount`; while the file is still arriving the
+handle is taken fresh per read. The stale notice is logged once per file, not once per read.
+
+### Added - `AsyncFSFileStore.ForceWritableFallback`
+
+Forces the fallback where sync handles exist, so it can be exercised in a DEDICATED worker whose console
+is visible and where a gate can assert on it. Diagnostic; never set it in production.
+
 ## 4.2.6 - store a torrent's files AS files, and say when the fast read path is off
 
 ### Added - `TorrentStorageLayout.ContentFiles` / `AsyncFSFileStore`

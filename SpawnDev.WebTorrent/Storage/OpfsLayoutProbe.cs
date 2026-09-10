@@ -44,6 +44,7 @@ public static class OpfsLayoutProbe
         int EntryCount,
         int EntryBytes,
         int HeldHandles,
+        bool SyncAvailable,
         double PieceResolveMs,
         double PieceCreateMs,
         double PieceReadMs,
@@ -51,14 +52,22 @@ public static class OpfsLayoutProbe
         double FileResolveMs,
         double FileCreateMs,
         double FileReadMs,
-        double FileCloseMs)
+        double FileCloseMs,
+        double PieceBlobOpenMs,
+        double PieceBlobReadMs,
+        double FileBlobOpenMs,
+        double FileBlobReadMs)
     {
         /// <summary>Total bytes read by each pass.</summary>
         public long TotalBytes => (long)EntryCount * EntryBytes;
-        /// <summary>Whole piece-layout pass.</summary>
+        /// <summary>Whole piece-layout pass over sync access handles. Zero when sync is unavailable.</summary>
         public double PieceTotalMs => PieceResolveMs + PieceCreateMs + PieceReadMs + PieceCloseMs;
-        /// <summary>Whole one-file pass.</summary>
+        /// <summary>Whole one-file pass over a sync access handle. Zero when sync is unavailable.</summary>
         public double FileTotalMs => FileResolveMs + FileCreateMs + FileReadMs + FileCloseMs;
+        /// <summary>Whole piece-layout pass over the Blob fallback - one getFile PER PIECE.</summary>
+        public double PieceBlobTotalMs => PieceBlobOpenMs + PieceBlobReadMs;
+        /// <summary>Whole one-file pass over the Blob fallback - one getFile for the WHOLE file.</summary>
+        public double FileBlobTotalMs => FileBlobOpenMs + FileBlobReadMs;
         /// <summary>Milliseconds of <c>getFileHandle</c> per entry - the number the real load blames.</summary>
         public double PieceResolvePerEntryMs => EntryCount > 0 ? PieceResolveMs / EntryCount : 0;
     }
@@ -105,9 +114,9 @@ public static class OpfsLayoutProbe
         IAsyncFS fs, IAsyncBrowserFileSystem browserFs,
         int count, int bytes, int held, Action<string>? log, CancellationToken ct)
     {
-        // ⚠️ SEPARATE DIRECTORIES, deliberately. Putting whole.bin beside N piece files would make the
-        // one-file pass pay the very directory-size cost this is trying to attribute, and the comparison
-        // would report no difference for the wrong reason.
+        // WARNING: SEPARATE DIRECTORIES, deliberately. Putting whole.bin beside N piece files would make
+        // the one-file pass pay the very directory-size cost this is trying to attribute, and the
+        // comparison would report no difference for the wrong reason.
         var pieceDirPath = $"{ProbeRoot}/pieces-{count}-{bytes}";
         var wholeDirPath = $"{ProbeRoot}/whole-{count}-{bytes}";
         await fs.CreateDirectory(pieceDirPath);
@@ -118,110 +127,143 @@ public static class OpfsLayoutProbe
         var wholeDir = await browserFs.GetDirectoryHandle(wholeDirPath)
             ?? throw new InvalidOperationException($"could not open {wholeDirPath} after creating it");
 
-        // One JS-side buffer for every write and every read. Bulk bytes never touch the .NET heap
-        // (the byte[] Write overload marshals a copy per call), and reusing it keeps allocation out of
-        // the timings - allocation is measured separately in the real load and was not the cost.
+        // One JS-side buffer for every write and every read. Bulk bytes never touch the .NET heap (the
+        // byte[] Write overload marshals a copy per call), and reusing it keeps allocation out of the
+        // timings - allocation is measured separately in the real load and was not the cost.
         using var payload = new Uint8Array(bytes);
         using var readBuf = new Uint8Array(bytes);
 
         try
         {
-            // ── Write the piece layout ──────────────────────────────────────────────────────────────
+            // -- Is the sync API here at all? ---------------------------------------------------------
+            // THIS DECIDES WHAT THE RUN CAN MEASURE, so it is established once, up front, rather than
+            // discovered as an exception half way through. createSyncAccessHandle() exists ONLY in a
+            // DEDICATED worker: in a shared worker or on the main thread it is undefined, and BOTH OPFS
+            // stores then fall back to getFile()+slice()+arrayBuffer(). An earlier version of this probe
+            // THREW there - so the one context whose cost most needed measuring, the shared worker a
+            // normal visitor actually gets, was the one context it refused to run in.
+            bool syncAvailable;
+            {
+                using var probeHandle = await wholeDir.GetFileHandle("_synccheck", create: true);
+                try
+                {
+                    var sync = await probeHandle.CreateSyncAccessHandle();
+                    syncAvailable = sync != null;
+                    if (sync != null) { sync.Close(); sync.Dispose(); }
+                }
+                catch { syncAvailable = false; }
+                try { await wholeDir.RemoveEntry("_synccheck"); } catch { }
+            }
+            log?.Invoke($"[layout-probe] {count} x {bytes} B: sync access handles "
+                + (syncAvailable ? "AVAILABLE (dedicated worker)" : "UNAVAILABLE - Blob path only"));
+
+            // -- Lay the bytes out both ways ----------------------------------------------------------
             log?.Invoke($"[layout-probe] writing {count} x {bytes} B piece files...");
             for (int i = 0; i < count; i++)
             {
                 ct.ThrowIfCancellationRequested();
                 using var h = await pieceDir.GetFileHandle($"piece_{i}", create: true);
-                var sync = await h.CreateSyncAccessHandle()
-                    ?? throw new NotSupportedException(
-                        "createSyncAccessHandle() returned null - the probe must run in a WORKER, because "
-                        + "that is the API the production read path uses.");
-                try { sync.Write(payload, new FileSystemSyncReadWriteOptions { At = 0 }); sync.Flush(); }
-                finally { sync.Close(); sync.Dispose(); }
+                await WriteAsync(h, 0, payload, syncAvailable);
             }
 
-            // ── Write the same bytes as one file ────────────────────────────────────────────────────
             log?.Invoke($"[layout-probe] writing 1 x {(long)count * bytes} B file...");
             {
                 using var h = await wholeDir.GetFileHandle("whole.bin", create: true);
-                var sync = await h.CreateSyncAccessHandle()!;
-                try
+                if (syncAvailable)
                 {
-                    for (int i = 0; i < count; i++)
-                        sync.Write(payload, new FileSystemSyncReadWriteOptions { At = (long)i * bytes });
-                    sync.Flush();
-                }
-                finally { sync.Close(); sync.Dispose(); }
-            }
-
-            // ── Read the piece layout, exactly as AsyncFSChunkStore does ────────────────────────────
-            double pResolve = 0, pCreate = 0, pRead = 0, pClose = 0;
-            var openHandles = new Queue<FileSystemSyncAccessHandle>();
-            try
-            {
-                for (int i = 0; i < count; i++)
-                {
-                    ct.ThrowIfCancellationRequested();
-
-                    var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
-                    var h = await pieceDir.GetFileHandle($"piece_{i}", create: false);
-                    pResolve += System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
-
-                    var t1 = System.Diagnostics.Stopwatch.GetTimestamp();
-                    var sync = await h!.CreateSyncAccessHandle();
-                    pCreate += System.Diagnostics.Stopwatch.GetElapsedTime(t1).TotalMilliseconds;
-                    h.Dispose();
-
-                    var t2 = System.Diagnostics.Stopwatch.GetTimestamp();
-                    var read = sync.Read(readBuf, new FileSystemSyncReadWriteOptions { At = 0 });
-                    pRead += System.Diagnostics.Stopwatch.GetElapsedTime(t2).TotalMilliseconds;
-                    if (read != bytes)
-                        throw new InvalidOperationException(
-                            $"piece_{i} read {read} of {bytes} bytes - the probe wrote a file it cannot read "
-                            + "back, so its timings would describe nothing.");
-
-                    // Mirror the store's LRU: hold `held` locks open while looking the next entry up.
-                    openHandles.Enqueue(sync);
-                    while (openHandles.Count > held)
+                    var sync = await h.CreateSyncAccessHandle();
+                    try
                     {
-                        var evict = openHandles.Dequeue();
-                        var t3 = System.Diagnostics.Stopwatch.GetTimestamp();
-                        evict.Close();
-                        pClose += System.Diagnostics.Stopwatch.GetElapsedTime(t3).TotalMilliseconds;
-                        evict.Dispose();
+                        for (int i = 0; i < count; i++)
+                            sync!.Write(payload, new FileSystemSyncReadWriteOptions { At = (long)i * bytes });
+                        sync!.Flush();
                     }
+                    finally { sync!.Close(); sync.Dispose(); }
                 }
-            }
-            finally
-            {
-                while (openHandles.Count > 0)
+                else
                 {
-                    var h = openHandles.Dequeue();
-                    try { h.Close(); } catch { }
-                    try { h.Dispose(); } catch { }
+                    // WARNING: ONE writable for all N writes. Opening a writable per write would dominate
+                    // the setup cost and, with keepExistingData, copy the whole file every time.
+                    var w = await h.CreateWritable(new FileSystemCreateWritableOptions { KeepExistingData = true });
+                    try
+                    {
+                        for (int i = 0; i < count; i++)
+                        {
+                            await w.Seek((ulong)((long)i * bytes));
+                            await w.Write(payload);
+                        }
+                    }
+                    finally { await w.Close(); w.Dispose(); }
                 }
             }
 
-            // ── Read the same bytes from one file: one resolve, one open, N ranged reads ────────────
-            double fResolve, fCreate, fRead = 0, fClose;
+            // -- Pass 1: sync access handles, the production fast path (dedicated worker only) ---------
+            double pResolve = 0, pCreate = 0, pRead = 0, pClose = 0;
+            double fResolve = 0, fCreate = 0, fRead = 0, fClose = 0;
+            if (syncAvailable)
             {
-                var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
-                var h = await wholeDir.GetFileHandle("whole.bin", create: false);
-                fResolve = System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
-
-                var t1 = System.Diagnostics.Stopwatch.GetTimestamp();
-                var sync = await h!.CreateSyncAccessHandle();
-                fCreate = System.Diagnostics.Stopwatch.GetElapsedTime(t1).TotalMilliseconds;
-                h.Dispose();
-
+                var openHandles = new Queue<FileSystemSyncAccessHandle>();
                 try
                 {
                     for (int i = 0; i < count; i++)
                     {
                         ct.ThrowIfCancellationRequested();
+
+                        var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+                        var h = await pieceDir.GetFileHandle($"piece_{i}", create: false);
+                        pResolve += System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+
+                        var t1 = System.Diagnostics.Stopwatch.GetTimestamp();
+                        var sync = await h!.CreateSyncAccessHandle();
+                        pCreate += System.Diagnostics.Stopwatch.GetElapsedTime(t1).TotalMilliseconds;
+                        h.Dispose();
+
                         var t2 = System.Diagnostics.Stopwatch.GetTimestamp();
-                        var read = sync.Read(readBuf, new FileSystemSyncReadWriteOptions { At = (long)i * bytes });
-                        fRead += System.Diagnostics.Stopwatch.GetElapsedTime(t2).TotalMilliseconds;
+                        var read = sync!.Read(readBuf, new FileSystemSyncReadWriteOptions { At = 0 });
+                        pRead += System.Diagnostics.Stopwatch.GetElapsedTime(t2).TotalMilliseconds;
+                        if (read != bytes)
+                            throw new InvalidOperationException(
+                                $"piece_{i} read {read} of {bytes} bytes - the probe wrote a file it cannot "
+                                + "read back, so its timings would describe nothing.");
+
+                        // Mirror the store LRU: hold `held` locks open while looking the next entry up.
+                        openHandles.Enqueue(sync);
+                        while (openHandles.Count > held)
+                        {
+                            var evict = openHandles.Dequeue();
+                            var t3 = System.Diagnostics.Stopwatch.GetTimestamp();
+                            evict.Close();
+                            pClose += System.Diagnostics.Stopwatch.GetElapsedTime(t3).TotalMilliseconds;
+                            evict.Dispose();
+                        }
+                    }
+                }
+                finally
+                {
+                    while (openHandles.Count > 0)
+                    {
+                        var h = openHandles.Dequeue();
+                        try { h.Close(); } catch { }
+                        try { h.Dispose(); } catch { }
+                    }
+                }
+
+                var s0 = System.Diagnostics.Stopwatch.GetTimestamp();
+                var wh = await wholeDir.GetFileHandle("whole.bin", create: false);
+                fResolve = System.Diagnostics.Stopwatch.GetElapsedTime(s0).TotalMilliseconds;
+
+                var s1 = System.Diagnostics.Stopwatch.GetTimestamp();
+                var wsync = await wh!.CreateSyncAccessHandle();
+                fCreate = System.Diagnostics.Stopwatch.GetElapsedTime(s1).TotalMilliseconds;
+                wh.Dispose();
+                try
+                {
+                    for (int i = 0; i < count; i++)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        var s2 = System.Diagnostics.Stopwatch.GetTimestamp();
+                        var read = wsync!.Read(readBuf, new FileSystemSyncReadWriteOptions { At = (long)i * bytes });
+                        fRead += System.Diagnostics.Stopwatch.GetElapsedTime(s2).TotalMilliseconds;
                         if (read != bytes)
                             throw new InvalidOperationException(
                                 $"whole.bin read {read} of {bytes} bytes at offset {(long)i * bytes} - the "
@@ -230,16 +272,62 @@ public static class OpfsLayoutProbe
                 }
                 finally
                 {
-                    var t3 = System.Diagnostics.Stopwatch.GetTimestamp();
-                    sync.Close();
-                    fClose = System.Diagnostics.Stopwatch.GetElapsedTime(t3).TotalMilliseconds;
-                    sync.Dispose();
+                    var s3 = System.Diagnostics.Stopwatch.GetTimestamp();
+                    wsync!.Close();
+                    fClose = System.Diagnostics.Stopwatch.GetElapsedTime(s3).TotalMilliseconds;
+                    wsync.Dispose();
                 }
             }
 
-            return new LayoutMeasurement(count, bytes, held,
+            // -- Pass 2: the Blob fallback, which is what a SHARED worker is stuck with ----------------
+            // THE ASYMMETRY HERE IS THE FINDING. The piece layout must getFile() per PIECE, because a File
+            // is an immutable snapshot of one entry. The content layout opens ONE File for the whole file
+            // and slices it per read, which is exactly what AsyncFSFileStore's fallback does - so the
+            // content layout shrinks the shared-worker penalty as well as the dedicated-worker one.
+            double pbOpen = 0, pbRead = 0, fbOpen = 0, fbRead = 0;
+            for (int i = 0; i < count; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+                var h = await pieceDir.GetFileHandle($"piece_{i}", create: false);
+                using var file = await h!.GetFile();
+                pbOpen += System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+                h.Dispose();
+
+                var t1 = System.Diagnostics.Stopwatch.GetTimestamp();
+                using var slice = file.Slice(0, bytes);
+                using var ab = await slice.ArrayBuffer();
+                using var ua = new Uint8Array(ab);
+                pbRead += System.Diagnostics.Stopwatch.GetElapsedTime(t1).TotalMilliseconds;
+                if (ua.Length != bytes)
+                    throw new InvalidOperationException(
+                        $"Blob read of piece_{i} gave {ua.Length} of {bytes} B");
+            }
+            {
+                var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+                var h = await wholeDir.GetFileHandle("whole.bin", create: false);
+                using var file = await h!.GetFile();
+                fbOpen = System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+                h.Dispose();
+
+                for (int i = 0; i < count; i++)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var t1 = System.Diagnostics.Stopwatch.GetTimestamp();
+                    using var slice = file.Slice((long)i * bytes, (long)i * bytes + bytes);
+                    using var ab = await slice.ArrayBuffer();
+                    using var ua = new Uint8Array(ab);
+                    fbRead += System.Diagnostics.Stopwatch.GetElapsedTime(t1).TotalMilliseconds;
+                    if (ua.Length != bytes)
+                        throw new InvalidOperationException(
+                            $"Blob read of whole.bin at {(long)i * bytes} gave {ua.Length} of {bytes} B");
+                }
+            }
+
+            return new LayoutMeasurement(count, bytes, held, syncAvailable,
                 pResolve, pCreate, pRead, pClose,
-                fResolve, fCreate, fRead, fClose);
+                fResolve, fCreate, fRead, fClose,
+                pbOpen, pbRead, fbOpen, fbRead);
         }
         finally
         {
@@ -248,20 +336,53 @@ public static class OpfsLayoutProbe
         }
     }
 
+    /// <summary>Write the payload at an offset, via whichever API this context actually has.</summary>
+    private static async Task WriteAsync(FileSystemFileHandle h, long at, Uint8Array payload, bool syncAvailable)
+    {
+        if (syncAvailable)
+        {
+            var sync = await h.CreateSyncAccessHandle();
+            try { sync!.Write(payload, new FileSystemSyncReadWriteOptions { At = at }); sync.Flush(); }
+            finally { sync!.Close(); sync.Dispose(); }
+            return;
+        }
+        // WARNING: keepExistingData must stay true - without it createWritable starts from an EMPTY file.
+        var w = await h.CreateWritable(new FileSystemCreateWritableOptions { KeepExistingData = true });
+        try { await w.Seek((ulong)at); await w.Write(payload); }
+        finally { await w.Close(); w.Dispose(); }
+    }
+
     /// <summary>Format one measurement as the lines a console reader needs to draw a conclusion.</summary>
     public static IEnumerable<string> Describe(LayoutMeasurement m)
     {
         yield return $"[layout-probe] {m.EntryCount} entries x {m.EntryBytes} B "
-                   + $"({m.TotalBytes / 1048576.0:F1} MB), {m.HeldHandles} handle(s) held open";
-        yield return $"[layout-probe]   piece-per-file: {m.PieceTotalMs,9:F0} ms total "
-                   + $"= resolve {m.PieceResolveMs:F0} + create {m.PieceCreateMs:F0} "
-                   + $"+ read {m.PieceReadMs:F0} + close {m.PieceCloseMs:F0}";
-        yield return $"[layout-probe]   one file      : {m.FileTotalMs,9:F0} ms total "
-                   + $"= resolve {m.FileResolveMs:F1} + create {m.FileCreateMs:F1} "
-                   + $"+ read {m.FileReadMs:F0} + close {m.FileCloseMs:F1}";
-        yield return $"[layout-probe]   getFileHandle : {m.PieceResolvePerEntryMs:F2} ms per entry "
-                   + $"(the real qwen3:4b load measured 172 ms per entry at 681 entries)";
-        var ratio = m.FileTotalMs > 0 ? m.PieceTotalMs / m.FileTotalMs : 0;
-        yield return $"[layout-probe]   VERDICT       : pieces cost {ratio:F2}x the one-file layout";
+                   + $"({m.TotalBytes / 1048576.0:F1} MB), {m.HeldHandles} handle(s) held, sync "
+                   + (m.SyncAvailable ? "AVAILABLE" : "UNAVAILABLE");
+        if (m.SyncAvailable)
+        {
+            yield return $"[layout-probe]   SYNC  piece-per-file: {m.PieceTotalMs,9:F0} ms total "
+                       + $"= resolve {m.PieceResolveMs:F0} + create {m.PieceCreateMs:F0} "
+                       + $"+ read {m.PieceReadMs:F0} + close {m.PieceCloseMs:F0}";
+            yield return $"[layout-probe]   SYNC  one file      : {m.FileTotalMs,9:F0} ms total "
+                       + $"= resolve {m.FileResolveMs:F1} + create {m.FileCreateMs:F1} "
+                       + $"+ read {m.FileReadMs:F0} + close {m.FileCloseMs:F1}";
+            yield return $"[layout-probe]         getFileHandle : {m.PieceResolvePerEntryMs:F2} ms per entry";
+        }
+        yield return $"[layout-probe]   BLOB  piece-per-file: {m.PieceBlobTotalMs,9:F0} ms total "
+                   + $"= getFile {m.PieceBlobOpenMs:F0} (one PER PIECE) + slice/arrayBuffer {m.PieceBlobReadMs:F0}";
+        yield return $"[layout-probe]   BLOB  one file      : {m.FileBlobTotalMs,9:F0} ms total "
+                   + $"= getFile {m.FileBlobOpenMs:F1} (ONE, reused) + slice/arrayBuffer {m.FileBlobReadMs:F0}";
+
+        if (m.SyncAvailable && m.FileTotalMs > 0)
+            yield return $"[layout-probe]   VERDICT sync: pieces cost {m.PieceTotalMs / m.FileTotalMs:F2}x "
+                       + "the one-file layout";
+        if (m.FileBlobTotalMs > 0)
+            yield return $"[layout-probe]   VERDICT blob: pieces cost {m.PieceBlobTotalMs / m.FileBlobTotalMs:F2}x "
+                       + "the one-file layout";
+        // The number that decides whether a SHARED-worker host (no sync API at all) is still paying for it.
+        if (m.SyncAvailable && m.FileTotalMs > 0 && m.FileBlobTotalMs > 0)
+            yield return $"[layout-probe]   one-file layout, blob vs sync: "
+                       + $"{m.FileBlobTotalMs / m.FileTotalMs:F2}x - this is the whole cost of being in a "
+                       + "shared worker once the layout is fixed";
     }
 }

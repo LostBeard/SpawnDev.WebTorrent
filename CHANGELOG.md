@@ -62,6 +62,28 @@ whether each piece FILE exists; here a piece has no file of its own. Bytes are f
 file BEFORE the bit is set: a bitfield that under-reports costs a re-download, one that over-reports makes
 the torrent advertise pieces it cannot serve.
 
+### Changed - `OpfsLayoutProbe` runs without sync access handles, and measures the Blob path too
+
+It used to THROW when `createSyncAccessHandle()` was unavailable - so the one context whose cost most
+needed measuring, the shared worker a normal visitor actually gets, was the one context it refused to run
+in. It now detects the API once up front, writes via `createWritable` when sync is absent, and times the
+Blob fallback for BOTH layouts alongside the sync passes.
+
+MEASURED 2026-09-09, 64 KiB entries, warm:
+
+```
+         sync (dedicated worker)     Blob (shared worker)
+  128    pieces  325 / file  10      pieces  171 / file   90
+  681    pieces 1471 / file  50      pieces 1025 / file  540
+ 1362    pieces 2953 / file  96      pieces 2046 / file 1076
+```
+
+⭐ Two findings. The content layout is worth 29-32x WITH sync handles but only **1.9x** without them:
+under Blob, `getFile` drops from 483 ms (one per piece) to 0.6 ms (one, reused), but `slice` +
+`arrayBuffer` per read becomes the floor and does not care about layout. And **losing the sync API costs
+10.8x on the read path even after the layout is fixed** (540 ms vs 50 ms for 681 reads of the same single
+file) - so for a host that can choose, worker kind now matters more than layout.
+
 ### Added - `Torrent.MigrateStorageLayoutAsync` / `WebTorrentClient.MigrateStorageLayoutAsync`
 
 Copies an existing piece-per-file cache into the content-file layout OPFS-to-OPFS, so switching layouts

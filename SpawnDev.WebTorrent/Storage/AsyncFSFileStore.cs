@@ -245,6 +245,25 @@ public sealed class AsyncFSFileStore : IJSChunkStore
     // ── IChunkStore ────────────────────────────────────────────────────────────────────────────────────
 
     /// <inheritdoc/>
+    /// <remarks>
+    /// 🔴 THIS IS AN ADAPTER, NOT A SECOND WRITE PATH. It performs the ONE unavoidable managed-to-JS copy
+    /// and then hands off to <see cref="PutUint8ArrayAsync"/>, which slices per file span with
+    /// <c>SubArray</c> views and copies nothing further.
+    /// <para>
+    /// It used to be a parallel implementation of that same loop, and it allocated a managed
+    /// <c>byte[]</c> PER FILE SPAN - <c>data.Slice(bufPos, span).ToArray()</c> - feeding a
+    /// <c>Uint8Array.WriteBytes</c> that copies again. Two copies where one is unavoidable, on the write
+    /// path of every piece of every torrent, with a comment directly above it claiming "no byte[]
+    /// marshalling per write". Bulk bytes crossing the managed heap is exactly what this store exists to
+    /// prevent (see <see cref="IJSChunkStore"/>), and a second implementation of a path that already
+    /// existed is how the two drifted apart without anyone noticing.
+    /// </para>
+    /// <para>
+    /// ⚠️ Callers holding the piece as a JS buffer already must call <see cref="PutUint8ArrayAsync"/>
+    /// directly - reaching this overload means the bytes are on the managed heap, and the interesting
+    /// question is why.
+    /// </para>
+    /// </remarks>
     public async Task PutAsync(int index, ReadOnlyMemory<byte> data, CancellationToken ct = default)
     {
         await EnsureInitializedAsync().ConfigureAwait(false);
@@ -253,57 +272,11 @@ public sealed class AsyncFSFileStore : IJSChunkStore
             throw new ArgumentException(
                 $"piece {index} needs {length} bytes but only {data.Length} were supplied; storing it short "
                 + "would set a bitfield bit for data that is not there.", nameof(data));
+        // No _browserFs null check: the constructor already refuses a non-browser filesystem outright.
 
-        foreach (var (file, fileOffset, span, bufPos) in Spans(offset, length))
-        {
-            ct.ThrowIfCancellationRequested();
-            var path = PathOf(file);
-            var sync = await GetSyncHandleAsync(file, create: true).ConfigureAwait(false);
-            if (sync != null)
-            {
-                // Bulk bytes stay JS-side: one reusable JS buffer, no byte[] marshalling per write.
-                using var buf = new Uint8Array(span);
-                buf.WriteBytes(data.Slice(bufPos, span).ToArray());
-                sync.Write(buf, new FileSystemSyncReadWriteOptions { At = fileOffset });
-                sync.Flush();
-            }
-            else
-            {
-                await WriteViaWritableAsync(file, fileOffset, data.Slice(bufPos, span)).ConfigureAwait(false);
-            }
-            // 🔴 THE SNAPSHOT IS *NOT* DROPPED HERE, and that reversal is the difference between a model
-            // loading in seconds and in ten minutes. Dropping eagerly on every write means that while the
-            // torrent is still downloading, the next read must re-acquire the file with getFile() - which
-            // is precisely the per-read cost this layout exists to remove (MEASURED 483 ms per piece under
-            // the old piece layout against 0.6 ms once per content file). Warm, nothing notices, which is
-            // why every gate passed. DOWNLOADING - the case that actually matters, because the demo loads
-            // a model while its remaining pieces arrive - it turned a load into 626 SECONDS on a real run,
-            // and hands-free simply timed out and went back to listening.
-            //
-            // ⚠️ SAFE BECAUSE OF HOW A SNAPSHOT FAILS, not because staleness is tolerable. The browser
-            // INVALIDATES a File snapshot when its file changes, so a stale one throws rather than
-            // returning old bytes - ReadViaBlobAsync catches exactly that and re-acquires once. And a
-            // piece is written once and never rewritten, so a snapshot that is still valid cannot be
-            // serving superseded data for a region; an unwritten region is refused by the bitfield before
-            // any read reaches here.
-        }
-
-        // Bytes are flushed above BEFORE the bit is set - see the class remarks on ordering.
-        // ⚠️ On the writable path the bytes are NOT readable until the batch is committed, so the bit waits
-        // for that commit. Setting it here would advertise a piece still sitting in a swap file.
-        await MarkStoredWhenReadableAsync(index).ConfigureAwait(false);
-    }
-
-    /// <summary>Fallback write for hosts with no sync access handles (not a dedicated worker).</summary>
-    /// <remarks>
-    /// ⚠️ Deliberately <c>keepExistingData: true</c>. Without it <c>createWritable</c> starts from an EMPTY
-    /// file, so writing piece 500 of a torrent would destroy pieces 0-499. Slow, but it must be correct.
-    /// </remarks>
-    private async Task WriteViaWritableAsync(TorrentFileInfo file, long fileOffset, ReadOnlyMemory<byte> data)
-    {
-        using var buf = new Uint8Array(data.Length);
-        buf.WriteBytes(data.ToArray());
-        await WriteViewViaWritableAsync(file, fileOffset, buf).ConfigureAwait(false);
+        // Exactly `length` bytes cross, not data.Length - a caller may hand us a larger buffer.
+        using var pieceUa = HeapView.CreateCopy(data.Slice(0, length));
+        await PutUint8ArrayAsync(index, pieceUa, ct).ConfigureAwait(false);
     }
 
     /// <summary>Fallback write from a JS buffer - no managed copy. See <see cref="WriteViaWritableAsync"/>.</summary>
@@ -409,7 +382,8 @@ public sealed class AsyncFSFileStore : IJSChunkStore
         _writesSinceCommit = 0;
         foreach (var index in _pendingPieces) MarkStored(index);
         _pendingPieces.Clear();
-        if (_bitfieldDirty) await SaveBitfieldAsync().ConfigureAwait(false);
+        // WriteBitfieldFileAsync, not SaveBitfieldAsync - that one calls back into here.
+        if (_bitfieldDirty) await WriteBitfieldFileAsync().ConfigureAwait(false);
     }
 
     /// <inheritdoc/>
@@ -450,9 +424,26 @@ public sealed class AsyncFSFileStore : IJSChunkStore
             {
                 await WriteViewViaWritableAsync(file, fileOffset, view).ConfigureAwait(false);
             }
-            // Not dropped - see the note on the byte[] write path above.
+            // 🔴 THE SNAPSHOT IS *NOT* DROPPED HERE, and that reversal is the difference between a model
+            // loading in seconds and in ten minutes. Dropping eagerly on every write means that while the
+            // torrent is still downloading, the next read must re-acquire the file with getFile() - which
+            // is precisely the per-read cost this layout exists to remove (MEASURED 483 ms per piece under
+            // the old piece layout against 0.6 ms once per content file). Warm, nothing notices, which is
+            // why every gate passed. DOWNLOADING - the case that actually matters, because the demo loads
+            // a model while its remaining pieces arrive - it turned a load into 626 SECONDS on a real run,
+            // and hands-free simply timed out and went back to listening.
+            //
+            // ⚠️ SAFE BECAUSE OF HOW A SNAPSHOT FAILS, not because staleness is tolerable. The browser
+            // INVALIDATES a File snapshot when its file changes, so a stale one throws rather than
+            // returning old bytes - ReadViaBlobAsync catches exactly that and re-acquires once. And a
+            // piece is written once and never rewritten, so a snapshot that is still valid cannot be
+            // serving superseded data for a region; an unwritten region is refused by the bitfield before
+            // any read reaches here.
         }
 
+        // Bytes are flushed above BEFORE the bit is set - see the class remarks on ordering.
+        // ⚠️ On the writable path the bytes are NOT readable until the batch is committed, so the bit waits
+        // for that commit. Setting it here would advertise a piece still sitting in a swap file.
         await MarkStoredWhenReadableAsync(index).ConfigureAwait(false);
     }
 
@@ -745,8 +736,30 @@ public sealed class AsyncFSFileStore : IJSChunkStore
         return _bitfield;
     }
 
-    /// <summary>Persist which pieces this store holds.</summary>
+    /// <summary>
+    /// Commit any buffered content writes and persist which pieces this store holds.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 IT COMMITS THE BYTES FIRST, and that ordering is the point. On the <c>createWritable</c> fallback
+    /// a write is buffered in an open writable and is invisible - to a reader, and to the file itself -
+    /// until that writable is CLOSED. Persisting the bitfield without closing them writes bits describing
+    /// bytes that are not on disk yet, which is exactly the "bytes before bits" law in this class's
+    /// remarks, inverted.
+    /// <para>
+    /// ⚠️ It also makes the content files readable to anything OUTSIDE this store, which is the entire
+    /// point of the layout. Previously this persisted the bitfield alone, so a caller that wrote pieces,
+    /// checkpointed, and then opened the content file directly found it EMPTY - the store's own read path
+    /// hid this, because <c>GetUint8ArrayAsync</c> forces a commit when the piece is pending.
+    /// </para>
+    /// </remarks>
     public async Task SaveBitfieldAsync()
+    {
+        await CommitWritablesAsync().ConfigureAwait(false);
+        await WriteBitfieldFileAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>Writes the bitfield file itself. Assumes content bytes are already committed.</summary>
+    private async Task WriteBitfieldFileAsync()
     {
         if (_pieceCount == 0) return;
         var packed = new byte[(_pieceCount + 7) / 8];

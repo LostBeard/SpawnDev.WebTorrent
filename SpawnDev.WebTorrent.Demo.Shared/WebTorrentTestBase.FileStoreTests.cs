@@ -312,7 +312,22 @@ public abstract partial class WebTorrentTestBase
         public Task Write(string path, string data) => throw Nope();
         public Task Write(string path, byte[] data) => throw Nope();
         public Task WriteJSON(string path, object data, System.Text.Json.JsonSerializerOptions? o = null) => throw Nope();
-        public Task<Stream> GetWriteStream(string path) => throw Nope();
-        public Task<Stream> GetReadStream(string path) => throw Nope();
+        // SpawnDev.AsyncFileSystem 2.2.0 replaced the one-arg stream getters with these, which carry
+        // defaults - so a `GetReadStream(path)` call still binds. Implemented at their FULL signature
+        // rather than leaving the old one-arg pair beside them: an extra one-arg overload on the concrete
+        // type would win overload resolution over the interface member and quietly bypass fileOptions.
+        public Task<Stream> GetReadStream(string path,
+            FileMode fileMode = FileMode.Open,
+            SpawnDev.SpawnJS.Toolbox.OPFSFileOptions fileOptions = SpawnDev.SpawnJS.Toolbox.OPFSFileOptions.Auto)
+            => throw Nope();
+        public Task<Stream> GetWriteStream(string path,
+            FileMode fileMode = FileMode.OpenOrCreate,
+            SpawnDev.SpawnJS.Toolbox.OPFSFileOptions fileOptions = SpawnDev.SpawnJS.Toolbox.OPFSFileOptions.Auto)
+            => throw Nope();
+        public Task<Stream> OpenStream(string path,
+            FileMode fileMode = FileMode.Open,
+            FileAccess fileAccess = FileAccess.Read,
+            SpawnDev.SpawnJS.Toolbox.OPFSFileOptions fileOptions = SpawnDev.SpawnJS.Toolbox.OPFSFileOptions.Auto)
+            => throw Nope();
     }
 }

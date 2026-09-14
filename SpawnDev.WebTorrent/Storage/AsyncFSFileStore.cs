@@ -284,7 +284,7 @@ public sealed class AsyncFSFileStore : IJSChunkStore
     {
         var path = PathOf(file);
         var writable = await GetWritableAsync(file, path).ConfigureAwait(false);
-        await writable.Seek((ulong)fileOffset).ConfigureAwait(false);
+        await writable.Seek(fileOffset).ConfigureAwait(false);
         await writable.Write(data).ConfigureAwait(false);
         _writesSinceCommit++;
         if (_writesSinceCommit >= WritesPerCommit) await CommitWritablesAsync().ConfigureAwait(false);
@@ -351,7 +351,7 @@ public sealed class AsyncFSFileStore : IJSChunkStore
             // The file is given its final length once, so an unwritten span reads as zeros at the right
             // OFFSET rather than shifting every later byte - see the note on GetSyncHandleAsync, which has
             // always done this. Truncate SETS the length, so repeating it would be a no-op anyway.
-            if (_lengthEstablished.Add(path)) await w.Truncate((ulong)file.Length).ConfigureAwait(false);
+            if (_lengthEstablished.Add(path)) await w.Truncate(file.Length).ConfigureAwait(false);
             _writables[path] = w;
             return w;
         }

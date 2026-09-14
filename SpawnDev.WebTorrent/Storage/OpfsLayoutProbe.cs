@@ -189,7 +189,7 @@ public static class OpfsLayoutProbe
                     {
                         for (int i = 0; i < count; i++)
                         {
-                            await w.Seek((ulong)((long)i * bytes));
+                            await w.Seek((long)i * bytes);
                             await w.Write(payload);
                         }
                     }
@@ -443,7 +443,7 @@ public static class OpfsLayoutProbe
                     {
                         for (int i = 0; i < reads; i++)
                         {
-                            await w.Seek((ulong)((long)i * readBytes));
+                            await w.Seek((long)i * readBytes);
                             await w.Write(readBuf);
                         }
                     }
@@ -563,7 +563,7 @@ public static class OpfsLayoutProbe
         }
         // WARNING: keepExistingData must stay true - without it createWritable starts from an EMPTY file.
         var w = await h.CreateWritable(new FileSystemCreateWritableOptions { KeepExistingData = true });
-        try { await w.Seek((ulong)at); await w.Write(payload); }
+        try { await w.Seek(at); await w.Write(payload); }
         finally { await w.Close(); w.Dispose(); }
     }
 

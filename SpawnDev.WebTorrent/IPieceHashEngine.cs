@@ -3,8 +3,14 @@ namespace SpawnDev.WebTorrent;
 /// <summary>
 /// Abstraction over the hash primitives used during piece verification.
 /// The default implementation (<see cref="SystemCryptoPieceHashEngine"/>) uses
-/// <c>System.Security.Cryptography</c> on every call - fast on desktop (SHA-NI)
-/// and browser (SubtleCrypto via WASM SHA fallback), and zero dependencies.
+/// <c>System.Security.Cryptography</c> on every call - fast on desktop (SHA-NI),
+/// and zero dependencies.
+///
+/// ⚠️ It does NOT route to SubtleCrypto in the browser, and an earlier version of
+/// this comment said it did. MEASURED 2026-09-14 under PMT (published build),
+/// 4 MiB: <b>68 MB/s</b> in .NET against <b>1629 MB/s</b> for SubtleCrypto over
+/// the same bytes in the same run - <b>24x</b>. See
+/// <c>PieceHashEngine_BrowserThroughput_StaysAboveItsRegressionFloor</c>.
 ///
 /// Why pluggable:
 /// <list type="bullet">
@@ -48,9 +54,18 @@ public interface IPieceHashEngine
 /// <summary>
 /// Default hash engine - uses <see cref="System.Security.Cryptography.SHA1"/>
 /// and <see cref="System.Security.Cryptography.SHA256"/> directly. Fast on
-/// desktop (hardware SHA-NI on x86 / ARMv8 cryptography extensions) and
-/// adequate on browser (WASM SHA-256 ≈ 200-400 MB/s). Zero non-BCL
-/// dependencies.
+/// desktop (hardware SHA-NI on x86 / ARMv8 cryptography extensions).
+///
+/// ⚠️ ON BROWSER IT IS 68 MB/s, not the "200-400 MB/s" this comment used to
+/// claim - MEASURED 2026-09-14, published build, 4 MiB piece. SubtleCrypto does
+/// the identical work at 1629 MB/s, so a browser piece verify through this engine
+/// costs 59 ms where SubtleCrypto costs 2.5 ms. The zero-copy download path
+/// already uses SubtleCrypto; this engine is what the wire-assembled and rescan
+/// paths use. Zero non-BCL dependencies, which is why it is still the default.
+///
+/// ⚠️ Any browser hash rate measured under `dotnet run` is meaningless - that is a
+/// BUILD, with no relink or wasm-opt, and it reported ~4 MB/s here (wrong by 17x)
+/// while SubtleCrypto, being native browser code, measured the same either way.
 /// </summary>
 public sealed class SystemCryptoPieceHashEngine : IPieceHashEngine
 {

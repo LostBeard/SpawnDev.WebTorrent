@@ -56,7 +56,48 @@ public partial class Torrent
     //    the span-level counters, deliberately `internal`.
     public static bool EnableZcProfiling = false;
     public static double ZcFetchMs, ZcDigestFireMs, ZcDigestWaitMs, ZcReadMs, ZcTreeMs, ZcStoreMs;
-    public static void ResetZcProfile() { ZcFetchMs = ZcDigestFireMs = ZcDigestWaitMs = ZcReadMs = ZcTreeMs = ZcStoreMs = 0; }
+
+    // ── The phases the BIG-ARRAY read experiment actually needs separated ───────────────────────────
+    //
+    // 🔴 ZcReadMs COULD NOT ANSWER THE QUESTION IT WAS ADDED FOR. It was accumulated in TWO places - the
+    // per-leaf `allHashes.Set(...)` loop AND the single `allHashes.ReadBytes()` - which are precisely the
+    // two costs the experiment exists to tell apart ("if the read phase collapses, the per-call marshal
+    // was the cost; if not, it's the crossing count"). One bucket, both terms, no answer.
+    // Likewise ZcTreeMs spanned the jagged byte[32] split AND the Merkle tree itself.
+    /// <summary>Per-leaf JS-side <c>allHashes.Set(...)</c> - the crossing COUNT term.</summary>
+    public static double ZcLeafSetMs;
+    /// <summary>The single <c>allHashes.ReadBytes()</c> - the big-array MARSHAL term.</summary>
+    public static double ZcMarshalMs;
+    /// <summary>Splitting the flat hash block into jagged <c>byte[32]</c>s, before the tree.</summary>
+    public static double ZcSplitMs;
+    /// <summary>Wall time inside the whole v2 branch, so the unmeasured remainder can be computed.</summary>
+    public static double ZcV2WallMs;
+    /// <summary>Pieces that took the v2 Merkle branch / the v1 flat branch. Proves which one ran.</summary>
+    public static long ZcV2Pieces, ZcV1Pieces;
+
+    public static void ResetZcProfile()
+    {
+        ZcFetchMs = ZcDigestFireMs = ZcDigestWaitMs = ZcReadMs = ZcTreeMs = ZcStoreMs = 0;
+        ZcLeafSetMs = ZcMarshalMs = ZcSplitMs = ZcV2WallMs = 0;
+        ZcV2Pieces = ZcV1Pieces = 0;
+    }
+
+    /// <summary>
+    /// The zero-copy verify profile as one line. ALWAYS reports the unmeasured remainder: a split that
+    /// does not account for its own wall time is describing something other than what ran.
+    /// </summary>
+    public static string ZcProfileReport()
+    {
+        if (ZcV2Pieces == 0 && ZcV1Pieces == 0)
+            return "zc-profile: NOTHING RECORDED (EnableZcProfiling was off, or no piece took the zero-copy path)";
+        var accounted = ZcDigestFireMs + ZcDigestWaitMs + ZcLeafSetMs + ZcMarshalMs + ZcSplitMs + ZcTreeMs;
+        var remainder = ZcV2WallMs - accounted;
+        return $"zc-profile: v2Pieces={ZcV2Pieces} v1Pieces={ZcV1Pieces} v2Wall={ZcV2WallMs:F1}ms | "
+             + $"digestFire={ZcDigestFireMs:F1} digestWait={ZcDigestWaitMs:F1} leafSet={ZcLeafSetMs:F1} "
+             + $"marshal={ZcMarshalMs:F1} split={ZcSplitMs:F1} tree={ZcTreeMs:F1} "
+             + $"| accounted={accounted:F1} remainder={remainder:F1}ms"
+             + (ZcV2WallMs > 0 ? $" ({remainder / ZcV2WallMs:P1})" : "");
+    }
 
     // ========================
     // DOWNLOAD STATE
@@ -537,6 +578,9 @@ public partial class Torrent
             // count (the Sets are still per-leaf). Tree then runs on the collective byte[] (sliced in .NET).
             using var allHashes = new Uint8Array((long)actualLeaves * MerkleHasher.HashSize);
             var _vSw = EnableZcProfiling ? new System.Diagnostics.Stopwatch() : null;
+            // Spans the whole v2 branch, so the phase split can be checked against the time it claims to
+            // describe. A split that does not account for its own wall is measuring something else.
+            var _wallSw = EnableZcProfiling ? System.Diagnostics.Stopwatch.StartNew() : null;
             for (int batchStart = 0; batchStart < actualLeaves; batchStart += MaxConcurrentLeafDigests)
             {
                 int batchEnd = Math.Min(batchStart + MaxConcurrentLeafDigests, actualLeaves);
@@ -573,11 +617,13 @@ public partial class Torrent
                         allHashes.Set(hashUa, (batchStart + j) * MerkleHasher.HashSize); // JS-side copy, no marshal
                     inputs[j].Dispose();
                 }
-                if (_vSw != null) ZcReadMs += _vSw.Elapsed.TotalMilliseconds;
+                // The per-leaf Set loop: the CROSSING-COUNT term of the experiment, on its own.
+                if (_vSw != null) { ZcLeafSetMs += _vSw.Elapsed.TotalMilliseconds; ZcReadMs += _vSw.Elapsed.TotalMilliseconds; }
             }
             _vSw?.Restart();
             var allBytes = allHashes.ReadBytes();                       // ONE JS->.NET marshal of all leaf hashes
-            if (_vSw != null) { ZcReadMs += _vSw.Elapsed.TotalMilliseconds; _vSw.Restart(); }
+            // The single big marshal: the term the experiment predicted would collapse.
+            if (_vSw != null) { ZcMarshalMs += _vSw.Elapsed.TotalMilliseconds; ZcReadMs += _vSw.Elapsed.TotalMilliseconds; _vSw.Restart(); }
             var leafHashes = new byte[actualLeaves][];
             for (int li = 0; li < actualLeaves; li++)
             {
@@ -585,8 +631,11 @@ public partial class Torrent
                 System.Array.Copy(allBytes, li * MerkleHasher.HashSize, h, 0, MerkleHasher.HashSize);
                 leafHashes[li] = h;
             }
+            // The jagged split, separated from the tree it feeds - this is the copy under review.
+            if (_vSw != null) { ZcSplitMs += _vSw.Elapsed.TotalMilliseconds; _vSw.Restart(); }
             var root = MerkleHasher.ComputePieceRootFromLeafHashes(leafHashes, leavesPerPiece);
             if (_vSw != null) ZcTreeMs += _vSw.Elapsed.TotalMilliseconds;
+            if (_wallSw != null) { ZcV2WallMs += _wallSw.Elapsed.TotalMilliseconds; ZcV2Pieces++; }
             return root.AsSpan().SequenceEqual(expected);
         }
         else
@@ -595,6 +644,8 @@ public partial class Torrent
             string alg = expected.Length == MerkleHasher.HashSize ? "SHA-256" : "SHA-1";
             using var hashAb = await subtle.Digest(alg, pieceData);
             using var hashUa = new Uint8Array(hashAb);
+            // Counted so a profile can never be read as "the v2 leaf path is cheap" when it never ran.
+            if (EnableZcProfiling) ZcV1Pieces++;
             return hashUa.ReadBytes().AsSpan().SequenceEqual(expected);
         }
     }

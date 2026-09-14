@@ -132,6 +132,83 @@ public abstract partial class WebTorrentTestBase
     }
 
     /// <summary>
+    /// Keeps the zero-copy verify profiler ALIVE and honest, and records what it measured.
+    /// </summary>
+    /// <remarks>
+    /// 🔴 THIS PROFILER WAS DEAD FOR MONTHS. <c>EnableZcProfiling</c> was hardcoded false and its counters
+    /// were accumulated and read NOWHERE, so the "BIG-ARRAY read experiment" it was added to settle could
+    /// never be settled. Worse, it could not have answered the question anyway: <c>ZcReadMs</c> summed the
+    /// per-leaf <c>Set</c> loop AND the single big <c>ReadBytes</c>, which are exactly the two terms being
+    /// compared. This test exists so that never silently happens again.
+    /// <para>
+    /// ⭐ MEASURED 2026-09-14, hub mobilenetv3 model, 1 MiB pieces (64 leaves), 10 pieces, browser:
+    /// </para>
+    /// <code>
+    ///   v2Wall 82.2 ms | digestFire 45.6 (55.5%) digestWait 10.5 (12.8%) leafSet 16.3 (19.8%)
+    ///                  | tree 8.0 (9.7%) marshal 1.5 (1.8%) split 0.1 (0.12%)
+    ///                  | remainder 0.1 ms (0.1%)
+    /// </code>
+    /// <para>
+    /// ⭐⭐ THE EXPERIMENT'S ANSWER: the big-array read WORKS - one marshal of the whole hash block costs
+    /// 1.5 ms - but the per-leaf <c>allHashes.Set(...)</c> loop costs 16.3 ms, 11x that. The cost is the
+    /// CROSSING COUNT, not the per-call marshal. Any further work belongs on the ~64 per-leaf crossings
+    /// (digestFire + leafSet = 75% of verify), never on the .NET side.
+    /// </para>
+    /// <para>
+    /// ⚠️ AND IT KILLED A "FIX" I WAS ABOUT TO MAKE. The jagged <c>byte[32]</c> split before the Merkle
+    /// tree is real redundant copying, and it is 0.12% of verify. Rewriting a BEP 52 hash path for that
+    /// would have been risk for nothing. An operation count is not a cost.
+    /// </para>
+    /// </remarks>
+    [TestMethod(Timeout = 240000, RetryCount = 1)]
+    public async Task ZcProfile_RecordsVerifyPhaseSplit_AndAccountsForItsOwnWall()
+    {
+        if (!OperatingSystem.IsBrowser())
+            throw new UnsupportedTestException("Zero-copy verify is browser/OPFS-only");
+
+        using var http = new HttpClient();
+        var magnet = await GetHubMagnetAsync(http);
+
+        Torrent.EnableZcProfiling = true;
+        Torrent.ResetZcProfile();
+        var torrent = Client.Add(magnet);
+        try
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(120);
+            while (!torrent.Done && DateTime.UtcNow < deadline)
+                await Task.Delay(200);
+
+            var report = Torrent.ZcProfileReport();
+            if (!torrent.Done)
+                throw new Exception($"download did not complete in 120s: progress={torrent.Progress:F3} || {report}");
+
+            // The profiler must have SEEN something. A green run on an all-zero profile would mean the
+            // counters had quietly stopped being written - which is the state this test exists to prevent.
+            if (Torrent.ZcV2Pieces == 0 && Torrent.ZcV1Pieces == 0)
+                throw new Exception($"the zero-copy verify profiler recorded NOTHING || {report}");
+
+            // This torrent is v2, so the Merkle leaf path is the one that must have run. Asserting the
+            // BRANCH (not just "some pieces") stops a v1 fallback from reading as a healthy v2 profile.
+            if (torrent.MetaVersion == 2 && Torrent.ZcV2Pieces == 0)
+                throw new Exception($"MetaVersion=2 but no piece took the v2 Merkle branch || {report}");
+
+            // An accounting check on the instrument itself: if the phases do not add up to the wall they
+            // claim to describe, the split is measuring something other than what ran and every number
+            // above it is untrustworthy. 0.1% when this was written; 25% is a loose guard against drift.
+            var accounted = Torrent.ZcDigestFireMs + Torrent.ZcDigestWaitMs + Torrent.ZcLeafSetMs
+                          + Torrent.ZcMarshalMs + Torrent.ZcSplitMs + Torrent.ZcTreeMs;
+            var remainder = Torrent.ZcV2WallMs - accounted;
+            if (Torrent.ZcV2WallMs > 0 && Math.Abs(remainder) / Torrent.ZcV2WallMs > 0.25)
+                throw new Exception($"verify phase split does not account for its own wall time || {report}");
+        }
+        finally
+        {
+            Torrent.EnableZcProfiling = false;
+            await Client.RemoveAsync(torrent);
+        }
+    }
+
+    /// <summary>
     /// AddAsync (documented in README + Docs/huggingface.md) must return a ready torrent once
     /// metadata resolves, then a range read must pull real bytes from the HTTP web seed.
     /// </summary>

@@ -1088,6 +1088,10 @@ public partial class Torrent
             if (LazyHash && Bitfield.All(b => b)) FinalizeLazyHash();
             OnDone?.Invoke();
             OnIdle?.Invoke();
+            // AFTER the events, never before: the unpack moves the whole torrent (~2.9 s/GB measured), and
+            // holding OnDone for that would make completion look like a stall. Reads are correct either
+            // way - the store serves from piece files until the unpack finishes.
+            StartUnpackIfNeeded();
         }
     }
 

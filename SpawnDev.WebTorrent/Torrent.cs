@@ -768,8 +768,8 @@ public partial class Torrent : IAsyncDisposable
             {
                 // ⚠️ SEPARATE ROOTS PER LAYOUT, and not for tidiness. A piece store's `piece_0` read as
                 // content bytes is silent corruption, so the two layouts must never be able to open each
-                // other's directory. A torrent cached under one and then opened under the other re-downloads
-                // once, which is the correct outcome.
+                // other's directory. ChunkThenContentStore owns BOTH roots and knows which one is live, so
+                // it is the one thing allowed to hold the pair.
                 //
                 // ⚠️ ContentFiles needs the FILE LIST, which a magnet does not have until metadata arrives.
                 // Falling back to the piece layout in that case would leave the torrent in the wrong root
@@ -777,9 +777,15 @@ public partial class Torrent : IAsyncDisposable
                 // InitFromMetadata, where it is.
                 bool contentLayout = _client.StorageLayout == TorrentStorageLayout.ContentFiles
                     && Files is { Length: > 0 } && Length > 0;
+
+                // 🔴 ContentFiles DOWNLOADS INTO PIECE FILES and unpacks once when the torrent completes.
+                // Writing pieces straight into shared content files needs a ranged in-place write, which
+                // OPFS only offers via createSyncAccessHandle - dedicated workers only. Piece files need no
+                // ranged write at all, so the download works in every scope, and the unpack still ends with
+                // the torrent's real files on disk. See ChunkThenContentStore for the measured cost.
                 _store = contentLayout
-                    ? new Storage.AsyncFSFileStore(_client.AsyncFileSystem, $"webtorrent-files/{storeHash}",
-                        PieceLength, Files!, Length)
+                    ? new Storage.ChunkThenContentStore(_client.AsyncFileSystem, $"webtorrent/{storeHash}",
+                        $"webtorrent-files/{storeHash}", PieceLength, Files!, Length, PieceCount)
                     : new Storage.AsyncFSChunkStore(_client.AsyncFileSystem, $"webtorrent/{storeHash}", PieceLength);
             }
             else if (_client?.AsyncFileSystem != null)

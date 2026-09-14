@@ -24,9 +24,58 @@ public partial class Torrent
     /// <param name="progress">Called with (copied, total).</param>
     /// <param name="ct">Cancellation.</param>
     /// <returns>Pieces copied.</returns>
+    /// <summary>
+    /// Completes when the post-download unpack finishes. <see cref="Task.CompletedTask"/> when none is
+    /// running. Never faults - a failed unpack leaves the data intact and readable from the piece files.
+    /// </summary>
+    /// <remarks>
+    /// Await this when you need the torrent's REAL FILES on disk (seeding from files, the HTTP file
+    /// browser) rather than merely a complete torrent. <see cref="OnDone"/> fires first and does not wait
+    /// for it.
+    /// </remarks>
+    public Task UnpackTask { get; private set; } = Task.CompletedTask;
+
+    /// <summary>
+    /// Starts the unpack into content files, if this torrent uses the two-phase store and still needs one.
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ Fire-and-forget BUT TRACKED AND NEVER FAULTING. <c>CheckDone</c> is sync so it cannot await, and
+    /// an untracked <c>async void</c> would turn any unpack failure into an unobserved exception that
+    /// takes the runtime down. Failure here is recoverable by construction: the piece files are only
+    /// reclaimed after every piece is verified present in the content store, so a failed unpack leaves a
+    /// complete, readable torrent that simply unpacks on a later run.
+    /// </remarks>
+    private void StartUnpackIfNeeded()
+    {
+        if (_store is not Storage.ChunkThenContentStore ctc || ctc.IsUnpacked) return;
+        if (!UnpackTask.IsCompleted) return;                     // one already in flight
+        UnpackTask = RunAsync();
+
+        async Task RunAsync()
+        {
+            try
+            {
+                var copied = await ctc.UnpackAsync().ConfigureAwait(false);
+                if (copied > 0)
+                    Console.WriteLine($"[Torrent] '{Name}': unpacked {copied} piece(s) into content files "
+                        + "- the torrent's real files are now on disk and the piece files are reclaimed.");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Torrent] '{Name}': unpack failed ({ex.Message}) - every byte is still "
+                    + "present in the piece files, and it will unpack again on a later run.");
+            }
+        }
+    }
+
     public async Task<int> MigrateStorageLayoutAsync(Action<int, int>? progress = null,
         CancellationToken ct = default)
     {
+        // The two-phase store owns both roots, so "migration" is just its unpack - and running it at
+        // startup is what resumes an unpack that was interrupted by a closed tab.
+        if (_store is Storage.ChunkThenContentStore ctc)
+            return await ctc.UnpackAsync(progress, ct).ConfigureAwait(false);
+
         if (_store is not Storage.AsyncFSFileStore fileStore) return 0;
         var fs = _client?.AsyncFileSystem;
         if (fs == null || string.IsNullOrEmpty(PersistKey)) return 0;

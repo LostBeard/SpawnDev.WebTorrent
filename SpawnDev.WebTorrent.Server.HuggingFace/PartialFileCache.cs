@@ -63,6 +63,25 @@ internal sealed class PartialFileCache
     public async Task ServeRangeAsync(HttpContext context)
     {
         var ct = context.RequestAborted;
+
+        // HEAD: answer with headers only, and WITHOUT fetching a single chunk. A client sizing a file before
+        // downloading it (the standard way to learn Content-Length, and what a resumable downloader does
+        // first) must not make the hub pull bytes from the origin that it then throws away. Metadata alone
+        // gives the total, so this costs at most one origin HEAD.
+        if (HttpMethods.IsHead(context.Request.Method))
+        {
+            long headSize;
+            if (IsComplete(_dataPath)) headSize = new FileInfo(_dataPath).Length;
+            else if (await EnsureMetadataAsync(ct)) headSize = _totalSize;
+            else { context.Response.StatusCode = 502; return; }   // origin unreachable
+
+            context.Response.StatusCode = 200;
+            context.Response.Headers["Accept-Ranges"] = "bytes";
+            context.Response.ContentType = "application/octet-stream";
+            context.Response.ContentLength = headSize;
+            return;
+        }
+
         if (IsComplete(_dataPath)) { await ServeWholeFileRangeAsync(context, _dataPath); return; }
 
         if (!await EnsureMetadataAsync(ct)) { context.Response.StatusCode = 502; return; } // origin unreachable

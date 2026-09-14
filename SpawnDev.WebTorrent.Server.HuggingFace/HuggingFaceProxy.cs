@@ -519,7 +519,12 @@ public static class HuggingFaceProxyExtensions
     {
         // Serve cached model files (web seed endpoint)
         // Route: /hf/{org}/{repo}/{filePath} → repoId = org/repo
-        app.MapGet("/hf/{org}/{repo}/{**filePath}", async (HttpContext ctx, string org, string repo, string filePath) =>
+        // ⚠️ GET *and* HEAD. MapGet alone answers HEAD with 405, and HEAD is how a client learns a file's
+        // size before downloading it - so every consumer that sized a file first (ILGPU.ML's
+        // ContentLengthAsync among them) silently fell back to "no length available", losing its truncation
+        // check. PartialFileCache.ServeRangeAsync short-circuits HEAD to headers only, fetching no chunks.
+        app.MapMethods("/hf/{org}/{repo}/{**filePath}", new[] { "GET", "HEAD" },
+            async (HttpContext ctx, string org, string repo, string filePath) =>
         {
             await proxy.HandleRequest(ctx, $"{org}/{repo}", filePath);
         });

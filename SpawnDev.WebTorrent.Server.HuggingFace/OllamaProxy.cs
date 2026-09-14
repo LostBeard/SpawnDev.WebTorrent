@@ -322,7 +322,10 @@ public static class OllamaProxyExtensions
     public static void MapOllamaProxy(this IEndpointRouteBuilder app, OllamaProxy proxy)
     {
         // Web seed: serve a cached layer blob.
-        app.MapGet("/ollama/{model}/{tag}/{layer}", async (HttpContext ctx, string model, string tag, string layer) =>
+        // GET *and* HEAD - the twin of the /hf web seed. MapGet alone answers HEAD with 405, which costs a
+        // sizing client its Content-Length. ServeRangeAsync answers HEAD from metadata, fetching no chunks.
+        app.MapMethods("/ollama/{model}/{tag}/{layer}", new[] { "GET", "HEAD" },
+            async (HttpContext ctx, string model, string tag, string layer) =>
             await proxy.HandleRequest(ctx, model, tag, layer));
 
         // .torrent for an ollama layer.

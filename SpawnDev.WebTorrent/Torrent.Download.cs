@@ -263,7 +263,7 @@ public partial class Torrent
                     return;
                 }
 
-                bool hashMatch = VerifyPieceHash(index, buf);
+                bool hashMatch = await VerifyPieceHashAsync(index, buf);
 
                 if (hashMatch)
                 {
@@ -1429,7 +1429,53 @@ public partial class Torrent
     /// Internal for test visibility; the production caller is the piece-arrival path in
     /// <c>_onPiece</c>.
     /// </summary>
-    internal bool VerifyPieceHash(int index, byte[] buf)
+    /// <summary>
+    /// One flat hash over a whole piece: SubtleCrypto in the browser, the pluggable engine everywhere else.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⭐ MEASURED under PMT (published), 4 MiB piece: SubtleCrypto <b>2.5 ms</b> against .NET
+    /// <b>59.2 ms</b> - <b>24x</b>. The managed-to-JS copy this needs is ~1 ms at ~3-4 GB/s, so the round
+    /// trip still wins by ~15x. Avoiding that copy was never the goal; avoiding UNNECESSARY ones was.
+    /// </para>
+    /// <para>
+    /// ⚠️ FLAT SHAPE ONLY. The v2 merkle path hashes 256 x 16 KiB leaves, where SubtleCrypto measured just
+    /// 1.34x over .NET (it collapses from 1629 MB/s to 90 MB/s at that granularity while .NET pays no
+    /// crossing and barely moves). Routing v2 here would be applying a measurement of a different
+    /// computation - it needs a batched primitive instead, not this.
+    /// </para>
+    /// <para>
+    /// ⚠️ Falls back to the engine on ANY failure, and says so once. A hash path that silently produced
+    /// wrong bytes would fail pieces that are fine and re-download them forever.
+    /// </para>
+    /// </remarks>
+    private async Task<byte[]> FlatPieceHashAsync(byte[] buf, bool sha256)
+    {
+        if (OperatingSystem.IsBrowser() && !_subtleHashUnavailable)
+        {
+            try
+            {
+                using var subtle = SpawnJSRuntime.Instance!.Get<SpawnDev.SpawnJS.JSObjects.SubtleCrypto>("crypto.subtle");
+                using var ua = SpawnDev.SpawnJS.JSObjects.HeapView.CreateCopy(new ReadOnlyMemory<byte>(buf));
+                using var ab = await subtle.Digest(sha256 ? "SHA-256" : "SHA-1", ua).ConfigureAwait(false);
+                using var h = new SpawnDev.SpawnJS.JSObjects.Uint8Array(ab);
+                return h.ReadBytes();
+            }
+            catch (Exception ex)
+            {
+                _subtleHashUnavailable = true;
+                Console.WriteLine($"[Torrent] SubtleCrypto piece hashing unavailable ({ex.Message}) - falling "
+                    + "back to the .NET engine, which measured 24x slower on this shape.");
+            }
+        }
+        var eng = _client?.PieceHashEngine ?? Torrent._defaultEngine;
+        return sha256 ? eng.Sha256(buf) : eng.Sha1(buf);
+    }
+
+    /// <summary>Set once SubtleCrypto hashing has failed, so the cost is paid at most once.</summary>
+    private bool _subtleHashUnavailable;
+
+    internal async Task<bool> VerifyPieceHashAsync(int index, byte[] buf)
     {
         if (index < 0 || index >= _hashes.Length) return false;
 
@@ -1438,10 +1484,9 @@ public partial class Torrent
             // Infohash not yet known (added from a web-seed URL): the FIRST downloader TRUSTS the seed and
             // COMPUTES this piece's hash from the bytes, recording it into the (zeroed) slot. Subsequent
             // downloaders who receive the finalized .torrent verify against the real hash via the path below.
-            var eng = _client?.PieceHashEngine ?? Torrent._defaultEngine;
             _hashes[index] = MetaVersion == 2
                 ? MerkleHasher.ComputePieceLayer(buf, PieceLength)[0]
-                : (_hashes[index].Length == 32 ? eng.Sha256(buf) : eng.Sha1(buf));
+                : await FlatPieceHashAsync(buf, sha256: _hashes[index].Length == 32).ConfigureAwait(false);
             return true;
         }
 
@@ -1462,8 +1507,7 @@ public partial class Torrent
         // engine can intercept the hot path (default = SystemCryptoPieceHashEngine
         // which calls System.Security.Cryptography directly - byte-identical to
         // the legacy code).
-        var engine = _client?.PieceHashEngine ?? Torrent._defaultEngine;
-        var actual = expected.Length == 32 ? engine.Sha256(buf) : engine.Sha1(buf);
+        var actual = await FlatPieceHashAsync(buf, sha256: expected.Length == 32).ConfigureAwait(false);
         return actual.SequenceEqual(expected);
     }
 }

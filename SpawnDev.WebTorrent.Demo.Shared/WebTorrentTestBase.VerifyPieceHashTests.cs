@@ -25,7 +25,7 @@ public abstract partial class WebTorrentTestBase
         var expectedSha1 = SHA1.HashData(pieceData);
 
         var torrent = VerifyPieceHashTests_MakeTorrent(metaVersion: 0, pieceLength: 65536, hashes: new[] { expectedSha1 });
-        if (!torrent.VerifyPieceHash(0, pieceData))
+        if (!await torrent.VerifyPieceHashAsync(0, pieceData))
             throw new Exception("V1 flat SHA-1 piece should verify");
         await Task.CompletedTask;
     }
@@ -40,7 +40,7 @@ public abstract partial class WebTorrentTestBase
         var expectedSha256 = SHA256.HashData(pieceData);
 
         var torrent = VerifyPieceHashTests_MakeTorrent(metaVersion: 0, pieceLength: 65536, hashes: new[] { expectedSha256 });
-        if (!torrent.VerifyPieceHash(0, pieceData))
+        if (!await torrent.VerifyPieceHashAsync(0, pieceData))
             throw new Exception("V1 Phase-1 flat SHA-256 piece should verify");
         await Task.CompletedTask;
     }
@@ -62,13 +62,13 @@ public abstract partial class WebTorrentTestBase
 
         // v2: stored hash is Merkle root. Should verify.
         var v2Torrent = VerifyPieceHashTests_MakeTorrent(metaVersion: 2, pieceLength: pieceLen, hashes: new[] { merkleRoot });
-        if (!v2Torrent.VerifyPieceHash(0, pieceData))
+        if (!await v2Torrent.VerifyPieceHashAsync(0, pieceData))
             throw new Exception("v2 verifier must accept the Merkle root of the piece.");
 
         // v2 with a flat-SHA-256 hash in _hashes (simulating a mistakenly-generated torrent)
         // must be rejected - not silently accepted.
         var wrongTorrent = VerifyPieceHashTests_MakeTorrent(metaVersion: 2, pieceLength: pieceLen, hashes: new[] { flatSha256 });
-        if (wrongTorrent.VerifyPieceHash(0, pieceData))
+        if (await wrongTorrent.VerifyPieceHashAsync(0, pieceData))
             throw new Exception("v2 verifier must reject a flat-SHA-256 hash in _hashes as a mismatch.");
         await Task.CompletedTask;
     }
@@ -87,7 +87,7 @@ public abstract partial class WebTorrentTestBase
             throw new Exception("Sanity: 1-leaf piece Merkle root equals flat SHA-256 of its content.");
 
         var torrent = VerifyPieceHashTests_MakeTorrent(metaVersion: 2, pieceLength: pieceLen, hashes: new[] { merkleRoot });
-        if (!torrent.VerifyPieceHash(0, pieceData))
+        if (!await torrent.VerifyPieceHashAsync(0, pieceData))
             throw new Exception("Single-leaf piece should verify via Merkle==SHA256 equivalence");
         await Task.CompletedTask;
     }
@@ -102,7 +102,7 @@ public abstract partial class WebTorrentTestBase
         var piecePath = MerkleHasher.ComputePieceLayer(partialData, pieceLen)[0];
 
         var torrent = VerifyPieceHashTests_MakeTorrent(metaVersion: 2, pieceLength: pieceLen, hashes: new[] { piecePath });
-        if (!torrent.VerifyPieceHash(0, partialData))
+        if (!await torrent.VerifyPieceHashAsync(0, partialData))
             throw new Exception("Partial last piece should verify with zero-padded Merkle");
         await Task.CompletedTask;
     }
@@ -117,7 +117,7 @@ public abstract partial class WebTorrentTestBase
 
         var tampered = (byte[])pieceData.Clone();
         tampered[0] ^= 0x01;
-        if (torrent.VerifyPieceHash(0, tampered))
+        if (await torrent.VerifyPieceHashAsync(0, tampered))
             throw new Exception("v2 verifier must reject a tampered piece");
         await Task.CompletedTask;
     }
@@ -126,9 +126,9 @@ public abstract partial class WebTorrentTestBase
     public async Task VerifyPieceHash_IndexOutOfRange_Rejected()
     {
         var torrent = VerifyPieceHashTests_MakeTorrent(metaVersion: 0, pieceLength: 16384, hashes: new[] { new byte[20] });
-        if (torrent.VerifyPieceHash(5, VerifyPieceHashTests_MakeData(16384, 4007)))
+        if (await torrent.VerifyPieceHashAsync(5, VerifyPieceHashTests_MakeData(16384, 4007)))
             throw new Exception("Out-of-range index (5) must be rejected");
-        if (torrent.VerifyPieceHash(-1, VerifyPieceHashTests_MakeData(16384, 4008)))
+        if (await torrent.VerifyPieceHashAsync(-1, VerifyPieceHashTests_MakeData(16384, 4008)))
             throw new Exception("Negative index (-1) must be rejected");
         await Task.CompletedTask;
     }
@@ -140,7 +140,7 @@ public abstract partial class WebTorrentTestBase
         // pieceLength = 12 KiB should not crash - just fail verification.
         var pieceData = VerifyPieceHashTests_MakeData(12288, seed: 4009);
         var torrent = VerifyPieceHashTests_MakeTorrent(metaVersion: 2, pieceLength: 12288, hashes: new[] { new byte[32] });
-        if (torrent.VerifyPieceHash(0, pieceData))
+        if (await torrent.VerifyPieceHashAsync(0, pieceData))
             throw new Exception("v2 verifier must reject a torrent with invalid (non-16KiB-multiple) pieceLength");
         await Task.CompletedTask;
     }
@@ -196,7 +196,7 @@ public abstract partial class WebTorrentTestBase
                 var piece = new byte[len];
                 Array.Copy(source, offset, piece, 0, len);
 
-                if (!t.VerifyPieceHash(globalIdx, piece))
+                if (!await t.VerifyPieceHashAsync(globalIdx, piece))
                     throw new Exception(
                         $"File '{file.Path}' piece {pi} (global={globalIdx}, len={len}) failed verification. " +
                         $"Parser+creator broke for pure-v2-multi-file past file 0.");
@@ -242,7 +242,7 @@ public abstract partial class WebTorrentTestBase
             int len = Math.Min(pieceLen, data.Length - offset);
             var pieceBytes = new byte[len];
             Array.Copy(data, offset, pieceBytes, 0, len);
-            if (!torrent.VerifyPieceHash(i, pieceBytes))
+            if (!await torrent.VerifyPieceHashAsync(i, pieceBytes))
                 throw new Exception(
                     $"Piece {i} (len {len}) must verify against its stored v2 Merkle piece-layer hash.");
         }

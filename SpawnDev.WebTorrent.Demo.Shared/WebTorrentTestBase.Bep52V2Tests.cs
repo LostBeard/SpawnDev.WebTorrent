@@ -330,7 +330,7 @@ public abstract partial class WebTorrentTestBase
             int len = Math.Min(pieceLen, data.Length - offset);
             var piece = new byte[len];
             Array.Copy(data, offset, piece, 0, len);
-            if (!t.VerifyPieceHash(i, piece))
+            if (!await t.VerifyPieceHashAsync(i, piece))
                 throw new Exception($"v2 VerifyPieceHash MUST accept piece {i} ({len} bytes) - Merkle branch broken");
         }
 
@@ -338,7 +338,7 @@ public abstract partial class WebTorrentTestBase
         var tampered = new byte[pieceLen];
         Array.Copy(data, 0, tampered, 0, pieceLen);
         tampered[0] ^= 0x01;
-        if (t.VerifyPieceHash(0, tampered))
+        if (await t.VerifyPieceHashAsync(0, tampered))
             throw new Exception("v2 VerifyPieceHash MUST reject a tampered piece");
 
         await Task.CompletedTask;
@@ -460,7 +460,7 @@ public abstract partial class WebTorrentTestBase
                 var piece = new byte[len];
                 Array.Copy(source, offset, piece, 0, len);
 
-                if (!t.VerifyPieceHash(globalIdx, piece))
+                if (!await t.VerifyPieceHashAsync(globalIdx, piece))
                     throw new Exception($"File '{file.Path}' piece {pi} (global={globalIdx}, len={len}) " +
                         $"failed VerifyPieceHash. Pure-v2 multi-file parser regressed in browser.");
                 globalIdx++;

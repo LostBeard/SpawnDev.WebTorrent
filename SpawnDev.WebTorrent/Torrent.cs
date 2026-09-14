@@ -1314,7 +1314,7 @@ public partial class Torrent : IAsyncDisposable
             // flat-SHA was WRONG for BEP 52 v2: a v2 piece hash is the Merkle root over 16 KiB leaves, not a
             // flat SHA of the whole piece — so every v2 piece (PieceLength > 16 KiB, the default for models)
             // failed and a rescan zeroed the entire bitfield → a full re-download.
-            Bitfield[i] = VerifyPieceHash(i, pieceData);
+            Bitfield[i] = await VerifyPieceHashAsync(i, pieceData);
         }
 
         // BEP 53: When partial selection is active, "done" means all selected pieces verified

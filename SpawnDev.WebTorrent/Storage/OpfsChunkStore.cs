@@ -290,39 +290,70 @@ public class AsyncFSChunkStore : IJSChunkStore
         }
 
         // ── FALLBACK: getFile + slice + arrayBuffer (no worker, locked file, or an unexpected short read)
-        long t0 = trace ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-        bool cached = trace && _fileCache.ContainsKey(index);
-        var file = await GetPieceFileAsync(index);                 // cached File (Blob) handle — NOT the data
-        if (trace)
+        //
+        // 🔴 A CACHED OPFS File IS A SNAPSHOT, AND A CONCURRENT WRITER INVALIDATES IT.
+        //
+        // _browserFs.Write TRUNCATES before it writes, so while any other holder of this store rewrites
+        // piece N there is a window where the entry is empty or the snapshot no longer resolves - and
+        // reading the Blob then throws NotFoundError ("A requested file or directory could not be found")
+        // rather than returning short. MEASURED 2026-09-08: that is one of three failure modes
+        // WebTorrent_OpfsReloadPersistence produced on an UNCHANGED library, and the reload case - a second
+        // client over the same OPFS store while the first is still live - hits it directly.
+        //
+        // A stale snapshot is RECOVERABLE: drop the cached handle, re-open, read again. Bounded at one
+        // retry so a genuinely missing piece still fails fast and returns null to the caller's
+        // "data not in store" path instead of spinning.
+        //
+        // ⚠️ THIS GUARD LIVED ONLY ON THE byte[] SIBLING until 2026-09-14, so the ZERO-COPY path - the one
+        // production actually uses - had no recovery at all. It moved here when that sibling became a thin
+        // delegate. A guard on the slow path and not the fast one protects nobody.
+        for (int attempt = 0; ; attempt++)
         {
-            ReadHandleMs += System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
-            if (!cached) ReadHandleMisses++;
+            long t0 = trace ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+            bool cached = trace && _fileCache.ContainsKey(index);
+            var file = await GetPieceFileAsync(index);             // cached File (Blob) handle — NOT the data
+            if (trace)
+            {
+                ReadHandleMs += System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+                if (!cached) ReadHandleMisses++;
+            }
+            if (file == null) return null;
+            try
+            {
+                long actualLen = Math.Min(length, file.Size - offset);
+                // Return null (NOT an empty Uint8Array) for an out-of-range / short read, matching the byte[]
+                // GetAsync(index, offset, length) sibling. An empty-but-non-null slice made the zero-copy read loop
+                // (Torrent.ReadFileUint8ArrayAsync) advance 0 bytes and spin FOREVER (got==0 → resultPos stuck);
+                // returning null routes it to its fail-loud "data not in store" throw instead of hanging.
+                if (actualLen <= 0)
+                {
+                    if (attempt == 0) { InvalidateFileCache(index); continue; }   // mid-truncate: re-open once
+                    return null;
+                }
+
+                long tS = trace ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                using var slice = file.Slice(offset, offset + actualLen);  // lazy Blob slice — no copy
+                if (trace) ReadSliceMs += System.Diagnostics.Stopwatch.GetElapsedTime(tS).TotalMilliseconds;
+
+                long tA = trace ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                using var ab = await slice.ArrayBuffer();                  // reads ONLY this range from OPFS
+                if (trace) ReadArrayBufferMs += System.Diagnostics.Stopwatch.GetElapsedTime(tA).TotalMilliseconds;
+
+                long tW = trace ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+                var u8 = new Uint8Array(ab);
+                if (trace)
+                {
+                    ReadWrapMs += System.Diagnostics.Stopwatch.GetElapsedTime(tW).TotalMilliseconds;
+                    ReadBytes += actualLen;
+                    ReadCalls++;
+                }
+                return u8;
+            }
+            catch when (attempt == 0)
+            {
+                InvalidateFileCache(index);   // stale snapshot - re-open the handle and try once more
+            }
         }
-        if (file == null) return null;
-        long actualLen = Math.Min(length, file.Size - offset);
-        // Return null (NOT an empty Uint8Array) for an out-of-range / short read, matching the byte[]
-        // GetAsync(index, offset, length) sibling. An empty-but-non-null slice made the zero-copy read loop
-        // (Torrent.ReadFileUint8ArrayAsync) advance 0 bytes and spin FOREVER (got==0 → resultPos stuck);
-        // returning null routes it to its fail-loud "data not in store" throw instead of hanging.
-        if (actualLen <= 0) return null;
-
-        long tS = trace ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-        using var slice = file.Slice(offset, offset + actualLen);  // lazy Blob slice — no copy
-        if (trace) ReadSliceMs += System.Diagnostics.Stopwatch.GetElapsedTime(tS).TotalMilliseconds;
-
-        long tA = trace ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-        using var ab = await slice.ArrayBuffer();                  // reads ONLY this range from OPFS
-        if (trace) ReadArrayBufferMs += System.Diagnostics.Stopwatch.GetElapsedTime(tA).TotalMilliseconds;
-
-        long tW = trace ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-        var u8 = new Uint8Array(ab);
-        if (trace)
-        {
-            ReadWrapMs += System.Diagnostics.Stopwatch.GetElapsedTime(tW).TotalMilliseconds;
-            ReadBytes += actualLen;
-            ReadCalls++;
-        }
-        return u8;
     }
 
     /// <summary>
@@ -544,43 +575,19 @@ public class AsyncFSChunkStore : IJSChunkStore
         // Browser/OPFS: slice the file so only the requested range is read from disk — never the whole
         // piece. A streaming parser reads a 4 MB piece in many small chunks; reading the whole piece per
         // chunk amplified OPFS reads 16-64x (the band-aid below was a memory cache for exactly that).
+        // 🔴 DELEGATE, NEVER REIMPLEMENT. This used to carry its own getFile + slice + arrayBuffer loop,
+        // which meant the byte[] callers MISSED the sync-handle fast path in GetUint8ArrayAsync entirely -
+        // the one measured at 40 ms against 175 ms per open (723 opens = 127 s) - and went straight to
+        // getFile(), which that method documents as CONTENDING with the sync handle's exclusive lock and
+        // making the read four times worse. A duplicate read path does not merely repeat logic; it silently
+        // opts its callers out of every optimisation the real one learns.
+        //
+        // The JS->.NET copy below is the unavoidable one: the IChunkStore contract returns byte[]. Callers
+        // that can take a Uint8Array must use GetUint8ArrayAsync and never come through here.
         if (_browserFs != null)
         {
-            await EnsureInitializedAsync();
-
-            // 🔴 A CACHED OPFS File IS A SNAPSHOT, AND A CONCURRENT WRITER INVALIDATES IT.
-            //
-            // _browserFs.Write TRUNCATES before it writes, so while any other holder of this store rewrites
-            // piece N there is a window where the entry is empty or the snapshot no longer resolves - and
-            // reading the Blob then throws NotFoundError ("A requested file or directory could not be found")
-            // rather than returning short. MEASURED 2026-09-08: that is one of three failure modes
-            // WebTorrent_OpfsReloadPersistence produced on an UNCHANGED library, and the reload case - a second
-            // client over the same OPFS store while the first is still live - hits it directly.
-            //
-            // A stale snapshot is RECOVERABLE: drop the cached handle, re-open, read again. Bounded at one
-            // retry so a genuinely missing piece still fails fast and returns null to the caller's
-            // "data not in store" path instead of spinning.
-            for (int attempt = 0; ; attempt++)
-            {
-                var file = await GetPieceFileAsync(index);
-                if (file == null) return null;
-                try
-                {
-                    long actualLength = Math.Min(length, file.Size - offset);
-                    if (actualLength <= 0)
-                    {
-                        if (attempt == 0) { InvalidateFileCache(index); continue; }   // mid-truncate: re-open once
-                        return null;
-                    }
-                    using var slice = file.Slice(offset, offset + actualLength);
-                    using var ab = await slice.ArrayBuffer();
-                    return ab.ReadBytes();
-                }
-                catch when (attempt == 0)
-                {
-                    InvalidateFileCache(index);   // stale snapshot - re-open the handle and try once more
-                }
-            }
+            using var ua = await GetUint8ArrayAsync(index, offset, length, ct).ConfigureAwait(false);
+            return ua?.ReadBytes();
         }
 
         // Desktop / non-browser AsyncFS has no Blob/slice — read the whole piece (cached) then copy.

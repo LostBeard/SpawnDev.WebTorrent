@@ -16,6 +16,23 @@ namespace SpawnDev.WebTorrent.Storage;
 /// scope with plain streams, and the awkward requirement disappears.
 /// </para>
 /// <para>
+/// 🔴 AND A P2P TORRENT CAN NEVER BE IN THAT WORKER. WebTorrent's peer transport is WebRTC, and
+/// <c>RTCPeerConnection</c> is Window-scope - so any torrent with actual peers runs where
+/// <c>createSyncAccessHandle</c> does not exist (TJ, 2026-09-14). The ranged-write path was therefore
+/// never available to the case it was designed for: content-file writes during a P2P download fall to
+/// <c>createWritable</c>, which with <c>keepExistingData: true</c> COPIES THE WHOLE FILE AT OPEN -
+/// measured 5.2 s each on a 2.5 GB file, once per piece, quadratic in torrent size. Piece files are not
+/// a preference here, they are the only workable write path.
+/// </para>
+/// <para>
+/// ⚠️ The exemption is lazy-hash / web-seed torrents (the hub's model delivery): peer-free over HTTP, so
+/// they CAN be hosted in a dedicated worker and do get sync handles. This store deliberately behaves the
+/// SAME in both cases. Branching storage on "is sync available" would make on-disk layout depend on
+/// execution scope, and scope-dependent behaviour is exactly what hid two separate defects in this
+/// codebase - gates that ran <c>?worker=dedicated</c> and so selected AGAINST the createWritable bug,
+/// and a stale-snapshot retry that lived only on the path production does not take.
+/// </para>
+/// <para>
 /// ⭐ MEASURED 2026-09-14 (OPFSStream, dedicated worker, constant 64 MiB) - this is what the trade
 /// actually costs, and it is not what the original 22-33x suggested:
 /// </para>

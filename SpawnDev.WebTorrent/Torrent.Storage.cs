@@ -45,7 +45,7 @@ public partial class Torrent
     /// reclaimed after every piece is verified present in the content store, so a failed unpack leaves a
     /// complete, readable torrent that simply unpacks on a later run.
     /// </remarks>
-    private void StartUnpackIfNeeded()
+    internal void StartUnpackIfNeeded()
     {
         if (_store is not Storage.ChunkThenContentStore ctc || ctc.IsUnpacked) return;
         if (!UnpackTask.IsCompleted) return;                     // one already in flight

@@ -886,6 +886,12 @@ public class WebTorrentClient : IAsyncDisposable
 
         torrent.Done = true;
 
+        // 🔴 SEEDING COMPLETES A TORRENT WITHOUT EVER GOING THROUGH CheckDone, so the unpack has to be
+        // started here too. Without this a seeded torrent under the ContentFiles layout sits in piece files
+        // until some later restart happens to run MigrateStorageLayoutAsync - meaning "seed these bytes"
+        // never produces the torrent's real files on disk, which is the one thing the unpack exists for.
+        torrent.StartUnpackIfNeeded();
+
         // Check for duplicate (WireInfoHashHex handles pure-v2 dedup)
         var existing = Torrents.FirstOrDefault(t =>
             t != torrent &&

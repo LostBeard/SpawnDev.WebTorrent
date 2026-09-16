@@ -1,5 +1,39 @@
 # Changelog
 
+## 4.2.8 - rebuilt against SpawnDev.SpawnJS 2.1.17
+
+🔴 **No source change. A recompile IS the fix, and 4.2.7 is broken without it.**
+
+4.2.7 was compiled against SpawnJS 2.1.7, where `FileSystemWritableFileStream.Seek` and `.Truncate` took a
+`ulong`. SpawnJS 2.1.17 takes a `long`. That change is **source-compatible and binary-breaking**: C#
+recompiles against either signature, so every build, restore and publish of every consumer stayed green,
+while the shipped IL kept calling the `ulong` overloads. NuGet resolves the highest version, so 2.1.17
+loads next to that IL and the call throws `MissingMethodException` - in the browser, at runtime, only on
+the code path that reaches it.
+
+### Scope: the real piece-write path, not only the probes
+
+Both call sites are in `AsyncFSFileStore`:
+
+- `WriteViewViaWritableAsync` -> `writable.Seek(fileOffset)`
+- `GetWritableAsync` -> `w.Truncate(file.Length)`
+
+That is the `createWritable` store path a normal visitor takes, so any download using it threw. An earlier
+note recorded the blast radius as the OPFS layout/contention benchmark probes only; that was wrong,
+because those probes were simply the first callers a test happened to run.
+
+`Truncate` was **not** one of the two observed failures - it was found by checking the artifact rather than
+by waiting for a second bug report.
+
+### How it was found, and the gate that now catches it
+
+Resolving every SpawnJS member reference in the shipped `SpawnDev.WebTorrent.dll` against the
+`SpawnDev.SpawnJS.dll` that actually loads. The check is `tools/check-abi-drift.cs` in SpawnDev.AI, run
+before its suite; it is red-checked against this exact break, and it reports the whole graph, so a
+package that drifts is named at build time instead of surfacing as somebody else's regression.
+
+Consumers on 4.2.7 should move to 4.2.8. Nothing else in this package changed.
+
 ## 4.2.7 - the shared-worker path, which no gate could see
 
 🔴 **Every defect below is in 4.2.6 and only bites in a SHARED worker** - the default for a normal

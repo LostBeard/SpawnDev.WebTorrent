@@ -238,7 +238,7 @@ public abstract partial class WebTorrentTestBase
                 throw new Exception($"pure-v2 no-name DisplayNameShort={t1.DisplayNameShort}, expected {expected}");
 
             // With dn → full name (DisplayNameShort doesn't truncate names, only hashes)
-            var t2 = client.Add($"magnet:?xt=urn:btmh:1220aaaa789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0&dn=my-model-with-a-long-name");
+            var t2 = client.Add($"magnet:?xt=urn:btmh:1220aaaa789abcdef0123456789abcdef0123456789abcdef0123456789abcdef012&dn=my-model-with-a-long-name");
             if (t2.DisplayNameShort != "my-model-with-a-long-name")
                 throw new Exception($"with-name DisplayNameShort={t2.DisplayNameShort}, expected full name");
 
@@ -267,7 +267,7 @@ public abstract partial class WebTorrentTestBase
                 throw new Exception($"pure-v2 no-name DisplayName={t1.DisplayName}, expected {wireHex}");
 
             // Pure-v2 magnet WITH dn= (Name set) → prefer Name
-            var t2 = client.Add($"magnet:?xt=urn:btmh:1220aaaa789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0&dn=my-model");
+            var t2 = client.Add($"magnet:?xt=urn:btmh:1220aaaa789abcdef0123456789abcdef0123456789abcdef0123456789abcdef012&dn=my-model");
             if (t2.DisplayName != "my-model")
                 throw new Exception($"pure-v2 with-name DisplayName={t2.DisplayName}, expected my-model");
 

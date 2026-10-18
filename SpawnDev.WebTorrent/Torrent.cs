@@ -541,6 +541,17 @@ public partial class Torrent : IAsyncDisposable
     /// web-seeds / display-name fields. Exposed <c>internal</c> primarily for testing; normal
     /// callers go through <see cref="InitFromMagnetAsync"/>.
     /// </summary>
+    /// <summary>
+    /// A bare v1 info hash (40 hex characters, or 32 base32) becomes <c>magnet:?xt=urn:btih:HASH</c>; anything else (a magnet URI, an http URL) is returned unchanged.
+    /// </summary>
+    internal static string NormalizeToMagnet(string value)
+    {
+        var trimmed = value.Trim();
+        bool hex40 = trimmed.Length == 40 && trimmed.All(Uri.IsHexDigit);
+        bool base32 = trimmed.Length == 32 && trimmed.All(c => char.IsAsciiLetter(c) || (c >= '2' && c <= '7'));
+        return hex40 || base32 ? "magnet:?xt=urn:btih:" + trimmed : value;
+    }
+
     internal void ParseMagnet(string magnetUri)
     {
         var queryStart = magnetUri.IndexOf('?');

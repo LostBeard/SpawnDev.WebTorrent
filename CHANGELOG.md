@@ -9,6 +9,10 @@
 - New event `DhtMutableItems.OnItemUpdated(publicKey, salt, value, seq)` says WHICH item changed; `OnValueUpdated` still fires, unchanged, but cannot tell salted items apart. `AddBtpkAsync` now listens to `OnItemUpdated` and only reacts to its own (key, salt), so a publisher's other torrents no longer trigger it. `IsNewerSequence` takes an optional salt.
 - Tests: `Bep46_Loopback_SaltedItems_UnderOneKey_AreFoundSeparatelyAndVerified` and `Bep46_Loopback_SaltedItem_Republish_IsSeenByANewSubscriber_WithTheNewValue` (two real DHT nodes over loopback UDP). Red-checked: without the salt candidates both fail ("not found"); with verification fixed but the cache keyed by public key, the first fails ("salt B returned A's value").
 
+🔴 **`Add(infoHash)` never parsed a bare info hash.** The docs say `Add` accepts "magnet URI or info hash hex string", but `ParseMagnet` returned as soon as it saw no `?`, so the torrent had no info hash: its handshakes carried a 0-byte hash (the `ArgumentException` was swallowed, so nothing was ever sent on the wire) and `AddBtpkAsync`, which calls `Add(infoHashHex)`, produced a torrent that could never connect to anyone. `Add` now turns a bare 40-hex (or 32-base32) hash into `magnet:?xt=urn:btih:HASH`.
+- A malformed magnet used to fault inside the fire-and-forget `InitFromMagnetAsync` (nobody observed it) and `Add` returned a dead torrent. `Add` now throws "Malformed magnet: no info hash" (a BEP 46 key-only magnet is still fine: the DHT supplies the hash later). Two existing tests added pure-v2 magnets with a 66-character multihash (68 needed); they relied on the silent failure and are corrected.
+- Tests: `Add_BareInfoHash_IsParsed_AndAMalformedOneThrowsInsteadOfReturningADeadTorrent`, `Magnet_ByInfoHashOnly_WithManualTcpPeer_FetchesMetadataAndDownloads` (two real clients over loopback TCP: metadata through ut_metadata, then the download). Both halves red-checked. Full desktop run: 533 tests, none failing.
+
 Found by SpawnDarkly, which shares each world as a salted BEP 46 torrent under its creator's key.
 
 ## 4.2.8 - rebuilt against SpawnDev.SpawnJS 2.1.17

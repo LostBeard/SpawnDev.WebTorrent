@@ -354,6 +354,10 @@ public class WebTorrentClient : IAsyncDisposable
             || magnetOrInfoHash.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
             return AddLazyHash(magnetOrInfoHash, opts);
 
+        // A bare info hash (40 hex characters, or 32 base32) is accepted as the doc says: it is the magnet "xt=urn:btih:" with nothing else.
+        // ParseMagnet only reads a query string, so without this the hash was never parsed and the torrent had no info hash at all.
+        magnetOrInfoHash = Torrent.NormalizeToMagnet(magnetOrInfoHash);
+
         var torrent = new Torrent();
 
         // ut_metadata (BEP 9) is registered PER-TORRENT in Torrent.SetupMetadataExtension (called from
@@ -365,7 +369,12 @@ public class WebTorrentClient : IAsyncDisposable
 
         // Start the torrent — parse magnet and begin discovery
         // Default trackers are merged inside InitFromMagnetAsync before StartDiscovery
-        _ = torrent.InitFromMagnetAsync(magnetOrInfoHash, this, opts);
+        var init = torrent.InitFromMagnetAsync(magnetOrInfoHash, this, opts);
+        // InitFromMagnetAsync parses the magnet before its first await, so a malformed one has already faulted here. It used to be dropped (fire and forget), and Add returned a
+        // torrent with no info hash that could never connect to anyone and never said why.
+        // (A BEP 46 key-only magnet, xs=urn:btpk:, legitimately has no info hash yet: the DHT supplies it later, so that one is kept.)
+        if (init.IsFaulted && torrent.BtpkPublicKey == null) throw init.Exception!.GetBaseException();
+        _ = init;
 
         // Check for duplicate after WireInfoHashHex is set. WireInfoHashHex resolves
         // to v1 InfoHash when present, else truncated V2InfoHash — so pure-v2 magnets

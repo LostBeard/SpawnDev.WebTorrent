@@ -561,8 +561,10 @@ public class WebTorrentClient : IAsyncDisposable
         // Subscribe for updates — fires OnMutableUpdate when publisher pushes new version
         _ = Task.Run(async () =>
         {
-            items.OnValueUpdated += (key, value, seq) =>
+            items.OnItemUpdated += (key, itemSalt, value, seq) =>
             {
+                // a key can publish several salted torrents: only the one this torrent was resolved from may update it
+                if (!key.AsSpan().SequenceEqual(publicKey) || !(itemSalt ?? Array.Empty<byte>()).AsSpan().SequenceEqual(salt ?? Array.Empty<byte>())) return;
                 var newInfoHash = Convert.ToHexString(value).ToLowerInvariant();
                 if (torrent != null && newInfoHash != torrent.InfoHash)
                 {

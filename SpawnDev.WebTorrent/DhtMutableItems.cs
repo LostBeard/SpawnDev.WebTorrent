@@ -23,7 +23,30 @@ public class DhtMutableItems : IDisposable
     private bool _disposed;
     private long _sequence;
     private readonly ConcurrentDictionary<string, byte[]> _tokenCache = new();
+    // Latest verified value per ITEM. Key: hex(target) where target = SHA-1(k + salt), so one key can publish any number of salted items (BEP 46 uses the salt to tell
+    // a publisher's torrents apart) without them overwriting each other.
     private readonly ConcurrentDictionary<string, (byte[] value, long seq)> _valueCache = new();
+
+    // A BEP 44 get response carries v, k, seq and sig but NOT the salt (the salt is part of what was signed, and the requester is the one who knows it). To verify a response we
+    // therefore try the salts this instance has been asked about for that key (plus no salt). Key: hex(k) -> (hex(salt) or "" -> salt).
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte[]?>> _knownSalts = new();
+
+    private void RegisterSalt(byte[] publicKey, byte[]? salt)
+    {
+        var salts = _knownSalts.GetOrAdd(Convert.ToHexString(publicKey), _ => new ConcurrentDictionary<string, byte[]?>());
+        salts[salt == null || salt.Length == 0 ? "" : Convert.ToHexString(salt)] = salt == null || salt.Length == 0 ? null : salt;
+    }
+
+    /// <summary>The salts a response from <paramref name="publicKey"/> might have been signed with: none, then each one asked about.</summary>
+    private List<byte[]?> SaltCandidates(byte[] publicKey, byte[]? echoedSalt)
+    {
+        var candidates = new List<byte[]?> { null };
+        if (echoedSalt is { Length: > 0 }) candidates.Add(echoedSalt); // not standard, but a peer that echoes it is easy to support
+        if (_knownSalts.TryGetValue(Convert.ToHexString(publicKey), out var known))
+            foreach (var salt in known.Values)
+                if (salt != null && !candidates.Any(c => c != null && c.AsSpan().SequenceEqual(salt))) candidates.Add(salt);
+        return candidates;
+    }
 
     // Server-side storage for BEP 44 put queries we've received + are now serving to
     // other peers on subsequent get queries. Key: hex(target) where target = SHA-1(k + salt).
@@ -49,6 +72,12 @@ public class DhtMutableItems : IDisposable
 
     /// <summary>Event fired when a subscribed key has a new value.</summary>
     public event Action<byte[], byte[], long>? OnValueUpdated; // publicKey, value, sequence
+
+    /// <summary>
+    /// Like <see cref="OnValueUpdated"/> but says WHICH item changed: (publicKey, salt, value, sequence), with a null salt for an unsalted item. Use this when a key publishes
+    /// several salted items (one key, many torrents): <see cref="OnValueUpdated"/> cannot tell them apart.
+    /// </summary>
+    public event Action<byte[], byte[]?, byte[], long>? OnItemUpdated;
 
     public DhtMutableItems(DhtDiscovery dht, IDhtSigner signer)
     {
@@ -178,36 +207,47 @@ public class DhtMutableItems : IDisposable
         if (!response.TryGetValue("seq", out var seqObj)) return;
         long seq = seqObj is long l ? l : seqObj is int i ? i : 0;
 
-        // Check if this is newer than what we have (fast path - no async needed)
-        var cacheKey = Convert.ToHexString(pubKey);
-        if (_valueCache.TryGetValue(cacheKey, out var cached) && cached.seq >= seq)
+        byte[]? echoedSalt = response.TryGetValue("salt", out var saltObj) && saltObj is byte[] s ? s : null;
+        var candidates = SaltCandidates(pubKey, echoedSalt);
+
+        // Check if this is newer than what we have for every item it could be (fast path - no async needed)
+        if (candidates.All(salt => _valueCache.TryGetValue(CacheKey(pubKey, salt), out var cached) && cached.seq >= seq))
             return; // Old or duplicate
 
         // Verify Ed25519 signature off the UDP receive loop to avoid blocking
         if (response.TryGetValue("sig", out var sigObj) && sigObj is byte[] signature)
         {
-            byte[]? salt = response.TryGetValue("salt", out var saltObj) && saltObj is byte[] s ? s : null;
-            var signData = BuildSignData(value, salt, seq);
             // Queue verification work - never block the receive loop
             _ = Task.Run(async () =>
             {
-                var verified = await _signer.VerifyAsync(pubKey, signData, signature);
-                if (!verified) return; // Reject forged value
-
-                // Re-check freshness after async verify (another response may have arrived)
-                if (_valueCache.TryGetValue(cacheKey, out var latest) && latest.seq >= seq)
+                // the signature covers the salt, so the one that verifies is the item this is
+                foreach (var salt in candidates)
+                {
+                    if (!await _signer.VerifyAsync(pubKey, BuildSignData(value, salt, seq), signature)) continue;
+                    Accept(pubKey, salt, value, seq);
                     return;
-
-                _valueCache[cacheKey] = (value, seq);
-                OnValueUpdated?.Invoke(pubKey, value, seq);
+                }
+                // verified under no salt we know of: forged, or an item nobody here asked about. Reject.
             });
         }
         else
         {
             // No signature - accept only if we have no signed version (bootstrapping)
-            _valueCache[cacheKey] = (value, seq);
-            OnValueUpdated?.Invoke(pubKey, value, seq);
+            Accept(pubKey, null, value, seq);
         }
+    }
+
+    private static string CacheKey(byte[] publicKey, byte[]? salt) => TargetHex(publicKey, salt);
+
+    /// <summary>Stores a verified value if it is newer than the one held for that item and tells the subscribers.</summary>
+    private void Accept(byte[] pubKey, byte[]? salt, byte[] value, long seq)
+    {
+        var cacheKey = CacheKey(pubKey, salt);
+        // Re-check freshness (another response may have arrived while we verified)
+        if (_valueCache.TryGetValue(cacheKey, out var latest) && latest.seq >= seq) return;
+        _valueCache[cacheKey] = (value, seq);
+        OnItemUpdated?.Invoke(pubKey, salt, value, seq);
+        OnValueUpdated?.Invoke(pubKey, value, seq);
     }
 
     /// <summary>Publish a mutable item to the DHT.</summary>
@@ -218,6 +258,7 @@ public class DhtMutableItems : IDisposable
         if (_signer.PublicKey.Length != 32)
             throw new InvalidOperationException($"BEP 44 requires 32-byte Ed25519 public key, got {_signer.PublicKey.Length} bytes");
 
+        RegisterSalt(_signer.PublicKey, salt);
         Interlocked.Increment(ref _sequence);
         await PersistSequenceAsync();
 
@@ -246,7 +287,7 @@ public class DhtMutableItems : IDisposable
         };
         // Also surface via the normal received-value path so local consumers
         // (e.g. local OnValueUpdated subscribers on the same process) see it.
-        _valueCache[Convert.ToHexString(_signer.PublicKey)] = (value, _sequence);
+        _valueCache[CacheKey(_signer.PublicKey, salt)] = (value, _sequence);
 
         int putCount = 0;
         for (int attempt = 0; attempt < 5 && !ct.IsCancellationRequested; attempt++)
@@ -285,7 +326,8 @@ public class DhtMutableItems : IDisposable
     public async Task<(byte[] value, long sequence)?> GetAsync(byte[] publicKey, byte[]? salt = null,
         CancellationToken ct = default)
     {
-        var cacheKey = Convert.ToHexString(publicKey);
+        RegisterSalt(publicKey, salt);
+        var cacheKey = CacheKey(publicKey, salt);
 
         // Check cache first - may already have from prior subscription
         if (_valueCache.TryGetValue(cacheKey, out var existing))
@@ -309,6 +351,7 @@ public class DhtMutableItems : IDisposable
     public async Task SubscribeAsync(byte[] publicKey, byte[]? salt = null,
         int pollIntervalMs = 30000, CancellationToken ct = default)
     {
+        RegisterSalt(publicKey, salt);
         while (!ct.IsCancellationRequested)
         {
             // Always force a live DHT lookup rather than the cache-first GetAsync path,
@@ -362,9 +405,9 @@ public class DhtMutableItems : IDisposable
     /// <summary>
     /// Rejects old sequence numbers. Returns true if seq is newer than cached.
     /// </summary>
-    public bool IsNewerSequence(byte[] publicKey, long seq)
+    public bool IsNewerSequence(byte[] publicKey, long seq, byte[]? salt = null)
     {
-        var key = Convert.ToHexString(publicKey);
+        var key = CacheKey(publicKey, salt);
         if (_valueCache.TryGetValue(key, out var cached))
             return seq > cached.seq;
         return true; // No cached value — anything is newer

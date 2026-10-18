@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased (4.2.8-local.2 on the local feed) - BEP 46 salted items work
+
+🔴 **A salted BEP 44/46 item could be published but never found.** One key publishing several torrents (one per salt, the normal BEP 46 pattern) was broken on the GET side:
+
+- A BEP 44 get response carries `v`, `k`, `seq` and `sig` but NOT the salt (the salt is signed, and the requester is the one who knows it). `DhtMutableItems.HandleGetResponse` verified every response as if there were no salt, so the signature of any salted item failed and the value was dropped. It now tries the salts this instance was asked about (`GetAsync` / `SubscribeAsync` / `PublishAsync` register them) and accepts the one under which the signature verifies.
+- The value cache was keyed by public key alone, so a second item under the same key replaced the first and `GetAsync(key, saltB)` returned salt A's value. It is keyed by the item's target (SHA-1 of key + salt) now.
+- New event `DhtMutableItems.OnItemUpdated(publicKey, salt, value, seq)` says WHICH item changed; `OnValueUpdated` still fires, unchanged, but cannot tell salted items apart. `AddBtpkAsync` now listens to `OnItemUpdated` and only reacts to its own (key, salt), so a publisher's other torrents no longer trigger it. `IsNewerSequence` takes an optional salt.
+- Tests: `Bep46_Loopback_SaltedItems_UnderOneKey_AreFoundSeparatelyAndVerified` and `Bep46_Loopback_SaltedItem_Republish_IsSeenByANewSubscriber_WithTheNewValue` (two real DHT nodes over loopback UDP). Red-checked: without the salt candidates both fail ("not found"); with verification fixed but the cache keyed by public key, the first fails ("salt B returned A's value").
+
+Found by SpawnDarkly, which shares each world as a salted BEP 46 torrent under its creator's key.
+
 ## 4.2.8 - rebuilt against SpawnDev.SpawnJS 2.1.17
 
 🔴 **No source change. A recompile IS the fix, and 4.2.7 is broken without it.**

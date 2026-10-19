@@ -73,6 +73,31 @@ public abstract partial class WebTorrentTestBase
         }
     }
 
+    [TestMethod]
+    public async Task Bep46_EnsureSequenceAtLeast_RaisesNeverLowers_AndPublishGoesAboveIt()
+    {
+        // A publisher with no persistent storage starts every process at sequence 1, and a DHT node ignores a put that is not higher than what it holds, so a restarted
+        // publisher's updates vanish. The caller can raise the floor (the Unix time in MILLISECONDS rises across restarts without storing anything); it never lowers it.
+        var signer = new Ed25519Signer(PortableCrypto.CreateCrypto());
+        await signer.GenerateKeyAsync();
+        var dht = new DhtDiscovery(new DhtOptions { Port = 40000 + System.Security.Cryptography.RandomNumberGenerator.GetInt32(20000), BootstrapNodes = Array.Empty<string>() });
+        try
+        {
+            using var items = dht.CreateMutableItems(signer);
+            if (items.Sequence != 0) throw new Exception($"a new publisher starts at {items.Sequence}, expected 0");
+            long floor = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            items.EnsureSequenceAtLeast(floor);
+            if (items.Sequence != floor) throw new Exception($"sequence {items.Sequence}, expected {floor}");
+            items.EnsureSequenceAtLeast(5);
+            items.EnsureSequenceAtLeast(floor - 1);
+            if (items.Sequence != floor) throw new Exception($"EnsureSequenceAtLeast lowered the sequence to {items.Sequence}");
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            try { await items.PublishAsync(new byte[20], new byte[16], cts.Token); } catch (OperationCanceledException) { } // no peers to put to: only the sequence matters here
+            if (items.Sequence != floor + 1) throw new Exception($"a publish should use {floor + 1}, the sequence is {items.Sequence}");
+        }
+        finally { await dht.DisposeAsync(); }
+    }
+
     [TestMethod(RetryCount = 2)]
     public async Task Bep46_Loopback_SaltedItem_Republish_IsSeenByANewSubscriber_WithTheNewValue()
     {

@@ -13,6 +13,8 @@
 - A malformed magnet used to fault inside the fire-and-forget `InitFromMagnetAsync` (nobody observed it) and `Add` returned a dead torrent. `Add` now throws "Malformed magnet: no info hash" (a BEP 46 key-only magnet is still fine: the DHT supplies the hash later). Two existing tests added pure-v2 magnets with a 66-character multihash (68 needed); they relied on the silent failure and are corrected.
 - Tests: `Add_BareInfoHash_IsParsed_AndAMalformedOneThrowsInsteadOfReturningADeadTorrent`, `Magnet_ByInfoHashOnly_WithManualTcpPeer_FetchesMetadataAndDownloads` (two real clients over loopback TCP: metadata through ut_metadata, then the download). Both halves red-checked. Full desktop run: 533 tests, none failing.
 
+- New `DhtMutableItems.EnsureSequenceAtLeast(long)`: a publisher with no persistent storage restarts at sequence 1 and a DHT node ignores a put that is not higher than the one it holds, so a restarted publisher's updates silently vanished. Raising the floor to the Unix time in milliseconds makes the sequence rise across restarts; it never lowers. Test: `Bep46_EnsureSequenceAtLeast_RaisesNeverLowers_AndPublishGoesAboveIt` (red-checked).
+
 Found by SpawnDarkly, which shares each world as a salted BEP 46 torrent under its creator's key.
 
 ## 4.2.8 - rebuilt against SpawnDev.SpawnJS 2.1.17

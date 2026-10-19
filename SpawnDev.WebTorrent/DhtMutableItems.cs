@@ -163,6 +163,18 @@ public class DhtMutableItems : IDisposable
         catch { return null; }
     }
 
+    /// <summary>
+    /// Raises the sequence number to at least <paramref name="minimum"/> (never lowers it): the next <see cref="PublishAsync"/> uses a value above it. A publisher with no persistent
+    /// storage (so <see cref="RestoreSequenceAsync"/> has nothing to restore) starts every process at 1, and the DHT ignores a put whose sequence is not higher than the one it holds,
+    /// so its republishes silently vanish. Passing the current Unix time in MILLISECONDS (seconds would collide for two publishes in one second) makes the sequence rise across restarts without storing anything (BEP 44 only asks that it increase).
+    /// </summary>
+    public void EnsureSequenceAtLeast(long minimum)
+    {
+        long current;
+        while ((current = Interlocked.Read(ref _sequence)) < minimum)
+            if (Interlocked.CompareExchange(ref _sequence, minimum, current) == current) break;
+    }
+
     /// <summary>Restore the last published sequence number from persistent storage.</summary>
     public async Task RestoreSequenceAsync()
     {

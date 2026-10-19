@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (4.2.8-local.2 on the local feed) - BEP 46 salted items work
+## 4.2.9 - BEP 44/46 works on the real DHT (salted items, bare info hashes, iterative lookup)
 
 🔴 **A salted BEP 44/46 item could be published but never found.** One key publishing several torrents (one per salt, the normal BEP 46 pattern) was broken on the GET side:
 

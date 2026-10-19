@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (4.2.10-local.2 on the local feed) - large torrents on desktop: disk storage and streaming seeding
+## 4.2.10 - large torrents on desktop: disk storage and streaming seeding
 
 🔴 **On desktop every torrent was held entirely in memory.** Without a browser `AsyncFileSystem` the piece store was a `MemoryChunkStore`, for seeds and downloads alike, and the options doc's claim that `AsyncFileSystem` means "native FS on desktop" was wrong: the AsyncFS piece stores throw "PutAsync requires a browser file system (OPFS)" on a native file system. A multi-gigabyte torrent could not be seeded or downloaded on a desktop machine.
 - New `WebTorrentClientOptions.StorageFolder` (and `WebTorrentClient.StorageFolder`): each torrent keeps its pieces as files under `{folder}/{infoHash}/piece_N.bin` (`FileChunkStore`, which existed but was never used). They are a session cache, not read back as downloaded pieces after a restart; `RemoveWithDataAsync` deletes the torrent's folder.

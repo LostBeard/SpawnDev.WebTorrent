@@ -132,12 +132,12 @@ public abstract partial class WebTorrentTestBase
         var client = new WebTorrentClient();
         try
         {
-            await client.EnsureDhtAsync(new DhtOptions { Port = port });
+            await client.EnsureDhtAsync(new DhtOptions { Port = port, BootstrapNodes = Array.Empty<string>() });
             if (client.Dht == null) throw new Exception("Dht should be non-null after EnsureDhtAsync");
             var first = client.Dht;
 
             // Calling again should be a no-op, not rebuild.
-            await client.EnsureDhtAsync(new DhtOptions { Port = port + 1 });
+            await client.EnsureDhtAsync(new DhtOptions { Port = port + 1, BootstrapNodes = Array.Empty<string>() });
             if (!ReferenceEquals(first, client.Dht))
                 throw new Exception("Second EnsureDhtAsync call should be idempotent - same instance");
         }
@@ -162,8 +162,8 @@ public abstract partial class WebTorrentTestBase
         var clientB = new WebTorrentClient();
         try
         {
-            await clientA.EnsureDhtAsync(new DhtOptions { Port = portA });
-            await clientB.EnsureDhtAsync(new DhtOptions { Port = portB });
+            await clientA.EnsureDhtAsync(new DhtOptions { Port = portA, BootstrapNodes = Array.Empty<string>() });
+            await clientB.EnsureDhtAsync(new DhtOptions { Port = portB, BootstrapNodes = Array.Empty<string>() });
 
             if (clientA.Dht == null || clientB.Dht == null)
                 throw new Exception("Both clients should have Dht set");

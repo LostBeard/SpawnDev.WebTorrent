@@ -45,6 +45,15 @@ public class DhtDiscovery : IAsyncDisposable
     public event Func<Dictionary<string, object>, IPEndPoint, byte[]?>? OnPutQuery;
 
     public int NodeCount => _routingTable.NodeCount;
+
+    // Health counters: how many answers this node has had, how many were KRPC errors, and the last error, so a DHT that is "not finding anything" can be told apart from one that is
+    // unreachable (no responses), reachable but talking to nodes that do not implement BEP 44 (errors 204), or not given tokens.
+    private long _responsesReceived, _errorsReceived, _tokensReceived;
+    public long ResponsesReceived => Interlocked.Read(ref _responsesReceived);
+    public long ErrorsReceived => Interlocked.Read(ref _errorsReceived);
+    /// <summary>Responses that carried a write token (what a BEP 44 put needs from each node it writes to).</summary>
+    public long TokensReceived => Interlocked.Read(ref _tokensReceived);
+    public string? LastError { get; private set; }
     public bool IsReady { get; private set; }
 
     public DhtDiscovery(DhtOptions? options = null)
@@ -93,32 +102,87 @@ public class DhtDiscovery : IAsyncDisposable
         }
     }
 
-    /// <summary>Send a BEP 44 get request using iterative closest-node lookup (3 rounds).</summary>
-    public async Task GetAsync(byte[] target, CancellationToken ct = default)
+    /// <summary>Nodes asked in parallel per round of <see cref="GetAsync"/>, how many of the closest must have answered before it stops, and the most rounds it runs.</summary>
+    private const int LookupAlpha = 8, LookupClosest = 8;
+    private static readonly TimeSpan LookupMaxTime = TimeSpan.FromSeconds(15), LookupNodeTimeout = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// Walks toward <paramref name="target"/> the way Kademlia does, asking each node it meets a BEP 44 <c>get</c> (so values and write tokens come back through the normal
+    /// response path), and returns the nearest nodes that ANSWERED, nearest first: where a put for that target belongs and where a get will find it.
+    /// The search keeps its own pool of candidates built from the answers it receives. It cannot rely on the routing table for that: the table is organised around THIS node's id,
+    /// its buckets hold 8 nodes each and drop newcomers, so the nodes near an arbitrary target (far from our id) are exactly the ones it refuses to keep. Candidates also have a state
+    /// (asked / answered / given up on after a timeout), because on the real DHT many nodes named in answers are gone; it ends when the nearest candidates not given up on have all
+    /// answered, or after <see cref="LookupMaxTime"/>. (It used to ask 3 nodes for 3 rounds, which finds an item on a 2-node loopback network but not on the real one.)
+    /// </summary>
+    public async Task<IReadOnlyList<IPEndPoint>> LookupAsync(byte[] target, CancellationToken ct = default)
     {
-        if (_udp == null) return;
+        if (_udp == null) return Array.Empty<IPEndPoint>();
 
-        var queried = new HashSet<string>();
-        var toQuery = _routingTable.GetClosest(target, 8);
-
-        for (int round = 0; round < 3 && toQuery.Count > 0 && !ct.IsCancellationRequested; round++)
+        var pool = new System.Collections.Concurrent.ConcurrentDictionary<string, DhtNode>();
+        void Learn(byte[] id, IPEndPoint endpoint) => pool.TryAdd(endpoint.ToString(), new DhtNode { NodeId = id, EndPoint = endpoint });
+        foreach (var node in _routingTable.GetClosest(target, 96)) Learn(node.NodeId, node.EndPoint);
+        NodeLearned += Learn;
+        try
         {
-            var batch = toQuery.Where(n => queried.Add(n.Id)).Take(3).ToList();
-            var tasks = new List<Task>(batch.Count);
-            foreach (var node in batch)
+            var askedAt = new Dictionary<string, DateTime>();
+            var started = DateTime.UtcNow;
+            // A node counts as having answered only if it answered THIS get (with a token or a value) after we asked it: one that merely answered the bootstrap find_node, or that
+            // answers get with an error (BEP 44 is optional: some nodes reply 204 "unknown method", the bootstrap routers reply 203), is no use for a put and is given up on.
+            bool Answered(DhtNode n) => askedAt.TryGetValue(n.EndPoint.ToString(), out var at) && _getAnswers.TryGetValue(n.EndPoint.ToString(), out var answered) && answered >= at;
+            while (!ct.IsCancellationRequested && DateTime.UtcNow - started < LookupMaxTime)
             {
-                tasks.Add(Task.Run(async () =>
+                var now = DateTime.UtcNow;
+                bool Dead(DhtNode n) => askedAt.TryGetValue(n.EndPoint.ToString(), out var at) && !Answered(n) && ((_errorsFrom.TryGetValue(n.EndPoint.ToString(), out var failed) && failed >= at) || now - at > LookupNodeTimeout);
+                var candidates = pool.Values.Where(n => !Dead(n)).OrderBy(n => XorDistanceTo(n.NodeId, target), XorOrder.Instance).ToList();
+                var nearest = candidates.Take(LookupClosest).ToList();
+                if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[Dht.Lookup] t={(DateTime.UtcNow - started).TotalSeconds:0.0}s pool={pool.Count} live={candidates.Count} asked={askedAt.Count} answered={candidates.Count(Answered)} nearest8answered={nearest.Count(Answered)}/{nearest.Count}");
+                if (nearest.Count > 0 && nearest.All(Answered)) break; // the nearest live nodes all answered: nothing closer turned up
+                var batch = candidates.Take(LookupClosest * 3).Where(n => !askedAt.ContainsKey(n.EndPoint.ToString())).Take(LookupAlpha).ToList();
+                if (batch.Count == 0 && nearest.Count > 0 && nearest.All(n => askedAt.ContainsKey(n.EndPoint.ToString())))
                 {
-                    try { await SendKrpcAsync(node.EndPoint, BuildGet(target), ct); }
-                    catch { }
-                }, ct));
+                    await Task.Delay(150, ct); // everything near is asked and we are waiting on answers (or their timeout)
+                    continue;
+                }
+                if (batch.Count == 0) break;
+                foreach (var node in batch)
+                {
+                    askedAt[node.EndPoint.ToString()] = now;
+                    var endpoint = node.EndPoint;
+                    _ = Task.Run(async () =>
+                    {
+                        try { await SendKrpcAsync(endpoint, BuildGet(target), ct); }
+                        catch { }
+                    }, ct);
+                }
+                await Task.Delay(250, ct); // answers arrive on the receive loop and add closer nodes to the pool
             }
-            await Task.WhenAll(tasks);
-            await Task.Delay(300, ct);
-            // Re-query - responses may have added closer nodes to routing table
-            toQuery = _routingTable.GetClosest(target, 8);
+            return pool.Values.Where(Answered).OrderBy(n => XorDistanceTo(n.NodeId, target), XorOrder.Instance).Take(LookupClosest).Select(n => n.EndPoint).ToList();
         }
+        finally { NodeLearned -= Learn; }
     }
+
+    /// <summary>A BEP 44 get lookup; see <see cref="LookupAsync"/>.</summary>
+    public Task GetAsync(byte[] target, CancellationToken ct = default) => LookupAsync(target, ct);
+
+    /// <summary>Raised for every node named in an answer (and every node that answers), so a lookup can build its own candidate pool.</summary>
+    private event Action<byte[], IPEndPoint>? NodeLearned;
+
+    private static byte[] XorDistanceTo(byte[] id, byte[] target) => KademliaRoutingTable.XorDistance(id, target);
+
+    private sealed class XorOrder : IComparer<byte[]>
+    {
+        public static readonly XorOrder Instance = new();
+        public int Compare(byte[]? x, byte[]? y) => x == null || y == null ? 0 : x.AsSpan().SequenceCompareTo(y);
+    }
+
+    // Endpoints that have answered one of our queries, with when: a node that has answered is alive and (for a get) holds a write token for us.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _responders = new();
+
+    // When each endpoint last answered with a write token or a value (a get answer), and when it last sent a KRPC error.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _getAnswers = new(), _errorsFrom = new();
+
+    /// <summary>True if the node at <paramref name="endpoint"/> has answered one of our queries (as opposed to merely being named in someone else's answer).</summary>
+    public bool HasResponded(IPEndPoint endpoint) => _responders.ContainsKey(endpoint.ToString());
 
     /// <summary>Send a BEP 44 put request to nodes that have tokens for the target.</summary>
     public async Task PutAsync(byte[] target, Dictionary<string, object> args, CancellationToken ct = default)
@@ -148,15 +212,34 @@ public class DhtDiscovery : IAsyncDisposable
                 var host = parts[0];
                 var port = parts.Length > 1 ? int.Parse(parts[1]) : 6881;
                 var addresses = await Dns.GetHostAddressesAsync(host, ct);
-                if (addresses.Length == 0) continue;
-
-                var ep = new IPEndPoint(addresses[0], port);
-                await SendKrpcAsync(ep, BuildFindNode(NodeId), ct);
+                // every IPv4 address of the router, not just the first: a bootstrap host often has several and any one may be down
+                foreach (var address in addresses.Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork))
+                {
+                    try { await SendKrpcAsync(new IPEndPoint(address, port), BuildFindNode(NodeId), ct); } catch { }
+                }
                 await Task.Delay(500, ct);
             }
             catch { }
         }
+
+        // Fill the routing table by walking outward: ask the nodes we have learned about for the nodes nearest our own id, until there are enough to search with.
+        // (One find_node to the routers used to leave 2-3 nodes, which is too few to find where anything is stored.)
+        var asked = new HashSet<string>();
+        var deadline = DateTime.UtcNow.AddSeconds(8);
+        while (!ct.IsCancellationRequested && DateTime.UtcNow < deadline && _routingTable.NodeCount < BootstrapTargetNodes)
+        {
+            var batch = _routingTable.GetClosest(NodeId, 256).Where(n => asked.Add(n.EndPoint.ToString())).Take(8).ToList();
+            if (batch.Count == 0) { await Task.Delay(300, ct); if (_routingTable.NodeCount == 0) break; continue; }
+            foreach (var node in batch)
+            {
+                var endpoint = node.EndPoint;
+                _ = Task.Run(async () => { try { await SendKrpcAsync(endpoint, BuildFindNode(NodeId), ct); } catch { } }, ct);
+            }
+            await Task.Delay(400, ct);
+        }
     }
+
+    private const int BootstrapTargetNodes = 40;
 
     private async Task GetPeersAsync(byte[] infoHash, CancellationToken ct)
     {
@@ -205,8 +288,15 @@ public class DhtDiscovery : IAsyncDisposable
 
             switch (msgType)
             {
-                case "r": HandleResponse(msg, from); break;
+                case "r": Interlocked.Increment(ref _responsesReceived); _responders[from.ToString()] = DateTime.UtcNow; HandleResponse(msg, from); break;
                 case "q": HandleQuery(msg, from); break;
+                case "e":
+                    // KRPC error: [code, message]. A node that does not implement a method (BEP 44 get/put are optional) answers 204 "method unknown".
+                    Interlocked.Increment(ref _errorsReceived);
+                    _errorsFrom[from.ToString()] = DateTime.UtcNow;
+                    if (msg.TryGetValue("e", out var eObj) && eObj is List<object> { Count: >= 2 } e && e[1] is byte[] text)
+                        LastError = $"{e[0]}: {Encoding.UTF8.GetString(text)}";
+                    break;
             }
         }
         catch { }
@@ -223,6 +313,7 @@ public class DhtDiscovery : IAsyncDisposable
             if (r.TryGetValue("token", out var tokenObj) && tokenObj is byte[] token)
                 node.Token = token;
             _routingTable.AddNode(node);
+            NodeLearned?.Invoke(nodeId, from);
         }
 
         // Extract peers from get_peers response
@@ -249,12 +340,14 @@ public class DhtDiscovery : IAsyncDisposable
                 var port = (nodesBytes[i + 24] << 8) | nodesBytes[i + 25];
                 if (port > 0)
                 {
+                    var learned = new IPEndPoint(IPAddress.Parse(ip), port);
                     _routingTable.AddNode(new DhtNode
                     {
                         NodeId = nid,
-                        EndPoint = new IPEndPoint(IPAddress.Parse(ip), port),
+                        EndPoint = learned,
                         LastSeen = DateTime.UtcNow,
                     });
+                    NodeLearned?.Invoke(nid, learned);
                 }
             }
         }
@@ -264,6 +357,8 @@ public class DhtDiscovery : IAsyncDisposable
         // when the node has no stored value to return) OR that carries mutable
         // fields (v/k/sig). Token-only replies matter because the subsequent PUT
         // needs that token - without firing here, token caching never happens.
+        if (r.ContainsKey("token")) Interlocked.Increment(ref _tokensReceived);
+        if (r.ContainsKey("token") || r.ContainsKey("v")) _getAnswers[from.ToString()] = DateTime.UtcNow;
         if (r.ContainsKey("token") || r.ContainsKey("v") || r.ContainsKey("k") || r.ContainsKey("sig"))
             OnGetResponse?.Invoke(r, from);
     }

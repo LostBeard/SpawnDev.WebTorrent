@@ -73,6 +73,57 @@ public abstract partial class WebTorrentTestBase
         }
     }
 
+    [TestMethod(RetryCount = 2)]
+    public async Task Bep46_Loopback_Chain_LookupWalksThroughNodesItWasNeverIntroducedTo()
+    {
+        if (OperatingSystem.IsBrowser()) return;
+
+        // Twelve DHT nodes in a line, each introduced only to its neighbours. The publisher is at one end, the subscriber at the other, and the subscriber has never heard of the nodes
+        // that hold the item: it has to walk toward the target through the answers it gets (each answer names closer nodes). A lookup that asks its first few guesses and stops
+        // (the old one: 3 nodes, 3 rounds) finds nothing here, as it would on the real DHT.
+        var signer = new Ed25519Signer(PortableCrypto.CreateCrypto());
+        await signer.GenerateKeyAsync();
+        int basePort = 40000 + System.Security.Cryptography.RandomNumberGenerator.GetInt32(19000);
+        var nodes = new List<DhtDiscovery>();
+        try
+        {
+            for (int i = 0; i < 12; i++)
+            {
+                var node = new DhtDiscovery(new DhtOptions { Port = basePort + i, BootstrapNodes = Array.Empty<string>() });
+                await node.StartAsync(new byte[20], basePort + i);
+                nodes.Add(node);
+            }
+            var verifier = await ReadOnlyEd25519Verifier.CreateAsync(PortableCrypto.CreateCrypto(), signer.PublicKey);
+            var holders = nodes.Select(n => n.CreateMutableItems(verifier)).ToList(); // every node serves get/put for what it is given
+            // introduce every neighbouring pair AT ONCE, while all the tables are still empty: one after another, each new node learns the previous node's whole table (which holds
+            // everything before it) and the "line" collapses into a clique
+            var introductions = new List<Task>();
+            for (int i = 0; i + 1 < nodes.Count; i++)
+            {
+                introductions.Add(nodes[i].FindNodeAsync(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, basePort + i + 1)));
+                introductions.Add(nodes[i + 1].FindNodeAsync(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, basePort + i)));
+            }
+            await Task.WhenAll(introductions);
+            await Task.Delay(1500);
+            if (nodes[11].NodeCount > 4) throw new Exception($"the far node knows {nodes[11].NodeCount} of 12 nodes: it is not far from the others");
+
+            var publisher = nodes[0].CreateMutableItems(signer);
+            publisher.EnsureSequenceAtLeast(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            var salt = Enumerable.Repeat((byte)5, 16).ToArray();
+            var value = Enumerable.Repeat((byte)0x5A, 20).ToArray();
+            await publisher.PublishAsync(value, salt);
+
+            var subscriber = nodes[11].CreateMutableItems(verifier);
+            var got = await subscriber.GetAsync(signer.PublicKey, salt);
+            if (got == null) throw new Exception($"the item was not found from the far end of a 12-node line (far node knows {nodes[11].NodeCount} nodes after the lookup, publisher sent {publisher.PutsSent} puts)");
+            if (!got.Value.value.SequenceEqual(value)) throw new Exception("found a different value");
+        }
+        finally
+        {
+            foreach (var node in nodes) await node.DisposeAsync();
+        }
+    }
+
     [TestMethod]
     public async Task Bep46_EnsureSequenceAtLeast_RaisesNeverLowers_AndPublishGoesAboveIt()
     {

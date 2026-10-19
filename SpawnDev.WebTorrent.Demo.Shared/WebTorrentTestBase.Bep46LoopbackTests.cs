@@ -41,8 +41,8 @@ public abstract partial class WebTorrentTestBase
         // No BootstrapNodes - manual FindNodeAsync below handles the loopback
         // meet-up deterministically; the auto-bootstrap has a timing hole in the
         // 2-instance case (one side sends find_node before the other is listening).
-        var publisherDht = new DhtDiscovery(new DhtOptions { Port = publisherPort });
-        var subscriberDht = new DhtDiscovery(new DhtOptions { Port = subscriberPort });
+        var publisherDht = new DhtDiscovery(new DhtOptions { Port = publisherPort, BootstrapNodes = Array.Empty<string>() });
+        var subscriberDht = new DhtDiscovery(new DhtOptions { Port = subscriberPort, BootstrapNodes = Array.Empty<string>() });
 
         var pubWarnings = new List<string>();
         var subWarnings = new List<string>();
@@ -139,8 +139,8 @@ public abstract partial class WebTorrentTestBase
         var signer = new Ed25519Signer(crypto);
         await signer.GenerateKeyAsync();
 
-        var publisherDht = new DhtDiscovery(new DhtOptions { Port = publisherPort });
-        var subscriberDht = new DhtDiscovery(new DhtOptions { Port = subscriberPort });
+        var publisherDht = new DhtDiscovery(new DhtOptions { Port = publisherPort, BootstrapNodes = Array.Empty<string>() });
+        var subscriberDht = new DhtDiscovery(new DhtOptions { Port = subscriberPort, BootstrapNodes = Array.Empty<string>() });
 
         try
         {

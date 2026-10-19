@@ -70,6 +70,10 @@ public class DhtMutableItems : IDisposable
     public string Algorithm => _signer.Algorithm;
     public int CachedTokenCount => _tokenCache.Count;
 
+    /// <summary>How many BEP 44 put messages this instance has sent (one per node written to): 0 after a publish means no node had given it a token.</summary>
+    public long PutsSent => Interlocked.Read(ref _putsSent);
+    private long _putsSent;
+
     /// <summary>Event fired when a subscribed key has a new value.</summary>
     public event Action<byte[], byte[], long>? OnValueUpdated; // publicKey, value, sequence
 
@@ -274,9 +278,9 @@ public class DhtMutableItems : IDisposable
         Interlocked.Increment(ref _sequence);
         await PersistSequenceAsync();
 
-        // First do a GET to acquire tokens from nearby nodes
+        // First walk to the target with a GET: that finds the nodes nearest it that are alive, and each of them hands back the write token a put needs
         var target = ComputeTarget(_signer.PublicKey, salt);
-        await _dht.GetAsync(target, ct);
+        var nearest = await _dht.LookupAsync(target, ct);
 
         // Wait for GET responses with tokens - retry up to 5 times with increasing delay
         var signData = BuildSignData(value, salt, _sequence);
@@ -301,26 +305,25 @@ public class DhtMutableItems : IDisposable
         // (e.g. local OnValueUpdated subscribers on the same process) see it.
         _valueCache[CacheKey(_signer.PublicKey, salt)] = (value, _sequence);
 
+        // Write once to each of the nearest nodes that answered, as their tokens arrive (a token can lag the answer a moment); give up on a node after a few attempts
+        var written = new HashSet<string>();
         int putCount = 0;
-        for (int attempt = 0; attempt < 5 && !ct.IsCancellationRequested; attempt++)
+        for (int attempt = 0; attempt < 5 && !ct.IsCancellationRequested && written.Count < nearest.Count; attempt++)
         {
-            await Task.Delay(500 * (attempt + 1), ct); // 500ms, 1s, 1.5s, 2s, 2.5s
-
-            var closest = _dht._routingTable.GetClosest(target, 8);
-            foreach (var node in closest)
+            await Task.Delay(attempt == 0 ? 250 : 500, ct);
+            foreach (var endpoint in nearest)
             {
-                var nodeKey = node.EndPoint.ToString();
-                if (!_tokenCache.TryGetValue(nodeKey, out var nodeToken)) continue;
+                var nodeKey = endpoint.ToString();
+                if (written.Contains(nodeKey) || !_tokenCache.TryGetValue(nodeKey, out var nodeToken)) continue;
                 try
                 {
                     var putMsg = BuildPutMessage(value, _signer.PublicKey, signature, _sequence, salt, nodeToken);
-                    await _dht.SendKrpcAsync(node.EndPoint, putMsg, ct);
-                    putCount++;
+                    await _dht.SendKrpcAsync(endpoint, putMsg, ct);
+                    written.Add(nodeKey);
+                    putCount++; Interlocked.Increment(ref _putsSent);
                 }
                 catch { }
             }
-
-            if (putCount > 0) break; // Successfully sent at least one PUT
         }
 
         if (putCount == 0 && WebTorrentClient.VerboseLogging)

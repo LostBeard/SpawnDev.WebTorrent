@@ -339,6 +339,40 @@ public static class TorrentCreator
         return BuildTorrent(torrentName, totalLength, pieceLength, pieceHashes, options, torrentFiles);
     }
 
+    /// <summary>
+    /// A multi-file v1 torrent made by STREAMING the files from disk: memory is one piece, however large the content (the in-memory overloads need every byte of every file in
+    /// memory, twice once seeded). The result is byte-for-byte what <see cref="CreateFromMultipleFiles"/> makes for the same files in the same order.
+    /// </summary>
+    /// <param name="files">The files in torrent order: <c>path</c> as it appears inside the torrent (forward slashes), <c>fullPath</c> where it is on disk.</param>
+    public static async Task<(byte[] torrentBytes, TorrentMetadata metadata)> CreateFromFilePathsAsync(
+        string torrentName, (string path, string fullPath)[] files, TorrentCreatorOptions? options = null, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(torrentName)) throw new ArgumentException("torrentName is required", nameof(torrentName));
+        if (files == null || files.Length == 0) throw new ArgumentException("A torrent needs at least one file.", nameof(files));
+        options ??= new TorrentCreatorOptions();
+        if (options.MetaVersion == 2 || options.Hybrid)
+            throw new ArgumentException("CreateFromFilePathsAsync makes v1 torrents; use CreateFromMultipleStreamsAsync for v2 or hybrid.", nameof(options));
+
+        var lengths = files.Select(f => new FileInfo(f.fullPath).Length).ToArray(); // FileNotFoundException names the file that is missing
+        long totalLength = lengths.Sum();
+        int pieceLength = options.PieceLength > 0 ? options.PieceLength : CalculatePieceLength(totalLength);
+        bool useSha256 = options.HashAlgorithm == "SHA-256";
+
+        var pieceHashes = new List<byte[]>();
+        await using var pieces = new FilePieceReader(files.Select(f => f.fullPath).ToArray(), lengths, pieceLength);
+        while (await pieces.ReadNextAsync(ct) > 0)
+            pieceHashes.Add(useSha256 ? SHA256.HashData(pieces.Piece.Span) : SHA1.HashData(pieces.Piece.Span));
+
+        var torrentFiles = new TorrentFileInfo[files.Length];
+        long offset = 0;
+        for (int i = 0; i < files.Length; i++)
+        {
+            torrentFiles[i] = new TorrentFileInfo { Path = files[i].path, Name = System.IO.Path.GetFileName(files[i].path), Length = lengths[i], Offset = offset };
+            offset += lengths[i];
+        }
+        return BuildTorrent(torrentName, totalLength, pieceLength, pieceHashes, options, torrentFiles);
+    }
+
     /// <summary>Assemble the .torrent bytes + metadata (v1 info dict, SHA-1 infohash) from already-computed
     /// piece hashes. Reused by Lazy-Hash finalization so a lazily-built torrent gets a byte-identical infohash to
     /// an eager <see cref="CreateFromStreamAsync"/> of the same bytes (same assembler, same inputs).</summary>

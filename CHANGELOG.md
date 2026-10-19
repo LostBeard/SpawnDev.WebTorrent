@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased (4.2.10-local.2 on the local feed) - large torrents on desktop: disk storage and streaming seeding
+
+🔴 **On desktop every torrent was held entirely in memory.** Without a browser `AsyncFileSystem` the piece store was a `MemoryChunkStore`, for seeds and downloads alike, and the options doc's claim that `AsyncFileSystem` means "native FS on desktop" was wrong: the AsyncFS piece stores throw "PutAsync requires a browser file system (OPFS)" on a native file system. A multi-gigabyte torrent could not be seeded or downloaded on a desktop machine.
+- New `WebTorrentClientOptions.StorageFolder` (and `WebTorrentClient.StorageFolder`): each torrent keeps its pieces as files under `{folder}/{infoHash}/piece_N.bin` (`FileChunkStore`, which existed but was never used). They are a session cache, not read back as downloaded pieces after a restart; `RemoveWithDataAsync` deletes the torrent's folder.
+- `FileChunkStore` hardened: a piece is written to a temporary file and moved into place (a reader or a crash never sees a half-written piece); readers open with `FileShare.Delete` so a piece can be replaced while it is being read (on Windows the move failed with "Access denied" against a plain `ReadAllBytes` reader, which the new test found); a range read reads just the range instead of loading the whole piece; no extra copy on write.
+- **Streaming seeding:** `TorrentCreator.CreateFromFilePathsAsync` makes a multi-file v1 torrent by streaming files from disk (byte-for-byte what `CreateFromMultipleFiles` makes for the same files) and `WebTorrentClient.SeedFilesAsync(name, (path, fullPath)[])` seeds them, storing piece by piece through ONE piece-sized buffer. The in-memory `SeedAsync(name, (path, byte[])[])` needs every byte in memory and then concatenates them (twice the content). A file that changes length while being read fails loudly.
+- Tests: `CreateFromFilePaths_MakesExactlyTheTorrentTheInMemoryCreatorMakes` (piece-boundary sizes, an empty file), `CreateFromFilePaths_DoesNotHoldTheContentInMemory_AndNamesAMissingFile` (300 MB sparse file: allocations under 60 MB; red-checked by allocating per piece: "allocated 300 MB"), `SeedFilesAsync_SeedsFromDisk_AndAPeerDownloadsEveryFileIntact`, `StorageFolder_KeepsPiecesOnDisk_ForSeederAndDownloader_AndRemoveWithDataDeletesThem` (red-checked by disabling the store selection), `FileChunkStore_ReadsRanges...` (a reader polling while a 48 MB piece is replaced never sees a partial one; red-checked: direct writes fail it).
+- Found by SpawnDarkly while making worlds streamable (a world is a torrent of files; a visitor reads the manifest and one room by random access and fetches only the model files it needs).
+
 ## 4.2.9 - BEP 44/46 works on the real DHT (salted items, bare info hashes, iterative lookup)
 
 🔴 **A salted BEP 44/46 item could be published but never found.** One key publishing several torrents (one per salt, the normal BEP 46 pattern) was broken on the GET side:

@@ -132,6 +132,13 @@ public class WebTorrentClient : IAsyncDisposable
     /// <summary>Async file system for persistent storage.</summary>
     public SpawnDev.AsyncFileSystem.IAsyncFS? AsyncFileSystem { get; set; }
 
+    /// <summary>
+    /// DESKTOP DISK STORAGE: a folder where each torrent keeps its pieces as files (<c>{folder}/{infoHash}/piece_N.bin</c>) instead of in memory. Without this (and without a browser
+    /// <see cref="AsyncFileSystem"/>) every torrent is held entirely in RAM, seeds and downloads alike, which cannot work for a large torrent. The files are a session cache: they are not
+    /// read back as already-downloaded pieces after a restart. <see cref="RemoveWithDataAsync(Torrent)"/> deletes a torrent's folder.
+    /// </summary>
+    public string? StorageFolder { get; set; }
+
     /// <summary>How persistent stores lay a torrent's data out. See <see cref="TorrentStorageLayout"/>.</summary>
     public TorrentStorageLayout StorageLayout { get; set; } = TorrentStorageLayout.PieceFiles;
 
@@ -246,6 +253,7 @@ public class WebTorrentClient : IAsyncDisposable
 
         _http = opts.HttpClient ?? new HttpClient();
         AsyncFileSystem = opts.AsyncFileSystem;
+        StorageFolder = opts.StorageFolder;
         StorageLayout = opts.StorageLayout;
         Crypto = opts.Crypto;
 
@@ -895,6 +903,38 @@ public class WebTorrentClient : IAsyncDisposable
             torrent.Pieces[i] = new Piece(0);
         }
 
+        return await RegisterSeededAsync(torrent);
+    }
+
+    /// <summary>
+    /// Create a multi-file torrent from files ON DISK and begin seeding it, streaming: the files are hashed and then stored piece by piece through one piece-sized buffer, so memory use does
+    /// not depend on the size of the content (<c>SeedAsync(name, (path, data)[])</c> needs every byte in memory, twice). With a file
+    /// system on the client (<see cref="WebTorrentClientOptions.AsyncFileSystem"/>, e.g. a native one) the pieces are stored on disk; without one they are held in memory regardless.
+    /// </summary>
+    /// <param name="files">In torrent order: <c>path</c> inside the torrent (forward slashes) and <c>fullPath</c> on disk.</param>
+    public async Task<Torrent> SeedFilesAsync(string torrentName, (string path, string fullPath)[] files, TorrentCreatorOptions? options = null, AddTorrentOptions? addOpts = null, CancellationToken ct = default)
+    {
+        if (Destroyed) throw new InvalidOperationException("Client is destroyed");
+        var (_, metadata) = await TorrentCreator.CreateFromFilePathsAsync(torrentName, files, options, ct);
+        var torrent = new Torrent();
+        torrent.InitFromMetadata(metadata, this, addOpts ?? new AddTorrentOptions());
+
+        var lengths = files.Select(f => new FileInfo(f.fullPath).Length).ToArray();
+        await using var pieces = new FilePieceReader(files.Select(f => f.fullPath).ToArray(), lengths, metadata.PieceLength);
+        for (int i = 0; i < metadata.PieceCount; i++)
+        {
+            if (await pieces.ReadNextAsync(ct) == 0) throw new InvalidOperationException($"the files ended before piece {i} of {metadata.PieceCount}");
+            await torrent._store!.PutAsync(i, pieces.Piece, ct);
+            // a bitfield bit is a promise that the store can serve the piece: set only after the store has taken it
+            torrent.Bitfield[i] = true;
+            torrent.Pieces[i] = new Piece(0);
+        }
+        return await RegisterSeededAsync(torrent);
+    }
+
+    /// <summary>The end of seeding, shared by every seed path: mark the torrent done, unpack if the layout wants it, de-duplicate against a torrent already held, and announce it.</summary>
+    private async Task<Torrent> RegisterSeededAsync(Torrent torrent)
+    {
         torrent.Done = true;
 
         // 🔴 SEEDING COMPLETES A TORRENT WITHOUT EVER GOING THROUGH CheckDone, so the unpack has to be
@@ -995,6 +1035,10 @@ public class WebTorrentClient : IAsyncDisposable
         // WireInfoHashHex so pure-v2 data dir (webtorrent/<v2-prefix>) is actually removed
         var infoHash = torrent.WireInfoHashHex;
         await RemoveAsync(torrent);
+        if (!string.IsNullOrEmpty(StorageFolder) && !string.IsNullOrEmpty(infoHash) && Directory.Exists(Path.Combine(StorageFolder, infoHash)))
+        {
+            try { Directory.Delete(Path.Combine(StorageFolder, infoHash), true); } catch (IOException) { }
+        }
         if (AsyncFileSystem != null && !string.IsNullOrEmpty(infoHash))
         {
             // Delete piece data
@@ -1162,8 +1206,10 @@ public class WebTorrentClientOptions
     /// </summary>
     public bool AdvertiseTcpListenerToTrackers { get; set; }
     public HttpClient? HttpClient { get; set; }
-    /// <summary>Async file system for persistent storage (OPFS in browser, native FS on desktop).</summary>
+    /// <summary>Async file system for persistent storage: OPFS in the BROWSER. (The piece stores need a browser file system; a native <c>IAsyncFS</c> does not work as a piece store, use <see cref="StorageFolder"/> on desktop.)</summary>
     public SpawnDev.AsyncFileSystem.IAsyncFS? AsyncFileSystem { get; set; }
+    /// <summary>Desktop: keep each torrent's pieces as files under this folder instead of in memory. See <see cref="WebTorrentClient.StorageFolder"/>.</summary>
+    public string? StorageFolder { get; set; }
     /// <summary>Service worker stream handler for media streaming.</summary>
     public ServiceWorkerStreamHandler? StreamHandler { get; set; }
     /// <summary>IP addresses to block from connecting.</summary>

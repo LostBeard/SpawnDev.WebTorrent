@@ -818,6 +818,11 @@ public partial class Torrent : IAsyncDisposable
                     + "reload would re-download. Assign a PersistKey (WireInfoHashHex, the v2 key, or a "
                     + "Lazy-Hash provisional key) before metadata is set.");
             }
+            else if (!string.IsNullOrEmpty(_client?.StorageFolder) && !string.IsNullOrEmpty(PersistKey))
+            {
+                // Desktop disk storage: each piece is a file, so a torrent is as large as the disk, not as large as memory.
+                _store = new Storage.FileChunkStore(Path.Combine(_client!.StorageFolder!, PersistKey), PieceLength);
+            }
             else
             {
                 // No file system at all - memory is the correct and only option.

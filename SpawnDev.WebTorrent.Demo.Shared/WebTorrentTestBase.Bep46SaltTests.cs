@@ -178,4 +178,67 @@ public abstract partial class WebTorrentTestBase
             await subscriberDht.DisposeAsync();
         }
     }
+
+    [TestMethod(RetryCount = 2)]
+    public async Task Bep46_Loopback_RepublishAsync_KeepsSomeoneElsesItemAliveAfterItsCreatorIsGone()
+    {
+        if (OperatingSystem.IsBrowser()) return;
+
+        // A publishes a salted item. B sees it (a get, which carries the creator's signature) and later hands it on with RepublishAsync, though B cannot sign for A. After A AND B are
+        // gone a node that only knows C still finds the item: B wrote it to C. Without the republish nobody but A held it. (Both nodes going away also checks that a node keeps
+        // listening after sending to a dead one: on Windows the ICMP reply used to kill the receive loop.)
+        var signer = new Ed25519Signer(PortableCrypto.CreateCrypto());
+        await signer.GenerateKeyAsync();
+        int basePort = 40000 + System.Security.Cryptography.RandomNumberGenerator.GetInt32(19000);
+        var nodes = new List<DhtDiscovery>();
+        try
+        {
+            for (int i = 0; i < 4; i++)
+            {
+                var node = new DhtDiscovery(new DhtOptions { Port = basePort + i, BootstrapNodes = Array.Empty<string>() });
+                await node.StartAsync(new byte[20], basePort + i);
+                nodes.Add(node);
+            }
+            var (a, b, c, d) = (nodes[0], nodes[1], nodes[2], nodes[3]);
+            async Task Introduce(DhtDiscovery x, int xi, DhtDiscovery y, int yi)
+            {
+                await x.FindNodeAsync(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, basePort + yi));
+                await y.FindNodeAsync(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, basePort + xi));
+            }
+            await Introduce(a, 0, b, 1); await Introduce(a, 0, c, 2); await Introduce(b, 1, c, 2);
+            await Task.Delay(500);
+
+            var salt = Enumerable.Repeat((byte)9, 16).ToArray();
+            var value = Enumerable.Repeat((byte)0x77, 20).ToArray();
+            var publisher = a.CreateMutableItems(signer);
+            publisher.EnsureSequenceAtLeast(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            await publisher.PublishAsync(value, salt);          // B and C have no items instance yet, so they keep nothing of this
+
+            var verifier = await ReadOnlyEd25519Verifier.CreateAsync(PortableCrypto.CreateCrypto(), signer.PublicKey);
+            var relay = b.CreateMutableItems(verifier);
+            var seen = await relay.GetAsync(signer.PublicKey, salt);
+            if (seen == null) throw new Exception("the relay did not see the item while its creator was up");
+
+            await a.DisposeAsync();                              // the creator goes offline
+            nodes.Remove(a);
+
+            var holder = c.CreateMutableItems(verifier);         // C starts serving get/put now
+            if (!await relay.RepublishAsync(signer.PublicKey, salt)) throw new Exception("RepublishAsync reported that it handed the item on to nobody");
+
+            await b.DisposeAsync();                                // the relay goes too: now only what it WROTE to C is left
+            nodes.Remove(b);
+            await Introduce(c, 2, d, 3);                          // D knows only C
+            var late = d.CreateMutableItems(verifier);
+            var found = await late.GetAsync(signer.PublicKey, salt);
+            if (found == null) throw new Exception("after the creator and the relay left, a node that knows only C could not find the item: the republish did not reach C");
+            if (!found.Value.value.SequenceEqual(value)) throw new Exception("found a different value");
+
+            // an item this node never saw cannot be handed on
+            if (await relay.RepublishAsync(signer.PublicKey, new byte[] { 1, 2, 3 }, refresh: false)) throw new Exception("republished an item it never saw");
+        }
+        finally
+        {
+            foreach (var node in nodes) await node.DisposeAsync();
+        }
+    }
 }

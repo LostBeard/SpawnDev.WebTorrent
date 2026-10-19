@@ -1,5 +1,13 @@
 # Changelog
 
+## 4.2.11 - a DHT node no longer goes deaf after sending to a dead node; hand on another publisher's BEP 44 item
+
+🔴 **On Windows a DHT node stopped receiving after it sent a datagram to a node that was gone.** The OS answers such a send with an ICMP "port unreachable", which the next receive on the same socket reports as a connection reset, and `DhtDiscovery.ReceiveLoopAsync` had one `catch { }` around the WHOLE loop: the first reset ended it for good, and the node silently answered nothing and heard nothing afterwards (its sends still worked, so it looked alive). The real DHT is full of dead nodes, so a long-running node (a seeder, a tray sharer) would go deaf within a short time. The socket now switches the Windows reset report off (`SIO_UDP_CONNRESET`), and the loop survives these socket errors per datagram instead of ending.
+
+- New `DhtMutableItems.RepublishAsync(publicKey, salt, refresh)`: hands on a mutable item this node has SEEN without being its creator. A BEP 44 item carries the creator's signature and any node may write a signed item to the nodes near its target, so a node that has fetched a pointer can keep it alive after its creator goes offline (a DHT forgets an item a couple of hours after its last write). It looks the item up again first (`refresh`), stores it locally (answers get queries for it) and writes the creator's own signature to the nearest nodes; it returns false for an item it never saw. The signature of each accepted get response is now kept beside the value (`PublishAsync` keeps its own too). The write loop of `PublishAsync` is now `PutToNearestAsync`, shared by both.
+- Tests: `Bep46_Loopback_RepublishAsync_KeepsSomeoneElsesItemAliveAfterItsCreatorIsGone` (four real DHT nodes over loopback: A publishes, B sees it, A and B both leave, a node that only knows C still finds it). Red-checked both ways: with the write removed the late node finds nothing; without the receive-loop fix the republish after the creator left reaches no node at all.
+- Found by SpawnDarkly while building a background world sharer.
+
 ## 4.2.10 - large torrents on desktop: disk storage and streaming seeding
 
 🔴 **On desktop every torrent was held entirely in memory.** Without a browser `AsyncFileSystem` the piece store was a `MemoryChunkStore`, for seeds and downloads alike, and the options doc's claim that `AsyncFileSystem` means "native FS on desktop" was wrong: the AsyncFS piece stores throw "PutAsync requires a browser file system (OPFS)" on a native file system. A multi-gigabyte torrent could not be seeded or downloaded on a desktop machine.

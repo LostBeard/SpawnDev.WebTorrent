@@ -26,6 +26,8 @@ public class DhtMutableItems : IDisposable
     // Latest verified value per ITEM. Key: hex(target) where target = SHA-1(k + salt), so one key can publish any number of salted items (BEP 46 uses the salt to tell
     // a publisher's torrents apart) without them overwriting each other.
     private readonly ConcurrentDictionary<string, (byte[] value, long seq)> _valueCache = new();
+    // The signature that goes with the value held in _valueCache for an item (the same key), kept so this node can hand the item on to others (RepublishAsync) without being its creator.
+    private readonly ConcurrentDictionary<string, (long seq, byte[] signature)> _signatureCache = new();
 
     // A BEP 44 get response carries v, k, seq and sig but NOT the salt (the salt is part of what was signed, and the requester is the one who knows it). To verify a response we
     // therefore try the salts this instance has been asked about for that key (plus no salt). Key: hex(k) -> (hex(salt) or "" -> salt).
@@ -240,7 +242,7 @@ public class DhtMutableItems : IDisposable
                 foreach (var salt in candidates)
                 {
                     if (!await _signer.VerifyAsync(pubKey, BuildSignData(value, salt, seq), signature)) continue;
-                    Accept(pubKey, salt, value, seq);
+                    Accept(pubKey, salt, value, seq, signature);
                     return;
                 }
                 // verified under no salt we know of: forged, or an item nobody here asked about. Reject.
@@ -256,12 +258,13 @@ public class DhtMutableItems : IDisposable
     private static string CacheKey(byte[] publicKey, byte[]? salt) => TargetHex(publicKey, salt);
 
     /// <summary>Stores a verified value if it is newer than the one held for that item and tells the subscribers.</summary>
-    private void Accept(byte[] pubKey, byte[]? salt, byte[] value, long seq)
+    private void Accept(byte[] pubKey, byte[]? salt, byte[] value, long seq, byte[]? signature = null)
     {
         var cacheKey = CacheKey(pubKey, salt);
         // Re-check freshness (another response may have arrived while we verified)
         if (_valueCache.TryGetValue(cacheKey, out var latest) && latest.seq >= seq) return;
         _valueCache[cacheKey] = (value, seq);
+        if (signature != null) _signatureCache[cacheKey] = (seq, signature);
         OnItemUpdated?.Invoke(pubKey, salt, value, seq);
         OnValueUpdated?.Invoke(pubKey, value, seq);
     }
@@ -305,7 +308,16 @@ public class DhtMutableItems : IDisposable
         // (e.g. local OnValueUpdated subscribers on the same process) see it.
         _valueCache[CacheKey(_signer.PublicKey, salt)] = (value, _sequence);
 
-        // Write once to each of the nearest nodes that answered, as their tokens arrive (a token can lag the answer a moment); give up on a node after a few attempts
+        _signatureCache[CacheKey(_signer.PublicKey, salt)] = (_sequence, signature);
+        await PutToNearestAsync(nearest, value, _signer.PublicKey, signature, _sequence, salt, ct);
+    }
+
+    /// <summary>
+    /// Writes an already signed item to each of the nodes that answered the lookup, as their write tokens arrive (a token can lag the answer a moment); gives up on a node after a few
+    /// attempts. Returns how many nodes it wrote to.
+    /// </summary>
+    private async Task<int> PutToNearestAsync(IReadOnlyCollection<IPEndPoint> nearest, byte[] value, byte[] publicKey, byte[] signature, long seq, byte[]? salt, CancellationToken ct)
+    {
         var written = new HashSet<string>();
         int putCount = 0;
         for (int attempt = 0; attempt < 5 && !ct.IsCancellationRequested && written.Count < nearest.Count; attempt++)
@@ -317,7 +329,7 @@ public class DhtMutableItems : IDisposable
                 if (written.Contains(nodeKey) || !_tokenCache.TryGetValue(nodeKey, out var nodeToken)) continue;
                 try
                 {
-                    var putMsg = BuildPutMessage(value, _signer.PublicKey, signature, _sequence, salt, nodeToken);
+                    var putMsg = BuildPutMessage(value, publicKey, signature, seq, salt, nodeToken);
                     await _dht.SendKrpcAsync(endpoint, putMsg, ct);
                     written.Add(nodeKey);
                     putCount++; Interlocked.Increment(ref _putsSent);
@@ -327,7 +339,39 @@ public class DhtMutableItems : IDisposable
         }
 
         if (putCount == 0 && WebTorrentClient.VerboseLogging)
-            Console.WriteLine($"[DhtMutableItems] WARNING: PublishAsync sent 0 PUTs (no tokens acquired)");
+            Console.WriteLine($"[DhtMutableItems] WARNING: sent 0 PUTs (no tokens acquired)");
+        return putCount;
+    }
+
+    /// <summary>
+    /// Hands on an item this node has SEEN (a verified get response) without being its creator: a mutable item carries the creator's signature, and any node may write a signed item to the
+    /// nodes near its target (BEP 44), as long as it is not older than what they hold. A DHT forgets an item a couple of hours after its last write, so a world whose creator is offline
+    /// stays findable only while somebody who has seen its pointer keeps writing it. This node also stores the item itself and answers get queries for it. Looks the item up again first
+    /// (when <paramref name="refresh"/>, so a newer version is the one handed on). Returns false when the item is not known, or was not seen with its signature (the item is this node's own:
+    /// publish it instead), or no node accepted a write.
+    /// </summary>
+    public async Task<bool> RepublishAsync(byte[] publicKey, byte[]? salt = null, bool refresh = true, CancellationToken ct = default)
+    {
+        RegisterSalt(publicKey, salt);
+        var cacheKey = CacheKey(publicKey, salt);
+        var target = ComputeTarget(publicKey, salt);
+        long before = _valueCache.TryGetValue(cacheKey, out var known) ? known.seq : -1;
+        if (refresh || before < 0)
+        {
+            await _dht.GetAsync(target, ct);
+            for (int i = 0; i < 30 && !ct.IsCancellationRequested; i++)
+            {
+                await Task.Delay(100, ct);
+                if (_valueCache.TryGetValue(cacheKey, out var now) && now.seq > before) break;
+            }
+        }
+        if (!_valueCache.TryGetValue(cacheKey, out var item) || !_signatureCache.TryGetValue(cacheKey, out var sig) || sig.seq != item.seq) return false;
+
+        var targetHex = Convert.ToHexString(target);
+        if (!_storedItems.TryGetValue(targetHex, out var stored) || stored.Seq < item.seq)
+            _storedItems[targetHex] = new StoredMutableItem { Value = item.value, PublicKey = publicKey, Signature = sig.signature, Seq = item.seq, Salt = salt };
+        var nearest = await _dht.LookupAsync(target, ct);
+        return await PutToNearestAsync(nearest, item.value, publicKey, sig.signature, item.seq, salt, ct) > 0;
     }
 
     /// <summary>Publish an info hash as a mutable item (core BEP 46 use case).</summary>

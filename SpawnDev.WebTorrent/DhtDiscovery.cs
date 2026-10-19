@@ -71,6 +71,13 @@ public class DhtDiscovery : IAsyncDisposable
         try
         {
             _udp = new UdpClient(_options.Port);
+            // Windows: a datagram sent to a port nobody listens on comes back as an ICMP "port unreachable", which the NEXT receive on this socket reports as a connection reset. On the
+            // real DHT many nodes are gone, so without this a node goes deaf after a few sends (the receive loop died on the first such error).
+            if (OperatingSystem.IsWindows())
+            {
+                try { _udp.Client.IOControl(unchecked((int)0x9800000C), new byte[] { 0 }, null); } // SIO_UDP_CONNRESET off
+                catch (Exception) { /* the receive loop below survives these errors anyway */ }
+            }
             _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 
             _ = ReceiveLoopAsync(_cts.Token);
@@ -268,8 +275,15 @@ public class DhtDiscovery : IAsyncDisposable
         {
             while (!ct.IsCancellationRequested && _udp != null)
             {
-                var result = await _udp.ReceiveAsync(ct);
-                ProcessMessage(result.Buffer, result.RemoteEndPoint);
+                try
+                {
+                    var result = await _udp.ReceiveAsync(ct);
+                    ProcessMessage(result.Buffer, result.RemoteEndPoint);
+                }
+                catch (SocketException e) when (e.SocketErrorCode is SocketError.ConnectionReset or SocketError.ConnectionRefused or SocketError.HostUnreachable or SocketError.NetworkUnreachable or SocketError.MessageSize)
+                {
+                    // an earlier send went to a dead node (ICMP came back): not a reason to stop listening for everyone else
+                }
             }
         }
         catch (OperationCanceledException) { }

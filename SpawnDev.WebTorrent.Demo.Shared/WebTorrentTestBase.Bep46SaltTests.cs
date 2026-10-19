@@ -223,6 +223,7 @@ public abstract partial class WebTorrentTestBase
             nodes.Remove(a);
 
             var holder = c.CreateMutableItems(verifier);         // C starts serving get/put now
+            if (await relay.RepublishAsync(signer.PublicKey, salt, shouldHandOn: v => false)) throw new Exception("RepublishAsync handed on an item its caller declined");
             if (!await relay.RepublishAsync(signer.PublicKey, salt)) throw new Exception("RepublishAsync reported that it handed the item on to nobody");
 
             await b.DisposeAsync();                                // the relay goes too: now only what it WROTE to C is left

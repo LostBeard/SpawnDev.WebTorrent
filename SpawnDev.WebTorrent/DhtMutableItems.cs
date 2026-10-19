@@ -347,10 +347,11 @@ public class DhtMutableItems : IDisposable
     /// Hands on an item this node has SEEN (a verified get response) without being its creator: a mutable item carries the creator's signature, and any node may write a signed item to the
     /// nodes near its target (BEP 44), as long as it is not older than what they hold. A DHT forgets an item a couple of hours after its last write, so a world whose creator is offline
     /// stays findable only while somebody who has seen its pointer keeps writing it. This node also stores the item itself and answers get queries for it. Looks the item up again first
-    /// (when <paramref name="refresh"/>, so a newer version is the one handed on). Returns false when the item is not known, or was not seen with its signature (the item is this node's own:
-    /// publish it instead), or no node accepted a write.
+    /// (when <paramref name="refresh"/>, so a newer version is the one handed on); <paramref name="shouldHandOn"/> sees the value found and can decline it (a sharer that holds an older
+    /// version of what the item points to should not vouch for the newer one). Returns false when the item is not known, or was not seen with its signature (the item is this node's own:
+    /// publish it instead), or was declined, or no node accepted a write.
     /// </summary>
-    public async Task<bool> RepublishAsync(byte[] publicKey, byte[]? salt = null, bool refresh = true, CancellationToken ct = default)
+    public async Task<bool> RepublishAsync(byte[] publicKey, byte[]? salt = null, bool refresh = true, Func<byte[], bool>? shouldHandOn = null, CancellationToken ct = default)
     {
         RegisterSalt(publicKey, salt);
         var cacheKey = CacheKey(publicKey, salt);
@@ -367,6 +368,7 @@ public class DhtMutableItems : IDisposable
         }
         if (!_valueCache.TryGetValue(cacheKey, out var item) || !_signatureCache.TryGetValue(cacheKey, out var sig) || sig.seq != item.seq) return false;
 
+        if (shouldHandOn != null && !shouldHandOn(item.value)) return false;
         var targetHex = Convert.ToHexString(target);
         if (!_storedItems.TryGetValue(targetHex, out var stored) || stored.Seq < item.seq)
             _storedItems[targetHex] = new StoredMutableItem { Value = item.value, PublicKey = publicKey, Signature = sig.signature, Seq = item.seq, Salt = salt };

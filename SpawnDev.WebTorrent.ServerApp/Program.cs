@@ -133,6 +133,22 @@ app.UseForwardedHeaders();
 app.UseWebSockets();
 app.UseCors();
 
+// The hub no longer serves models (2026-10-20, TJ): hub.spawndev.com runs on a LAN VM and cannot carry large files
+// under load. Models live on https://models.spawndev.com (Cloudflare R2, free egress, same path layout as
+// Hugging Face). The old /hf, /ollama, /src, /model, /torrent, /magnet endpoints stay up for clients already in the
+// wild: each hit is counted and logged ([Deprecated] ... in the journal, totals at /deprecated-stats), and a request
+// whose file really exists on models.spawndev.com is answered with a 307 to it. Anything not mirrored falls through
+// to the old proxy. Must sit AFTER UseCors so the 307 carries Access-Control-Allow-Origin.
+var modelsRedirect = new ModelsRedirect(
+    new ModelsRedirectOptions
+    {
+        Enabled = config.GetValue("ModelsRedirect:Enabled", true),
+        BaseUrl = config.GetValue("ModelsRedirect:BaseUrl", "https://models.spawndev.com")!,
+    },
+    new HttpClient { DefaultRequestHeaders = { UserAgent = { new System.Net.Http.Headers.ProductInfoHeaderValue("SpawnDev-Hub", "1.0") } } });
+app.Use((ctx, next) => modelsRedirect.InvokeAsync(ctx, () => next(ctx)));
+app.MapGet("/deprecated-stats", () => modelsRedirect.Snapshot());
+
 // Server info. Built-time version string gets bumped alongside each deploy so
 // the `/` endpoint can verify "the new code is actually running" (the old
 // hardcoded "2.0.0" was static across all builds and useless for that).

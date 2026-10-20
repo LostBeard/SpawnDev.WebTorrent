@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased - the hub no longer serves models: its model endpoints redirect to models.spawndev.com, and every hit is counted
+
+hub.spawndev.com runs on a VM on a LAN and cannot carry multi-GB files under load (TJ, 2026-10-20). Models now live on `https://models.spawndev.com` (Cloudflare R2: free egress, same path layout as Hugging Face; setup, layout and upload tools in `Projects\models.spawndev.com`). The hub keeps its old endpoints for clients already in the wild:
+
+- New `ModelsRedirect` middleware (`SpawnDev.WebTorrent.Server.HuggingFace`, wired in `ServerApp` after `UseCors`): every hit on a deprecated endpoint (`/hf`, `/ollama`, `/src`, `/model`, `/torrent`, `/magnet`) is counted and logged once per client and path as `[Deprecated] ...`, and `GET /deprecated-stats` shows who still uses them and how each request ended (`redirected`, `legacy-not-mirrored`, `legacy-check-failed`, `legacy-disabled`, `legacy-no-mapping`, `legacy-no-equivalent`).
+- `/hf/{org}/{repo}/{file}`, `/ollama/{model}/{tag}/{layer}` and `/src?url=...[&member=...]` answer **307** to the matching models.spawndev.com object when a HEAD there proves it exists (cached 1 h when present, 2 min when missing); the 307 carries CORS, `Deprecation: true`, a `Link: rel=successor-version` and `Cache-Control: max-age=3600` so a browser pays for the redirect once, not once per Range request. A file that is NOT mirrored falls through to the old proxy untouched, so nothing that worked stops working.
+- `/src` archive members map to plain files (an archive cannot be range-read): `.../tts-models/<archive>.tar.bz2` + `member=<top>/<path>` becomes `github.com/.../tts-models/<archive>/<path>`. Only the `main` revision is mirrored.
+- `ModelsRedirect:Enabled` / `ModelsRedirect:BaseUrl` in appsettings; disabling stops the 307s and keeps the counting.
+- Tests: `WebTorrentTestBase.ModelsRedirectTests` (real hub, real models host; desktop reads the 307 itself, the browser lane proves a cross-origin Range request through the redirect still gets a 206 with a readable Content-Range). Red-checked: with `ModelsRedirect__Enabled=false` the same mirrored request is served by the old proxy.
+- The 4.2.4 hub log's `Could not load file or assembly 'SpawnDev.RTC, Version=1.1.7.0'` was from before RTC 2.2.4 was deployed; the current log shows announces answered normally.
+
 ## 4.2.11 - a DHT node no longer goes deaf after sending to a dead node; hand on another publisher's BEP 44 item
 
 🔴 **On Windows a DHT node stopped receiving after it sent a datagram to a node that was gone.** The OS answers such a send with an ICMP "port unreachable", which the next receive on the same socket reports as a connection reset, and `DhtDiscovery.ReceiveLoopAsync` had one `catch { }` around the WHOLE loop: the first reset ended it for good, and the node silently answered nothing and heard nothing afterwards (its sends still worked, so it looked alive). The real DHT is full of dead nodes, so a long-running node (a seeder, a tray sharer) would go deaf within a short time. The socket now switches the Windows reset report off (`SIO_UDP_CONNRESET`), and the loop survives these socket errors per datagram instead of ending.

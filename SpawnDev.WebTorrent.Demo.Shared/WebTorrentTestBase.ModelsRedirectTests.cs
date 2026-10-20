@@ -158,17 +158,64 @@ public abstract partial class WebTorrentTestBase
         Console.WriteLine($"[ModelsRedirect] stats counted 3 redirected hits ({before} -> {after})");
     }
 
+    [TestMethod(Timeout = 300000)]
+    public async Task ModelsHost_PreflightAllowsEveryHeaderTheDownloaderSends_Desktop()
+    {
+        if (OperatingSystem.IsBrowser()) throw new UnsupportedTestException("a browser sends the preflight itself; this asks for it directly");
+        // The headers a model downloader may put on a cross-origin GET. R2 answers 403 with NO Allow-Origin to a
+        // preflight that names a header outside its configured list, which a browser reports as a CORS failure.
+        const string headers = "range, if-range, if-none-match, cache-control, pragma, content-type";
+        // SPAWNDEV_MODELS_URL aims the direct check at another host (a throwaway bucket with the OLD, too-narrow CORS
+        // rule is how this test was red-checked without re-breaking the live site).
+        var modelsHost = Environment.GetEnvironmentVariable("SPAWNDEV_MODELS_URL") ?? ModelsHostBaseUrl;
+        foreach (var target in new[] { modelsHost + "/LostBeard/spawnscene-models/resolve/main/README.md", null })
+        {
+            var url = target ?? $"{RedirectHubBase()}/hf/LostBeard/spawnscene-models/README.md";
+            using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(1) };
+            var req = new HttpRequestMessage(HttpMethod.Options, url);
+            req.Headers.TryAddWithoutValidation("Origin", "https://lostbeard.github.io");
+            req.Headers.TryAddWithoutValidation("Access-Control-Request-Method", "GET");
+            req.Headers.TryAddWithoutValidation("Access-Control-Request-Headers", headers);
+            using var res = await http.SendAsync(req);
+            if (!res.IsSuccessStatusCode)
+                throw new Exception($"preflight to {url} answered {(int)res.StatusCode}: a browser would block the request");
+            if (!res.Headers.TryGetValues("Access-Control-Allow-Origin", out var origin) || origin.First() is not ("*" or "https://lostbeard.github.io"))
+                throw new Exception($"preflight to {url} has no usable Access-Control-Allow-Origin");
+            if (!res.Headers.TryGetValues("Access-Control-Allow-Headers", out var allowed)
+                || !headers.Split(", ").All(h => allowed.First().Contains(h, StringComparison.OrdinalIgnoreCase) || allowed.First() == "*"))
+                throw new Exception($"preflight to {url} did not allow every requested header; allowed: {allowed?.FirstOrDefault()}");
+        }
+        Console.WriteLine("[ModelsRedirect] preflights to the models host and to the hub allow Range, If-Range and the other downloader headers");
+    }
+
     [TestMethod(Timeout = 600000)]
     public async Task ModelsRedirect_FollowedRedirectDeliversRangeBytesWithReadableContentRange()
     {
         using var http = await RequireModelsRedirectAsync();
         // The real client flow, in the browser too: a cross-origin ranged request to the OLD hub URL must come out the
         // other side of the redirect as a 206 whose Content-Range a browser is allowed to read.
-        var req = new HttpRequestMessage(HttpMethod.Get, $"{RedirectHubBase()}/hf/LostBeard/spawnscene-models/migan_float.onnx");
+        var url = $"{RedirectHubBase()}/hf/LostBeard/spawnscene-models/migan_float.onnx";
+
+        // ⚠️ Send what the real downloader sends: HttpModelDownloader adds If-Range = the known ETag to every segment.
+        // An If-Range header makes the cross-origin request carry it in the CORS PREFLIGHT, and the models host
+        // answered 403 (no Allow-Origin) to a preflight naming any header outside its allow list: the live demo's
+        // image generator died on 2026-10-20 while a Range-only test passed. The ETag is readable cross-origin
+        // because the models host exposes it.
+        string? etag;
+        using (var head = await http.SendAsync(new HttpRequestMessage(HttpMethod.Head, url)))
+        {
+            head.EnsureSuccessStatusCode();
+            etag = head.Headers.ETag?.ToString();
+        }
+        if (string.IsNullOrEmpty(etag)) throw new Exception("no readable ETag on the HEAD response through the redirect");
+
+        var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 99);
+        req.Headers.IfRange = new System.Net.Http.Headers.RangeConditionHeaderValue(
+            new System.Net.Http.Headers.EntityTagHeaderValue(etag.TrimStart('W', '/')));
         using var res = await http.SendAsync(req);
         if (res.StatusCode != HttpStatusCode.PartialContent)
-            throw new Exception($"expected 206 through the redirect, got {(int)res.StatusCode}");
+            throw new Exception($"expected 206 through the redirect with Range + If-Range, got {(int)res.StatusCode}");
         var bytes = await res.Content.ReadAsByteArrayAsync();
         if (bytes.Length != 100) throw new Exception($"expected 100 bytes, got {bytes.Length}");
         var total = res.Content.Headers.ContentRange?.Length;

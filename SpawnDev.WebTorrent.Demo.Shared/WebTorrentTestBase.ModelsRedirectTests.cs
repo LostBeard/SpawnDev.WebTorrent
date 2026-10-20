@@ -188,6 +188,40 @@ public abstract partial class WebTorrentTestBase
         Console.WriteLine("[ModelsRedirect] preflights to the models host and to the hub allow Range, If-Range and the other downloader headers");
     }
 
+    [TestMethod(Timeout = 300000)]
+    public async Task ModelsHost_LargeFilesAreNeverEdgeCachedSoTheFirstRangeProbeIs206_Desktop()
+    {
+        if (OperatingSystem.IsBrowser()) throw new UnsupportedTestException("cf-cache-status is not readable from a browser");
+        // 🔴 With a Cache Everything rule, the FIRST request for a file too big to cache (over ~512 MB) answered 200 with
+        // the WHOLE body, ignoring Range; every later request answered a correct 206. HttpModelDownloader sends a bounded
+        // Range probe and only goes parallel/segmented on a 206, so the first download of every multi-GB safetensors/gguf
+        // streamed over ONE connection (TJ saw exactly that, 2026-10-20). The first request is the only bad one, so a
+        // re-run can never see the bug; the stable signal is that the host never makes these files cache-eligible:
+        // cf-cache-status DYNAMIC. A rule that makes them eligible changes it to BYPASS/MISS/HIT.
+        var paths = Environment.GetEnvironmentVariable("SPAWNDEV_LARGE_FILE_PATH") is { Length: > 0 } one
+            ? new[] { one }
+            : new[]
+            {
+                "/LostBeard/FLUX.2-klein-4B-q4-ILGPU/resolve/main/transformer_q4.safetensors",
+                "/LostBeard/FLUX.2-klein-4B-q4-ILGPU/resolve/main/text_encoder_q4.safetensors",
+                "/ollama/gemma4/12b/gemma4-12b-model.gguf",
+            };
+        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(1) };
+        foreach (var path in paths)
+        {
+            var req = new HttpRequestMessage(HttpMethod.Get, ModelsHostBaseUrl + path);
+            req.Headers.TryAddWithoutValidation("Origin", "https://lostbeard.github.io");
+            req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 524287);
+            using var res = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
+            if (res.StatusCode != HttpStatusCode.PartialContent)
+                throw new Exception($"{path}: a bounded Range probe answered {(int)res.StatusCode}, not 206: the downloader would stream the whole file over one connection");
+            res.Headers.TryGetValues("cf-cache-status", out var status);
+            if (status?.FirstOrDefault() != "DYNAMIC")
+                throw new Exception($"{path}: cf-cache-status is '{status?.FirstOrDefault()}', expected DYNAMIC. A cache rule makes the first request for a big file answer 200 with the whole body.");
+        }
+        Console.WriteLine($"[ModelsHost] {paths.Length} large file(s): Range probe 206, never cache-eligible (cf-cache-status DYNAMIC)");
+    }
+
     [TestMethod(Timeout = 600000)]
     public async Task ModelsRedirect_FollowedRedirectDeliversRangeBytesWithReadableContentRange()
     {

@@ -129,7 +129,11 @@ public abstract partial class WebTorrentTestBase
             throw new Exception("redirected a file that is not on the models host");
         if (!res.Headers.TryGetValues("Deprecation", out var dep) || dep.First() != "true")
             throw new Exception("the fall-through response lacks 'Deprecation: true'");
-        Console.WriteLine($"[ModelsRedirect] unmirrored file fell through to the proxy ({(int)res.StatusCode}), marked Deprecation");
+        // The old proxy asked Hugging Face, which said the file does not exist. That is a 404 for the client; a 502 says
+        // "the origin is unreachable", which sends callers off retrying a file that will never appear.
+        if (res.StatusCode != HttpStatusCode.NotFound)
+            throw new Exception($"a file that does not exist upstream must be 404, got {(int)res.StatusCode} {res.StatusCode}");
+        Console.WriteLine("[ModelsRedirect] unmirrored nonexistent file fell through to the proxy: 404, marked Deprecation");
     }
 
     [TestMethod(Timeout = 300000)]

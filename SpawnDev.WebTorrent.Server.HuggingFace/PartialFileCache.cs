@@ -73,7 +73,7 @@ internal sealed class PartialFileCache
             long headSize;
             if (IsComplete(_dataPath)) headSize = new FileInfo(_dataPath).Length;
             else if (await EnsureMetadataAsync(ct)) headSize = _totalSize;
-            else { context.Response.StatusCode = 502; return; }   // origin unreachable
+            else { context.Response.StatusCode = MetadataFailureStatus(); return; }
 
             context.Response.StatusCode = 200;
             context.Response.Headers["Accept-Ranges"] = "bytes";
@@ -84,7 +84,7 @@ internal sealed class PartialFileCache
 
         if (IsComplete(_dataPath)) { await ServeWholeFileRangeAsync(context, _dataPath); return; }
 
-        if (!await EnsureMetadataAsync(ct)) { context.Response.StatusCode = 502; return; } // origin unreachable
+        if (!await EnsureMetadataAsync(ct)) { context.Response.StatusCode = MetadataFailureStatus(); return; }
 
         long start = 0, end = _totalSize - 1;
         bool isRange = false;
@@ -162,6 +162,16 @@ internal sealed class PartialFileCache
         return Math.Max(0, total - onDisk);
     }
 
+    /// <summary>What the origin last answered to the size probe (0 = it never answered: network error or timeout).</summary>
+    private volatile int _originStatus;
+
+    /// <summary>
+    /// The status to give a client when the size probe failed. 502 means "the origin is unreachable" and sends callers
+    /// off retrying; if the origin ANSWERED 404 (or 401/403, which Hugging Face uses for a repo or file that is not
+    /// public or not there) the file does not exist for us, and the honest answer is 404.
+    /// </summary>
+    private int MetadataFailureStatus() => _originStatus is 401 or 403 or 404 ? 404 : 502;
+
     private async Task<bool> EnsureMetadataAsync(CancellationToken ct)
     {
         if (_totalSize >= 0) return true;
@@ -173,6 +183,7 @@ internal sealed class PartialFileCache
             // Probe the origin total size via a 0-0 range (Content-Range: bytes 0-0/TOTAL).
             using var probeReq = await _buildOriginRangeRequest(0, 0, ct);
             using var probe = await _http.SendAsync(probeReq, HttpCompletionOption.ResponseHeadersRead, ct);
+            _originStatus = (int)probe.StatusCode;
             if (!probe.IsSuccessStatusCode) return false;
             long total = probe.Content.Headers.ContentRange?.Length ?? probe.Content.Headers.ContentLength ?? -1;
             if (total <= 0) return false;
@@ -187,7 +198,7 @@ internal sealed class PartialFileCache
             PersistManifest();
             return true;
         }
-        catch { return false; }
+        catch { _originStatus = 0; return false; }
         finally { _metaGate.Release(); }
     }
 

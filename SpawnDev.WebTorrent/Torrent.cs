@@ -180,6 +180,33 @@ public partial class Torrent : IAsyncDisposable
     public int LastPieceLength { get; set; }
     public long Length { get; set; }
     public bool Paused { get; set; }
+    /// <summary>BEP 21: this torrent has useful verified pieces and no outstanding wanted pieces.
+    /// Unlike Pause(), a partial seed stays connected and serves pieces to other peers.</summary>
+    public bool IsPartialSeed => Bep21State.IsPartialSeed(HasMetadata, Paused, Destroyed,
+        Bitfield, _selections.ToArray().Select(s => (s.From, s.To)), _critical.Keys);
+
+    /// <summary>Current tracker state; left counts missing VERIFIED bytes across the whole torrent.</summary>
+    public AnnounceOptions CurrentAnnounceOptions() => new()
+    {
+        Event = IsPartialSeed ? "paused" : null,
+        Uploaded = UploadedTotal,
+        Downloaded = Downloaded,
+        Left = Math.Max(0, Length - Bep21State.VerifiedBytes(Bitfield, Length, PieceLength)),
+        Port = _client?.AdvertisedTcpPort ?? 0
+    };
+
+    private bool _lastPartialSeed;
+    private void UpdatePartialSeedState()
+    {
+        bool current = IsPartialSeed;
+        if (current == _lastPartialSeed) return;
+        _lastPartialSeed = current;
+        foreach (var wire in Wires.ToArray())
+            if (wire.Type != "webSeed") _ = wire.SetUploadOnlyAsync(current);
+        if (_discovery != null && !Destroyed)
+            _ = _discovery.AnnounceAsync(CurrentAnnounceOptions());
+    }
+
     public bool Destroyed { get; private set; }
     public string? MagnetUri { get; set; }
 
@@ -1018,7 +1045,8 @@ public partial class Torrent : IAsyncDisposable
         _discovery = new Discovery(
             infoHashBytes, _client.PeerIdBuffer, AnnounceUrls,
             (initiator) => { PeersAttempted++; return _client.CreatePeer(initiator); },
-            _http!
+            _http!,
+            CurrentAnnounceOptions
         );
 
         _discovery.OnWebRtcPeer += AddPeer;
@@ -1026,15 +1054,11 @@ public partial class Torrent : IAsyncDisposable
         _discovery.OnWarning += (msg) => OnWarning?.Invoke(msg);
         _discovery.OnTrackerUpdate += (update) => TrackerStats[update.AnnounceUrl] = update;
 
-        _ = _discovery.AnnounceAsync(new AnnounceOptions
-        {
-            Event = "started",
-            Left = Math.Max(Length - Downloaded, 0),
-            // Advertise our TCP listener port to mainline trackers so other
-            // clients can dial us in. 0 if no advertising enabled / no listener
-            // bound; keeps prior behavior on the legacy code path.
-            Port = _client.AdvertisedTcpPort,
-        });
+        // A restored partial seed must announce "paused", never "started" or "completed".
+        _lastPartialSeed = IsPartialSeed;
+        var initial = CurrentAnnounceOptions();
+        if (!IsPartialSeed) initial.Event = "started";
+        _ = _discovery.AnnounceAsync(initial);
 
         // BEP 27: Private torrents MUST NOT use DHT, PEX, or LSD.
         // PEX is handled per-wire in UtPexExtension.IsPrivate.
@@ -1351,6 +1375,7 @@ public partial class Torrent : IAsyncDisposable
         {
             Done = Bitfield.All(b => b);
         }
+        UpdatePartialSeedState();
     }
 
     public void AddWebSeed(string url)
@@ -1526,6 +1551,9 @@ public partial class Torrent : IAsyncDisposable
         // selection), so its priority is preserved instead of smeared across every piece — required for a
         // streaming media player's small high-priority tail (moov) request to actually outrank the front.
         _selections.Insert(new SelectionItem { From = start, To = end, Priority = priority, IsStreamSelection = isStreamSelection });
+        if (Bitfield.Length > 0 && Enumerable.Range(Math.Max(0, start), Math.Max(0, Math.Min(end, Bitfield.Length - 1) - Math.Max(0, start) + 1)).Any(i => !Bitfield[i]))
+            Done = false;
+        UpdatePartialSeedState();
         UpdateWires();
     }
 
@@ -1536,12 +1564,16 @@ public partial class Torrent : IAsyncDisposable
         // true. Default false preserves existing whole-file/regular Deselect callers. Re-run the picker so an
         // abandoned stream's pieces stop being prioritized.
         _selections.Remove(new SelectionItem { From = start, To = end, IsStreamSelection = isStreamSelection });
+        UpdatePartialSeedState();
         UpdateWires();
     }
 
     public void Critical(int start, int end)
     {
         for (int i = start; i <= end; i++) _critical.TryAdd(i, true);
+        // An on-demand stream is now requesting more data: stop advertising upload-only
+        // and refresh tracker state before the download request loop starts.
+        UpdatePartialSeedState();
         // Kick the request loop immediately so read-awaited pieces are fetched now.
         // Real peers self-trigger requests from piece-completion / unchoke events, but a
         // read can mark a piece critical when nothing else is driving UpdateWires (a cold
@@ -1938,6 +1970,7 @@ public partial class Torrent : IAsyncDisposable
     public void Pause()
     {
         Paused = true;
+        UpdatePartialSeedState();
         // Choke all wires so peers stop sending blocks, cancel outstanding requests
         foreach (var wire in Wires.ToArray())
         {
@@ -1960,6 +1993,7 @@ public partial class Torrent : IAsyncDisposable
         {
             _selections.Insert(new SelectionItem { From = 0, To = Pieces.Length - 1, Priority = 0 });
         }
+        UpdatePartialSeedState();
         UpdateWires();
         _ = PersistStateAsync();
     }

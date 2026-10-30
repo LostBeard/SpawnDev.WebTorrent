@@ -960,6 +960,7 @@ public partial class Torrent
     /// </summary>
     public void OnWireWithMetadata(Wire wire)
     {
+        if (wire.Type != "webSeed") _ = wire.SetUploadOnlyAsync(IsPartialSeed);
         wire.SetTimeout(PieceTimeoutMs);
 
         // Send our bitfield (or HaveNone if empty)
@@ -1058,7 +1059,11 @@ public partial class Torrent
 
     private void CheckDone()
     {
-        if (Done) return;
+        if (Done)
+        {
+            UpdatePartialSeedState();
+            return;
+        }
 
         bool allDone;
         if (_selections.Length > 0)
@@ -1093,6 +1098,7 @@ public partial class Torrent
             // way - the store serves from piece files until the unpack finishes.
             StartUnpackIfNeeded();
         }
+        UpdatePartialSeedState();
     }
 
     // ========================

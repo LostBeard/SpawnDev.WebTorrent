@@ -35,7 +35,7 @@ Sent when joining/leaving a swarm.
 | `uploaded` | number | yes | Bytes uploaded |
 | `downloaded` | number | yes | Bytes downloaded |
 | `left` | number | conditional | Bytes remaining. Omit or null for unknown |
-| `event` | string | conditional | `"started"`, `"completed"`, or `"stopped"` |
+| `event` | string | conditional | `"started"`, `"completed"`, `"stopped"`, or BEP 21 `"paused"` |
 | `numwant` | number | yes | Number of peers wanted |
 | `offers` | array | conditional | WebRTC offers (only with `"started"`/update) |
 | `trackerid` | string | conditional | Tracker-assigned ID (echo back if provided) |
@@ -51,7 +51,8 @@ Do NOT include extra fields the tracker doesn't expect - some trackers silently 
 | `info_hash` | binary string | Echo of the info hash |
 | `interval` | number | Re-announce interval in seconds |
 | `complete` | number | Number of seeders |
-| `incomplete` | number | Number of leechers |
+| `incomplete` | number | Incomplete peers, including partial seeds under BEP 21 |
+| `downloaders` | number | Optional active downloader count, excluding paused partial seeds (BEP 21) |
 
 ### 3. Offer Relay (tracker -> client)
 

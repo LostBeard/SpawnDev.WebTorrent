@@ -26,6 +26,7 @@ public class UdpTrackerClient : IAsyncDisposable
     private DateTime _connectionExpiry;
     private byte[]? _currentInfoHash;
     private int _currentPort;
+    private Func<AnnounceOptions>? _announceOptions;
     private int _announceIntervalSecs = 1800;
     private CancellationTokenSource? _reAnnounceCts;
 
@@ -51,12 +52,14 @@ public class UdpTrackerClient : IAsyncDisposable
         _peerId = peerId;
     }
 
-    public async Task StartAsync(byte[] infoHash, int port, CancellationToken ct = default)
+    public async Task StartAsync(byte[] infoHash, int port, CancellationToken ct = default,
+        Func<AnnounceOptions>? announceOptions = null)
     {
         if (OperatingSystem.IsBrowser()) return; // UDP not available in browser
 
         _currentInfoHash = infoHash;
         _currentPort = port;
+        _announceOptions = announceOptions;
 
         try
         {
@@ -67,7 +70,9 @@ public class UdpTrackerClient : IAsyncDisposable
             await ConnectAsync(ct);
             if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[UDPTracker] Connected to {_host}:{_port}, announcing...");
             // left=-1 means unknown size (magnet). Trackers treat this as a leecher, not a seeder.
-            await AnnounceAsync(infoHash, port, 0, 0, -1, AnnounceEvent.Started, ct);
+            var initial = _announceOptions?.Invoke();
+            await AnnounceAsync(infoHash, port, initial?.Uploaded ?? 0, initial?.Downloaded ?? 0,
+                initial?.Left ?? -1, initial?.Event == "paused" ? AnnounceEvent.Paused : AnnounceEvent.Started, ct);
             if (WebTorrentClient.VerboseLogging) Console.WriteLine($"[UDPTracker] Announced to {_host}:{_port}");
 
             _reAnnounceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -88,7 +93,12 @@ public class UdpTrackerClient : IAsyncDisposable
             {
                 await Task.Delay(TimeSpan.FromSeconds(_announceIntervalSecs), ct);
                 if (_currentInfoHash != null && _udp != null)
-                    await AnnounceAsync(_currentInfoHash, _currentPort, 0, 0, -1, AnnounceEvent.None, ct);
+                {
+                    var opts = _announceOptions?.Invoke();
+                    await AnnounceAsync(_currentInfoHash, _currentPort, opts?.Uploaded ?? 0,
+                        opts?.Downloaded ?? 0, opts?.Left ?? -1,
+                        opts?.Event == "paused" ? AnnounceEvent.Paused : AnnounceEvent.None, ct);
+                }
             }
         }
         catch (OperationCanceledException) { }
@@ -157,14 +167,7 @@ public class UdpTrackerClient : IAsyncDisposable
 
         var transactionId = RandomNumberGenerator.GetInt32(int.MaxValue);
 
-        int eventInt = announceEvent switch
-        {
-            AnnounceEvent.None => 0,
-            AnnounceEvent.Completed => 1,
-            AnnounceEvent.Started => 2,
-            AnnounceEvent.Stopped => 3,
-            _ => 0,
-        };
+        int eventInt = ToWireEventCode(announceEvent);
 
         var request = new byte[98];
         WriteInt64BE(request, 0, _connectionId);
@@ -281,5 +284,24 @@ public class UdpTrackerClient : IAsyncDisposable
            ((long)buf[offset + 3] << 32) | ((long)buf[offset + 4] << 24) | ((long)buf[offset + 5] << 16) |
            ((long)buf[offset + 6] << 8) | buf[offset + 7];
 
-    public enum AnnounceEvent { None, Completed, Started, Stopped }
+    /// <summary>UDP event 4 is a libtorrent-compatible extension, not documented by BEP 15.</summary>
+    public enum AnnounceEvent { None, Completed, Started, Stopped, Paused }
+
+    public static AnnounceEvent ParseEvent(string? value) => value switch
+    {
+        "started" => AnnounceEvent.Started,
+        "completed" => AnnounceEvent.Completed,
+        "stopped" => AnnounceEvent.Stopped,
+        "paused" => AnnounceEvent.Paused,
+        _ => AnnounceEvent.None
+    };
+
+    public static int ToWireEventCode(AnnounceEvent value) => value switch
+    {
+        AnnounceEvent.Completed => 1,
+        AnnounceEvent.Started => 2,
+        AnnounceEvent.Stopped => 3,
+        AnnounceEvent.Paused => 4,
+        _ => 0
+    };
 }

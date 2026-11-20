@@ -894,6 +894,15 @@ public class Wire : IAsyncDisposable
         await _push(frame);
     }
 
+    /// <summary>BEP 21: advertise that we will upload existing pieces but request none.
+    /// Re-send the BEP 10 extended handshake when an established wire changes state.</summary>
+    public async Task SetUploadOnlyAsync(bool enabled)
+    {
+        ExtendedHandshake["upload_only"] = enabled ? 1 : 0;
+        if (_extendedHandshakeSent && _handshakeSent && PeerExtensions.Extended && !Destroyed)
+            await _sendExtendedHandshake();
+    }
+
     private async Task _sendExtendedHandshake()
     {
         var msg = new Dictionary<string, object>(ExtendedHandshake);

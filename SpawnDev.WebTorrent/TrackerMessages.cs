@@ -92,6 +92,11 @@ public class TrackerAnnounceResponse
     [JsonPropertyName("incomplete")]
     public int Incomplete { get; set; }
 
+    /// <summary>BEP 21: active downloaders (excludes partial seeds), when provided.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [JsonPropertyName("downloaders")]
+    public int? Downloaders { get; set; }
+
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     [JsonPropertyName("peers")]
     public object[]? Peers { get; set; }

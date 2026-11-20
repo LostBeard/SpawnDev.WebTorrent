@@ -17,6 +17,7 @@ The extended handshake payload is a bencoded dictionary:
 | `reqq` | int | Max outstanding requests (default 250) |
 | `yourip` | bytes | Remote peer's IP as seen by this peer (4 or 16 bytes) |
 | `p` | int | Listen port |
+| `upload_only` | int | BEP 21: 1 while partially seeding, 0 on return to downloading; also update live wires |
 
 ### Extension ID Assignment
 

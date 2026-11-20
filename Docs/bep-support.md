@@ -16,6 +16,7 @@ Status of BEP implementation in SpawnDev.WebTorrent.
 | [15](http://bittorrent.org/beps/bep_0015.html) | UDP Tracker Protocol | Yes | No | 3 | Connect, announce, exponential backoff. Browser has no UDP — hard platform constraint. |
 | [17](http://bittorrent.org/beps/bep_0017.html) | HTTP Seeding (Hoffman) | Yes | Yes | 1 | HTTP range request web seeds |
 | [19](http://bittorrent.org/beps/bep_0019.html) | WebSeed (GetRight style) | Yes | Yes | 1 | Multi-file piece assembly, path-safe URL encoding |
+| [21](https://www.bittorrent.org/beps/bep_0021.html) | Partial Seeds | Yes* | Yes* | BEP 21 unit tests | Derived partial-seed state, paused announces, BEP 10 upload_only, and libtorrent-compatible UDP event 4 on desktop. SpawnDev.RTC's own scheduled WS reannounces currently clear the event; full compliance requires follow-up in that dependency. |
 | [20](http://bittorrent.org/beps/bep_0020.html) | Peer ID Conventions | Yes | Yes | 2 | Azureus-style: `-WW{ver}-` (WebTorrent-compatible) + random suffix |
 | [23](http://bittorrent.org/beps/bep_0023.html) | Tracker Returns Compact Peer Lists | Yes | Yes | 3 | Via UDP, HTTP, and PEX compact format |
 | [27](http://bittorrent.org/beps/bep_0027.html) | Private Torrents | Yes | Yes | 2 | Private flag in torrent creation and parsing |
@@ -55,6 +56,8 @@ All BEP 44/46 operations (DHT mutable items, AgentChannel pub/sub, `btpk` magnet
 | SHA-256 (32 bytes) | Yes | Yes | Default for new torrents. Auto-detected from piece hash size. |
 
 Verification routes through `IPieceHashEngine` (default `SystemCryptoPieceHashEngine` — `System.Security.Cryptography` SHA-1 / SHA-256, hardware-accelerated SHA-NI on modern CPUs and natively wired in browser via WebCrypto where available). Slot in a custom engine via `WebTorrentClient.PieceHashEngine` to route piece verification through GPU / batched implementations. See [hash-engine.md](hash-engine.md).
+
+**BEP 21 limitation:** The WebSocket transport uses the published SpawnDev.RTC package. Its internal periodic timer currently clears the `paused` event. This PR fixes local HTTP/UDP periodic state and explicit WebSocket announces but cannot guarantee that every WebSocket reannounce has `event=paused` until SpawnDev.RTC is updated.
 
 ## Tracker Support
 

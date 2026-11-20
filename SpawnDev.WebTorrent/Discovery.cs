@@ -26,6 +26,20 @@ public class Discovery : IAsyncDisposable
     /// the first announce would advertise our TcpListener and every periodic
     /// follow-up would advertise port 0).</summary>
     private int _lastAdvertisedPort;
+    private readonly Func<AnnounceOptions>? _currentAnnounceOptions;
+    private AnnounceOptions _lastOptions = new();
+
+    internal static AnnounceOptions PeriodicOptions(AnnounceOptions current) => new()
+    {
+        Port = current.Port,
+        Uploaded = current.Uploaded,
+        Downloaded = current.Downloaded,
+        Left = current.Left,
+        Numwant = current.Numwant,
+        Event = current.Event == "paused" ? "paused" : null
+    };
+    private AnnounceOptions GetPeriodicOptions()
+        => PeriodicOptions(_currentAnnounceOptions?.Invoke() ?? _lastOptions);
 
     // ========================
     // EVENTS
@@ -43,13 +57,14 @@ public class Discovery : IAsyncDisposable
     // ========================
 
     public Discovery(byte[] infoHash, byte[] peerId, string[] announceUrls,
-                     Func<bool, SimplePeer> createPeerFunc, HttpClient http)
+                     Func<bool, SimplePeer> createPeerFunc, HttpClient http, Func<AnnounceOptions>? currentAnnounceOptions = null)
     {
         InfoHash = infoHash;
         InfoHashHex = Convert.ToHexString(infoHash).ToLowerInvariant();
         PeerId = peerId;
         _createPeerFunc = createPeerFunc;
         _http = http;
+        _currentAnnounceOptions = currentAnnounceOptions;
 
         Console.WriteLine($"[Discovery] Creating for {InfoHashHex}, {announceUrls.Length} trackers");
         foreach (var url in announceUrls)
@@ -70,7 +85,7 @@ public class Discovery : IAsyncDisposable
                 Action announceHandler = () =>
                 {
                     if (Destroyed) return;
-                    _ = tracker.AnnounceAsync(infoHash, new AnnounceOptions { Port = _lastAdvertisedPort }, peerId);
+                    _ = tracker.AnnounceAsync(infoHash, GetPeriodicOptions(), peerId);
                     OnTrackerAnnounce?.Invoke();
                 };
                 tracker.OnAnnounce += announceHandler;
@@ -84,7 +99,7 @@ public class Discovery : IAsyncDisposable
                 tracker.OnWarning += (msg) => OnWarning?.Invoke(msg);
                 tracker.OnAnnounce += () =>
                 {
-                    _ = tracker.AnnounceAsync(new AnnounceOptions { Port = _lastAdvertisedPort });
+                    _ = tracker.AnnounceAsync(GetPeriodicOptions());
                     OnTrackerAnnounce?.Invoke();
                 };
                 _httpTrackers.Add(tracker);
@@ -120,6 +135,7 @@ public class Discovery : IAsyncDisposable
         // (HttpTracker._announceTimer, WebSocketTracker.OnAnnounce) keep
         // advertising the same port as the initial AnnounceAsync call.
         _lastAdvertisedPort = opts.Port;
+        _lastOptions = opts;
 
         var tasks = new List<Task>();
         foreach (var t in _wsTrackers)
@@ -136,7 +152,16 @@ public class Discovery : IAsyncDisposable
                 // inside UdpTrackerClient reuses _currentPort, so this single
                 // call locks the advertised port for the lifetime of the tracker.
                 var advertisePort = opts.Port > 0 ? opts.Port : 6881;
-                tasks.Add(AnnounceWithIsolation(() => t.StartAsync(InfoHash, advertisePort), "udp"));
+                tasks.Add(AnnounceWithIsolation(() => t.StartAsync(InfoHash, advertisePort,
+                    announceOptions: () => _currentAnnounceOptions?.Invoke() ?? _lastOptions), "udp"));
+            }
+            else
+            {
+                var snapshot = opts;
+                var udpEvent = UdpTrackerClient.ParseEvent(snapshot.Event);
+                tasks.Add(AnnounceWithIsolation(() =>
+                    t.AnnounceAsync(InfoHash, _lastAdvertisedPort > 0 ? _lastAdvertisedPort : 6881,
+                        snapshot.Uploaded, snapshot.Downloaded, snapshot.Left, udpEvent), "udp"));
             }
         }
 
@@ -161,13 +186,19 @@ public class Discovery : IAsyncDisposable
     /// <summary>Announce completion to all trackers.</summary>
     public async Task CompleteAsync()
     {
-        await AnnounceAsync(new AnnounceOptions { Event = "completed" });
+        var opts = _currentAnnounceOptions?.Invoke() ?? _lastOptions;
+        opts = PeriodicOptions(opts);
+        opts.Event = "completed";
+        await AnnounceAsync(opts);
     }
 
     /// <summary>Announce stopped to all trackers.</summary>
     public async Task StopAsync()
     {
-        await AnnounceAsync(new AnnounceOptions { Event = "stopped" });
+        var opts = _currentAnnounceOptions?.Invoke() ?? _lastOptions;
+        opts = PeriodicOptions(opts);
+        opts.Event = "stopped";
+        await AnnounceAsync(opts);
     }
 
     // ========================

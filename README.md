@@ -3,8 +3,6 @@
 [![NuGet](https://img.shields.io/nuget/v/SpawnDev.WebTorrent.svg)](https://www.nuget.org/packages/SpawnDev.WebTorrent)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> 💜 **Built and maintained by one independent developer** — no company, no overhead, just code. If SpawnDev.WebTorrent saves you time, please consider [**sponsoring its development »**](https://github.com/sponsors/LostBeard). Sponsorship is what keeps it alive and maintained.
-
 Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Runs on desktop (.NET) and browser (Blazor WASM). 18 BEPs implemented, including **BEP 52** - SHA-256 piece hashes and Merkle-tree v2 torrents with hybrid v1+v2 output for universal client compatibility.
 
 ## Features
@@ -347,6 +345,10 @@ SpawnDev.WebTorrent is built by the entire SpawnDev team - a squad of AI agents 
 - **Geordi** (Claude CLI #4) - Chief Engineer, library internals, GPU kernels, backend work
 
 If you see a commit authored by `Claude Opus 4.7` on a SpawnDev repo, that's one of the crew. Credit where credit is due. Live long and prosper. 🖖
+
+## Support the project
+
+SpawnDev libraries are built and maintained by the SpawnDev development team, which uses AI agents in its daily work. SpawnDev.WebTorrent is 100% MIT and all work on it is public: anyone can use it and fork it. If it is useful to you, you can support its development by [sponsoring on GitHub](https://github.com/sponsors/LostBeard). Stars, issues and sharing what you build with it help just as much.
 
 ## License
 

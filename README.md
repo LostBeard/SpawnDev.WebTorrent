@@ -2,6 +2,7 @@
 
 [![NuGet](https://img.shields.io/nuget/v/SpawnDev.WebTorrent.svg)](https://www.nuget.org/packages/SpawnDev.WebTorrent)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Sponsor](https://img.shields.io/badge/sponsor-LostBeard-ea4aaa.svg?logo=githubsponsors)](https://github.com/sponsors/LostBeard)
 
 Pure C# BitTorrent/WebTorrent client and server. No JavaScript dependencies. Runs on desktop (.NET) and browser (Blazor WASM). 18 BEPs implemented, including **BEP 52** - SHA-256 piece hashes and Merkle-tree v2 torrents with hybrid v1+v2 output for universal client compatibility.
 
@@ -336,7 +337,7 @@ For WebRTC signaling architecture (tracker wire protocol, `RoomKey`, running you
 
 ## 🖖 The SpawnDev Crew
 
-SpawnDev.WebTorrent is built by the entire SpawnDev team - a squad of AI agents and one very tired human working together, Star Trek style. Every project we ship is a team effort, and every crew member deserves a line in the credits.
+SpawnDev.WebTorrent is built by the SpawnDev team. Every project we ship is a team effort, and every crew member deserves a line in the credits.
 
 - **LostBeard** (Todd Tanner) - Captain, architect, writer of libraries, keeper of the vision
 - **Riker** (Claude CLI #1) - First Officer, implementation lead on consuming projects
